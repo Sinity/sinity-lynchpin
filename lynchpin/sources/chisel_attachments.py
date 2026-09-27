@@ -23,7 +23,9 @@ def _archive(root: Path, target: Path, paths: list[Path], companions: list[str])
                 "contents": [{"path": p.relative_to(root).as_posix(),
                               "bytes": p.stat().st_size, "sha256": digest(p)} for p in paths]}
     portfolio = root / "portfolio.json"
-    manifest["identities"] = json.loads(portfolio.read_text()).get("projects", []) if portfolio.exists() else []
+    included_projects = {p.relative_to(root).parts[0] for p in paths if p.relative_to(root).parts}
+    manifest["identities"] = [row for row in json.loads(portfolio.read_text()).get("projects", [])
+                              if row.get("project") in included_projects] if portfolio.exists() else []
     target.unlink(missing_ok=True)
     with tarfile.open(target, "w:gz", compresslevel=3) as archive:
         data = (json.dumps(manifest, indent=2) + "\n").encode()
@@ -46,6 +48,12 @@ def build_attachments(root: Path, projects: list[str], *, limit: int, layout: st
     if limit < 4096:
         raise ValueError("attachment limit must be at least 4096 bytes for manifest overhead")
     (root / "reconstruct.py").write_text(RECONSTRUCT)
+    guidance = ("# Attachments\n\nUse the portfolio archives for every selected project, or a project's `-all` "
+                "archive for that project alone. Extract every required companion listed in an archive's "
+                "manifest into one directory. Each archive contains its own file manifest. For numbered "
+                "parts, run `python3 reconstruct.py` from that directory. The command verifies every part "
+                "and reconstructed artifact.\n\n")
+    (root / "ATTACHMENT_START_HERE.md").write_text(guidance)
     project_paths = {name: sorted(p for p in (root / name).rglob("*") if p.is_file()
                         and not (p.parent == root / name and (p.name == "index.sqlite3" or p.suffix == ".xml"
                                  or p.name.endswith(("-working-tree.tar.gz", "-beads.html"))))) for name in projects}
@@ -55,18 +63,20 @@ def build_attachments(root: Path, projects: list[str], *, limit: int, layout: st
     metadata += [root / "logs" / f"{name}.log" for name in projects if (root / "logs" / f"{name}.log").is_file()]
     attachments = []
     reconstruction = []
+    archive_groups: dict[str, str] = {}
 
-    def emit(name: str, paths: list[Path], *, can_partition: bool = True) -> None:
+    def emit(name: str, paths: list[Path], *, group: str, can_partition: bool = True) -> None:
         target = root / f"{name}.tar.gz"
         row = _archive(root, target, paths, [])
         if row["bytes"] <= limit:
             attachments.append(row)
+            archive_groups[row["path"]] = group
             return
         target.unlink()
         if len(paths) > 1 and can_partition:
             middle = len(paths) // 2
-            emit(name + "-1", paths[:middle])
-            emit(name + "-2", paths[middle:])
+            emit(name + "-1", paths[:middle], group=group)
+            emit(name + "-2", paths[middle:], group=group)
             return
         if len(paths) != 1:
             raise ValueError("cannot partition empty attachment")
@@ -97,16 +107,15 @@ def build_attachments(root: Path, projects: list[str], *, limit: int, layout: st
                 attachments.append({"path": part, "bytes": target.stat().st_size,
                                     "sha256": digest(target), "contents": [part_manifest],
                                     "companions": part_names, "reconstruction": "python3 reconstruct.py"})
+                archive_groups[part] = group
 
     all_paths = metadata + [p for name in projects for p in project_paths[name]]
     if layout == "auto":
-        trial = _archive(root, root / "portfolio-all.tar.gz", all_paths, [])
-        if trial["bytes"] <= limit:
-            attachments.append(trial)
-        else:
-            (root / "portfolio-all.tar.gz").unlink()
+        emit("portfolio-all", all_paths, group="portfolio")
+        for name in projects:
+            emit(f"{name}-all", metadata + project_paths[name], group=name)
     if not attachments:
-        emit("portfolio-metadata", metadata)
+        emit("portfolio-metadata", metadata, group="selection")
         for name in projects:
             paths = project_paths[name]
             if layout != "dataset":
@@ -114,6 +123,7 @@ def build_attachments(root: Path, projects: list[str], *, limit: int, layout: st
                 row = _archive(root, target, paths, ["portfolio-metadata.tar.gz"])
                 if row["bytes"] <= limit:
                     attachments.append(row)
+                    archive_groups[row["path"]] = "selection"
                     continue
                 target.unlink()
             groups: dict[str, list[Path]] = {}
@@ -121,7 +131,7 @@ def build_attachments(root: Path, projects: list[str], *, limit: int, layout: st
                 rel = path.relative_to(root / name)
                 groups.setdefault(rel.parts[0] if len(rel.parts) > 1 else "metadata", []).append(path)
             for dataset, files in groups.items():
-                emit(f"{name}-{dataset}", files)
+                emit(f"{name}-{dataset}", files, group="selection")
     # Rebind companion requirements after the actual partition is known.
     # Extra metadata may require another split near a tight byte boundary.
     for _ in range(10):
@@ -133,7 +143,8 @@ def build_attachments(root: Path, projects: list[str], *, limit: int, layout: st
             if row.get("reconstruction"):
                 attachments.append(row)
                 continue
-            companions = [name for name in names if name != row["path"]]
+            companions = [name for name in names if name != row["path"]
+                          and archive_groups[name] == archive_groups[row["path"]]]
             if row.get("companions") == companions:
                 attachments.append(row)
                 continue
@@ -146,8 +157,9 @@ def build_attachments(root: Path, projects: list[str], *, limit: int, layout: st
                 split = True
                 if len(paths) > 1:
                     middle = len(paths) // 2
-                    emit(row["path"].removesuffix(".tar.gz") + "-a", paths[:middle])
-                    emit(row["path"].removesuffix(".tar.gz") + "-b", paths[middle:])
+                    group = archive_groups[row["path"]]
+                    emit(row["path"].removesuffix(".tar.gz") + "-a", paths[:middle], group=group)
+                    emit(row["path"].removesuffix(".tar.gz") + "-b", paths[middle:], group=group)
                 else:
                     raise ValueError("companion manifest exceeds attachment cap for one artifact")
         if not split:
@@ -159,10 +171,8 @@ def build_attachments(root: Path, projects: list[str], *, limit: int, layout: st
     (root / "attachments.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (root / "reconstruct.py").write_text(RECONSTRUCT)
     (root / "ATTACHMENT_START_HERE.md").write_text(
-        "# Attachments\n\nExtract every listed archive into one directory. Each archive contains its own file manifest. "
-        "For numbered parts, run `python3 reconstruct.py` from that directory. "
-        "The command verifies every part and reconstructed artifact.\n\n" +
-        "\n".join(f"- `{r['path']}`: {r['bytes']} bytes; SHA-256 `{r['sha256']}`" for r in attachments) + "\n")
+        guidance + "\n".join(f"- `{r['path']}`: {r['bytes']} bytes; SHA-256 `{r['sha256']}`"
+                             for r in attachments) + "\n")
     return manifest
 
 
@@ -175,13 +185,17 @@ root = Path.cwd()
 groups = {}
 for path in (root / "parts").glob("*.json"):
     row = json.loads(path.read_text())
-    groups.setdefault(row["path"], []).append((row, path.with_suffix(".bin")))
-for relative, records in groups.items():
+    groups.setdefault((row["path"], tuple(row["parts"])), []).append((row, path.with_suffix(".bin")))
+seen = {}
+for (relative, _), records in groups.items():
     target = root / relative
     if Path(relative).is_absolute() or ".." in Path(relative).parts:
         raise ValueError("unsafe reconstruction path")
     records.sort(key=lambda pair: pair[0]["part"])
     first = records[0][0]
+    if relative in seen and seen[relative] != first["sha256"]:
+        raise ValueError("conflicting artifact identity: " + relative)
+    seen[relative] = first["sha256"]
     if [r["part"] for r, _ in records] != list(range(1, len(first["parts"]) + 1)):
         raise ValueError("missing or duplicate parts: " + relative)
     target.parent.mkdir(parents=True, exist_ok=True)

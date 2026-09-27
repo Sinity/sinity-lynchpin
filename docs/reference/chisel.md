@@ -55,9 +55,9 @@ Session context uses Polylogue's public facade with an indexed workspace filter.
 
 ## Attachments and offline browsing
 
-The default attachment limit is 500,000,000 bytes, configurable with `--attachment-bytes`. `--attachment-layout auto` tries a combined archive, then project boundaries, then dataset boundaries. `project` and `dataset` request those layouts directly. Oversized artifacts become numbered parts with hashes and a standard-library reconstruction helper. No source or Git history is silently discarded to satisfy the cap.
+The default attachment limit is 500,000,000 bytes per archive, configurable with `--attachment-bytes`. The default `auto` layout publishes both a combined portfolio archive and one self-contained archive per selected project. An oversized archive splits at file boundaries and then into numbered parts when necessary. `project` and `dataset` request only their respective layouts. No source or Git history is silently discarded to satisfy the cap. The project size in the terminal table measures unpacked contents; attachment sizes are listed separately in `attachments.json`.
 
-`attachments.json` lists the actual selection, attachments, sizes, hashes, and reconstruction requirements. Every normal archive carries its file manifest under `attachments/`; numbered parts carry part manifests. Extract all listed attachments together. For numbered parts, run `python3 reconstruct.py` from the extraction directory. The command verifies chunks and the reconstructed artifact.
+`attachments.json` lists the actual selection, attachments, sizes, hashes, and reconstruction requirements. Every normal archive carries its file manifest under `attachments/`; numbered parts carry part manifests. Extract the portfolio group for all projects or one project's group for that project. Include every companion named by the chosen archives. For numbered parts, run `python3 reconstruct.py` from the extraction directory. The command verifies chunks and the reconstructed artifact.
 
 ```bash
 python3 browse.py --package . snapshots --json

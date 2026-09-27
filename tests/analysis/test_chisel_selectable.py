@@ -77,6 +77,29 @@ def test_split_parts_reconstruct_and_verify_raw_xml(tmp_path):
     assert json.loads((root / "attachments.json").read_text())["projects"] == ["sample"]
 
 
+def test_default_attachments_include_portfolio_and_individual_projects(tmp_path):
+    root = tmp_path / "package"
+    for name in ("first", "second"):
+        source = root / name / "source"
+        source.mkdir(parents=True)
+        (source / "main.py").write_text(f"PROJECT = {name!r}\n")
+    (root / "portfolio.json").write_text('{"projects": []}')
+
+    manifest = build_attachments(root, ["first", "second"], limit=500_000_000)
+
+    assert {row["path"] for row in manifest["attachments"]} == {
+        "portfolio-all.tar.gz", "first-all.tar.gz", "second-all.tar.gz",
+    }
+    for row in manifest["attachments"]:
+        assert row["companions"] == []
+        assert (root / row["path"]).stat().st_size <= manifest["limit_bytes"]
+    with tarfile.open(root / "first-all.tar.gz") as archive:
+        names = set(archive.getnames())
+    assert "first/source/main.py" in names
+    assert "second/source/main.py" not in names
+    assert "portfolio.json" in names
+
+
 def test_default_context_never_invokes_network(monkeypatch):
     from lynchpin.sources import chisel, chisel_options
 

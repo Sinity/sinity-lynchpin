@@ -8,7 +8,7 @@ import hashlib
 import json
 import re
 import tomllib
-from collections import deque
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
@@ -227,24 +227,39 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
     differences = []
     integration = []
     base = {r["path"]: r for r in rows(package / "inventory.jsonl") if r.get("included")}
+    base_by_hash: dict[str, list[str]] = defaultdict(list)
+    symbols_by_path: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    edges_by_path: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for path, record in base.items():
+        if record.get("sha256"):
+            base_by_hash[record["sha256"]].append(path)
+    for symbol in symbols:
+        symbols_by_path[symbol.get("path", "")].append(symbol)
+    for edge in edges:
+        edges_by_path[edge.get("source_path", "")].append(edge)
     for path in sorted((package / "snapshots").glob("*/manifest.json")):
         overlay = json.loads(path.read_text())
         files = {r["path"]: r for r in overlay["files"] if r.get("included")}
         deleted = overlay["deleted"]
+        deleted_by_hash: dict[str, list[str]] = defaultdict(list)
+        for deleted_path in deleted:
+            old_record = base.get(deleted_path)
+            if old_record and old_record.get("sha256"):
+                deleted_by_hash[old_record["sha256"]].append(deleted_path)
         for changed in overlay["changed"] + deleted:
             old, new = base.get(changed), files.get(changed)
-            rename_candidates = [p for p in deleted if new and base[p].get("sha256") == new.get("sha256")]
+            rename_candidates = deleted_by_hash.get(new.get("sha256"), []) if new else []
             differences.append({"snapshot_id": snapshot, "other_snapshot_id": overlay["snapshot_id"],
                 "snapshot": path.parent.name, "path": changed,
                 "kind": "deleted" if new is None else "added" if old is None else "modified",
                 "old_sha256": old.get("sha256") if old else None,
                 "new_sha256": new.get("sha256") if new else None,
                 "exact_content_rename_candidates": rename_candidates,
-                "affected_symbols": [s for s in symbols if s.get("path") == changed],
+                "affected_symbols": symbols_by_path.get(changed, []),
                 "changed_symbols": changed_symbols(package / "source" / changed, path.parent / "files" / changed),
-                "static_neighbors": [e for e in edges if e.get("source_path") == changed]})
+                "static_neighbors": edges_by_path.get(changed, [])})
             if new:
-                matches = [p for p, r in base.items() if r.get("sha256") == new.get("sha256")]
+                matches = base_by_hash.get(new.get("sha256"), [])
                 integration.append({"snapshot_id": overlay["snapshot_id"], "base_snapshot_id": snapshot,
                     "path": changed, "exact_content_matches": matches,
                     "superseded": None, "retired": None,

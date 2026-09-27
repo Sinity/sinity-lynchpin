@@ -6183,6 +6183,7 @@ def _publish_chisel_bundles(
             project_names=names,
             output_root=candidate,
             max_workers=max_workers,
+            display_root=root,
         )
         successful = all(
             r.get("status") == "generated" for r in result["projects"].values()
@@ -6222,6 +6223,7 @@ def _build_chisel_candidate(
     project_names: Sequence[str] | None = None,
     output_root: Path | None = None,
     max_workers: int = DEFAULT_MAX_WORKERS,
+    display_root: Path | None = None,
 ) -> dict[str, Any]:
     from .chisel_context import reset_context_cache
 
@@ -6255,13 +6257,13 @@ def _build_chisel_candidate(
     slice_workers = DEFAULT_SLICE_WORKERS
 
     _print(f"[bold]Chisel evidence packages[/bold]  (XML: {repomix_ver})")
-    _print(f"Output: {output_root}")
+    _print(f"Output: {display_root or output_root}")
     _print(f"Repos:  {len(plans)} selected — {', '.join(p.name for p in plans)}")
     _print(
         f"Pools:  {repo_workers} across repos × {slice_workers} within each; "
         f"{DEFAULT_REPOMIX_WORKERS} global repomix slots"
     )
-    _print_scope(plans, output_root)
+    _print_scope(plans, display_root or output_root)
     _print()
     preflight_started = time.perf_counter()
     _ensure_chisel_prerequisites(plans)
@@ -6446,7 +6448,10 @@ def _build_chisel_candidate(
         preflight_elapsed=preflight_elapsed,
     )
     _print(f"[green]Wrote root index:[/green] {index_json}, {index_md}")
-    _print(f"[dim]Done. {output_root}[/dim]")
+    if display_root is None:
+        _print(f"[dim]Done. {output_root}[/dim]")
+    else:
+        _print(f"[dim]Build complete; publication pending at {display_root}[/dim]")
 
     return {
         "generated_at": generated_at,
