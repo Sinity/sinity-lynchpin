@@ -357,7 +357,7 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
                     continue
                 if comparison["complete_scope_match"] is True:
                     bound_methods.append("complete_scope_endpoint_content")
-                elif selected.get("dirty") is False and all(
+                elif comparison.get("reason") == "owner content endpoints unavailable" and selected.get("dirty") is False and all(
                     isinstance(receipt.get(endpoint), dict)
                     and receipt[endpoint].get("head") == selected_revision
                     and receipt[endpoint].get("dirty") is False
@@ -386,7 +386,7 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
             comparison = content_match(by_snapshot[selected_id], _owner_receipt(package, receipt))
             if comparison["complete_scope_match"] is True:
                 method = "complete_scope_endpoint_content"
-            elif (selected.get("dirty") is False
+            elif (comparison.get("reason") == "owner content endpoints unavailable" and selected.get("dirty") is False
                   and start.get("dirty") is False and end.get("dirty") is False):
                 method = "clean_execution_endpoints"
             else:

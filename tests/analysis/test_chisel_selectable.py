@@ -275,6 +275,40 @@ def test_candidate_report_explains_same_revision_content_gaps(tmp_path):
     assert examples["missing"]["uncaptured_owner_path_count"] == 1
 
 
+def test_clean_endpoint_fallback_does_not_override_content_contradiction(tmp_path):
+    from lynchpin.analysis.projects.chisel_reports import build_reports
+
+    (tmp_path / "capture.json").write_text(json.dumps({"snapshot_id": "primary-id", "revision": "commit"}))
+    (tmp_path / "snapshots.json").write_text(json.dumps({"snapshots": [
+        {"name": "primary", "snapshot_id": "primary-id", "revision": "commit", "dirty": False},
+    ]}))
+    (tmp_path / "source").mkdir()
+    (tmp_path / "inventory.jsonl").write_text(json.dumps({
+        "path": "a.py", "included": True, "sha256": "captured", "mode": 420,
+    }) + "\n")
+    manifest = {"coverage": "complete_declared_scope", "sha256": "same-endpoints",
+                "files": [{"path": "a.py", "kind": "file", "sha256": "different", "mode": 420}]}
+    receipt = {"start": {"head": "commit", "dirty": False, "content_manifest": manifest},
+               "end": {"head": "commit", "dirty": False, "content_manifest": manifest}}
+    verification = tmp_path / "verification"
+    verification.mkdir()
+    records = [{"kind": "native_evidence", "evidence_id": "native", "candidate_revision": "commit",
+                "verification": [{"tested_revision": "commit", "owner_observation": {
+                    "eligible": True, "execution_receipt": receipt}}]}]
+    (verification / "records.jsonl").write_text("".join(json.dumps(row) + "\n" for row in records))
+    owners = tmp_path / "owners"
+    owners.mkdir()
+    (owners / "jobs.json").write_text(json.dumps({"details": [{
+        "reference": "agentctl-job", "execution_receipt": receipt,
+    }]}))
+
+    build_reports(tmp_path, project="fixture", task_roots=[])
+
+    assert (tmp_path / "reports/candidate-evidence.jsonl").read_text() == ""
+    coverage = json.loads((tmp_path / "reports/coverage.json").read_text())["candidate_evidence"]
+    assert coverage["unbound_detail_reasons"] == {"endpoint_content_mismatch": 1}
+
+
 def test_candidate_report_distinguishes_missing_and_empty_evidence_datasets(tmp_path):
     from lynchpin.analysis.projects.chisel_reports import build_reports
     from lynchpin.sources.chisel_browse import query_records
