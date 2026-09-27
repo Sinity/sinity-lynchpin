@@ -1,79 +1,18 @@
-"""Multi-signal repair of fabricated AW AFK events.
+"""Derive AFK intervals from ActivityWatch and independent source evidence.
 
-Cohesive picture of the upstream bug
-====================================
-
-aw-watcher-afk's `not-afk` claim comes from the Wayland compositor's
-`ext-idle-notifier-v1`. Hyprland decides when to fire `Idled`. For
-various reasons (phantom libinput events, USB device wake cycling,
-monitor DPMS cycles, autosuspend probes, idle-inhibit holds from
-media-playing browsers, …) Hyprland sometimes never fires `Idled`
-despite no real user activity. AW and awatcher faithfully record
-what the compositor told them.
-
-Within AW the contradiction is invisible — both buckets concur. The
-repair requires EXTERNAL ground truth.
-
-Signal hierarchy
-================
-
-Negative signals (operator was definitely AFK during this period):
-
-  1. **Sleep records** (Samsung Health + Sleep As Android,
-     2017-01-29 → 2026-03-28). Highest confidence. If a sleep
-     segment overlaps a not-afk event, that overlap MUST be AFK —
-     no human-input source explanation can flip it. Covers the
-     ENTIRE AW history including the pre-keylog era.
-
-  2. **Keylog silence ≥ 30 min** (scribe-tap, 2025-10-06+). Strong
-     evidence. Scribe-tap reads libinput key events directly,
-     bypassing the compositor. If there are no keystrokes for ≥30
-     min inside a not-afk event AND no positive activity evidence
-     in that sub-window, flip to AFK.
-
-Positive activity signals (operator WAS active even if keylog/sleep
-suggest otherwise):
-
-  - **Keystrokes** in the period (≥1 keystroke ⇒ real activity).
-  - **Atuin shell commands** issued in the period (operator typed
-    in a terminal; not raw keystrokes but a positive activity event).
-
-Atuin POSITIVE matters: it can lift a keylog-silence flag back to
-not-afk for periods where the operator was using their shell
-without keyboard input being captured (e.g., a script that ran for
-a while). Atuin SILENCE does not imply AFK — most user activity
-doesn't generate shell commands.
-
-Sleep negative ALWAYS wins. We never override a sleep record with a
-positive-activity signal — if Samsung Health says they were asleep,
-they were asleep. Phantom keystrokes from a stuck key or pet on
-keyboard don't mean the operator was active.
-
-Provenance recording
-====================
-
-``RepairedAFKEvent.repair_source`` is one of:
-
-  - ``""``: pass-through (no contradiction found, or no signal coverage)
-  - ``"sleep-overlap"``: a sleep segment overlapped this period
-  - ``"keylog-silent"``: keylog had zero presses for ≥30 min
-    AND no positive activity from atuin
-
-Pre-keylog era handling
-=======================
-
-For dates before 2025-10-06 (keylog coverage start), only sleep
-records can flip not-afk to AFK. Other suspicious events (e.g.,
-14h not-afk during the day) pass through — we lack ground truth.
-
-Atuin (2025-04-03+) only helps as a positive-activity check; it
-can't FLAG a period as AFK on its own.
+ActivityWatch reports the compositor's idle state. This repair keeps that raw
+claim intact and emits separately labelled inferences from overlapping sleep,
+empty-app, stuck-window, and keylog signals. A missing keylog file is missing
+coverage, not evidence of silence. A label applies only to the segment its
+source supports; merging adjacent AFK time must not extend its provenance.
+Sleep takes precedence on an actual overlap, but that precedence is a product
+policy rather than proof that a conflicting observation is false.
 """
 from __future__ import annotations
 
 import bisect
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Iterator
@@ -111,7 +50,7 @@ class RepairedAFKEvent:
     """An AFK event after multi-signal repair.
 
     ``original_status`` is the unmodified AW claim.
-    ``status`` is the corrected value.
+    ``status`` is the selected derived value, not a rewrite of either source.
     ``repair_source``:
       - ``""``: pass-through
       - ``"sleep-overlap"``: sleep record overlapped this period
@@ -131,24 +70,21 @@ class RepairedAFKEvent:
 
 @dataclass(frozen=True)
 class KeylogCoverage:
-    first_date: datetime | None
-    last_date: datetime | None
+    days: frozenset[date]
 
 
 def keylog_coverage() -> KeylogCoverage:
     files = log_files()
     if not files:
-        return KeylogCoverage(first_date=None, last_date=None)
-    dates: list[datetime] = []
+        return KeylogCoverage(days=frozenset())
+    days: set[date] = set()
     for p in files:
         try:
-            d = datetime.strptime(Path(p).stem, "%Y-%m-%d")
+            day = date.fromisoformat(Path(p).stem)
         except ValueError:
             continue
-        dates.append(d)
-    if not dates:
-        return KeylogCoverage(first_date=None, last_date=None)
-    return KeylogCoverage(first_date=min(dates), last_date=max(dates))
+        days.add(day)
+    return KeylogCoverage(days=frozenset(days))
 
 
 def repair_input_revision() -> tuple[object, ...]:
@@ -275,6 +211,43 @@ def _find_silent_windows(
     ]
 
 
+def _covered_keylog_spans(
+    start: datetime, end: datetime, days: frozenset[date]
+) -> Iterator[tuple[datetime, datetime]]:
+    """Yield only spans backed by an actual UTC-dated keylog file.
+
+    A first/last date range does not establish capture on a missing day.  We
+    also avoid carrying an inferred silence gap across a file boundary.
+    """
+    cursor = start.astimezone(UTC)
+    upper = end.astimezone(UTC)
+    while cursor < upper:
+        next_day = datetime.combine(cursor.date() + timedelta(days=1), time.min, tzinfo=UTC)
+        span_end = min(upper, next_day)
+        if cursor.date() in days:
+            yield cursor.astimezone(start.tzinfo), span_end.astimezone(start.tzinfo)
+        cursor = span_end
+
+
+def _labelled_afk_segments(
+    intervals: list[tuple[datetime, datetime, str]],
+) -> list[tuple[datetime, datetime, str]]:
+    """Partition overlapping inferences without lending one label to a union."""
+    priority = {"sleep-overlap": 4, "empty-app": 3, "stuck-window": 2, "keylog-silent": 1}
+    boundaries = sorted({point for start, end, _ in intervals for point in (start, end)})
+    labelled: list[tuple[datetime, datetime, str]] = []
+    for start, end in zip(boundaries, boundaries[1:]):
+        sources = (source for left, right, source in intervals if left < end and right > start)
+        source = max(sources, key=lambda item: priority.get(item, 0), default="")
+        if not source:
+            continue
+        if labelled and labelled[-1][1] == start and labelled[-1][2] == source:
+            labelled[-1] = (labelled[-1][0], end, source)
+        else:
+            labelled.append((start, end, source))
+    return labelled
+
+
 def repair_afk_events(
     events: Iterable[AWEvent],
     *,
@@ -354,12 +327,8 @@ def repair_afk_events(
             forced_afk.append((s_c, e_c, "stuck-window"))
 
         # === Signal 4: keylog silence (where keylog covers) ===
-        has_keylog = (
-            coverage.first_date is not None
-            and event.end.replace(tzinfo=None) >= coverage.first_date
-            and event.start.replace(tzinfo=None) <= coverage.last_date
-        )
-        if has_keylog:
+        keylog_spans = tuple(_covered_keylog_spans(event.start, event.end, coverage.days))
+        if keylog_spans:
             kp_times: list[datetime] = []
             for path in _candidate_files(event.start, event.end):
                 try:
@@ -369,18 +338,19 @@ def repair_afk_events(
                 for ts in _press_timestamps(str(path), stat.st_mtime_ns, stat.st_size):
                     if event.start <= ts <= event.end:
                         kp_times.append(ts)
-            silent_windows = _find_silent_windows(
-                kp_times,
-                span_start=event.start,
-                span_end=event.end,
-                threshold_s=keylog_silent_threshold_s,
-            )
-            for s, e in silent_windows:
-                if _is_covered_by_sleep(s, e, sleep_overlaps):
-                    continue
-                if _atuin_in_window(s, e):
-                    continue
-                forced_afk.append((s, e, "keylog-silent"))
+            for span_start, span_end in keylog_spans:
+                silent_windows = _find_silent_windows(
+                    [ts for ts in kp_times if span_start <= ts <= span_end],
+                    span_start=span_start,
+                    span_end=span_end,
+                    threshold_s=keylog_silent_threshold_s,
+                )
+                for s, e in silent_windows:
+                    if _is_covered_by_sleep(s, e, sleep_overlaps):
+                        continue
+                    if _atuin_in_window(s, e):
+                        continue
+                    forced_afk.append((s, e, "keylog-silent"))
 
         if not forced_afk:
             yield RepairedAFKEvent(
@@ -390,26 +360,7 @@ def repair_afk_events(
             )
             continue
 
-        # Merge overlapping forced-afk windows, preserving the strongest
-        # provenance. Priority order (high → low):
-        #   sleep-overlap > empty-app > stuck-window > keylog-silent
-        _priority = {
-            "sleep-overlap": 4,
-            "empty-app": 3,
-            "stuck-window": 2,
-            "keylog-silent": 1,
-        }
-        forced_afk.sort()
-        merged: list[tuple[datetime, datetime, str]] = []
-        for s, e, src in forced_afk:
-            if merged and s <= merged[-1][1]:
-                ms, me, msrc = merged[-1]
-                new_src = src if _priority.get(src, 0) > _priority.get(msrc, 0) else msrc
-                merged[-1] = (ms, max(me, e), new_src)
-            else:
-                merged.append((s, e, src))
-
-        yield from _emit_split(event, merged)
+        yield from _emit_split(event, _labelled_afk_segments(forced_afk))
 
 
 def _is_covered_by_sleep(

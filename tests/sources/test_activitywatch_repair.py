@@ -57,9 +57,9 @@ def _patch_signals(
     fake_path = SimpleNamespace(stat=lambda: SimpleNamespace(st_mtime_ns=0, st_size=0))
 
     coverage = (
-        KeylogCoverage(first_date=datetime(2020, 1, 1), last_date=datetime(2030, 1, 1))
+        KeylogCoverage(days=frozenset({BASE.date()}))
         if keylog_covered
-        else KeylogCoverage(first_date=None, last_date=None)
+        else KeylogCoverage(days=frozenset())
     )
 
     def mock_window_events(*, start, end):
@@ -232,6 +232,40 @@ def test_sleep_and_keylog_both_apply_priority_kept() -> None:
     sources = {e.repair_source for e in repaired}
     # At minimum sleep-overlap is the source for the central window
     assert "sleep-overlap" in sources
+
+
+def test_missing_day_between_keylog_files_is_not_silence_evidence(tmp_path) -> None:
+    events = [_aw("not-afk", 0, 45 * 60)]
+    before = tmp_path / "2026-05-25.jsonl"
+    after = tmp_path / "2026-05-27.jsonl"
+    before.write_text("", encoding="utf-8")
+    after.write_text("", encoding="utf-8")
+    ctxs = _patch_signals()
+    ctxs[2] = patch(
+        "lynchpin.sources.activitywatch_repair.log_files", return_value=[before, after]
+    )
+    _enter(ctxs)
+    try:
+        out = list(repair_afk_events(events))
+    finally:
+        _exit(ctxs)
+    assert [(row.start, row.end, row.status, row.repair_source) for row in out] == [
+        (events[0].start, events[0].end, "not-afk", "")
+    ]
+
+
+def test_short_sleep_overlap_does_not_label_long_silence_as_sleep() -> None:
+    events = [_aw("not-afk", 0, 45 * 60)]
+    ctxs = _patch_signals(sleep_intervals_s=[(0, 5 * 60)])
+    _enter(ctxs)
+    try:
+        out = list(repair_afk_events(events))
+    finally:
+        _exit(ctxs)
+    assert [(row.start, row.end, row.repair_source) for row in out] == [
+        (events[0].start, events[0].start + timedelta(minutes=5), "sleep-overlap"),
+        (events[0].start + timedelta(minutes=5), events[0].end, "keylog-silent"),
+    ]
 
 
 def test_afk_event_passes_through() -> None:

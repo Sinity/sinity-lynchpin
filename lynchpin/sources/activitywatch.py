@@ -170,13 +170,11 @@ def _repaired_afk_events_cached(
 
 
 def active_intervals(start: datetime | date, end: datetime | date, *, ensure: bool = True) -> list[Interval]:
-    """Keylog-repaired AFK-active intervals over [start, end).
+    """Derived AFK-active intervals over [start, end).
 
-    Returns the merged set of intervals during which the operator was
-    genuinely active. The underlying AFK events are first repaired
-    against keylog ground truth (``activitywatch_repair``) before
-    clipping to the requested window — fabricated multi-hour not-afk
-    claims are split around keylog-silent periods.
+    ActivityWatch claims are compared with overlapping sleep, window, and
+    keylog evidence before clipping to the requested window. The result is a
+    selected inference; raw observations remain available from their sources.
 
     If ``end`` is a date, expands to midnight of the next day.
     """
