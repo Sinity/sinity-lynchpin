@@ -633,30 +633,35 @@ def sleep_productivity(
     derived_first, derived_last = _activitywatch_derived_bounds()
     active_map: dict[date, float] = {}
     cursor = aw_start
-    active_total = 0.0
-    active_days = 0
     while cursor < aw_end:
         chunk_end = min(cursor + timedelta(days=chunk_days), aw_end)
-        if derived_first is not None and derived_last is not None and cursor <= derived_last:
-            if chunk_end <= derived_first:
-                chunk_active = {}
-            else:
-                derived_start = max(cursor, derived_first)
-                derived_end = min(chunk_end, derived_last + timedelta(days=1))
-                chunk_active = {
-                    row.date: row.active_hours * 3600
-                    for row in iter_derived_daily_activity(
-                        start=derived_start,
-                        end=derived_end - timedelta(days=1),
-                        ensure=False,
-                    )
-                }
-        else:
-            chunk_active = active_seconds_by_date(cursor, chunk_end)
-        active_map.update(chunk_active)
-        active_total += sum(chunk_active.values())
-        active_days += len(chunk_active)
+        derived_start = max(cursor, derived_first) if derived_first is not None else chunk_end
+        derived_end = min(chunk_end, derived_last + timedelta(days=1)) if derived_last is not None else cursor
+        covered = derived_first is not None and derived_last is not None and derived_start < derived_end
+
+        # Keep canonical and raw reads bounded to their own coverage. A chunk
+        # can straddle derived_last, so its uncovered tail still needs a raw
+        # ActivityWatch read.
+        if covered and cursor < derived_start:
+            active_map.update(active_seconds_by_date(cursor, derived_start, ensure=ensure))
+        if covered:
+            derived_active = {
+                row.date: row.active_hours * 3600
+                for row in iter_derived_daily_activity(
+                    start=derived_start,
+                    end=derived_end - timedelta(days=1),
+                    ensure=False,
+                )
+            }
+            active_map.update(derived_active)
+        if covered and derived_end < chunk_end:
+            active_map.update(active_seconds_by_date(derived_end, chunk_end, ensure=ensure))
+        if not covered:
+            active_map.update(active_seconds_by_date(cursor, chunk_end, ensure=ensure))
         cursor = chunk_end
+
+    active_total = sum(active_map.values())
+    active_days = len(active_map)
 
     from datetime import time as time_cls
     dw_by_day: dict[date, float] = {}

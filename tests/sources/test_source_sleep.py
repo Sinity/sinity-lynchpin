@@ -170,8 +170,8 @@ def test_sleep_productivity_chunks_activitywatch_and_uses_logical_deep_work_day(
     ]
     active_calls = []
 
-    def fake_active_seconds_by_date(start, end):
-        active_calls.append((start, end))
+    def fake_active_seconds_by_date(start, end, *, ensure=True):
+        active_calls.append((start, end, ensure))
         return {start: 3600.0}
 
     def fake_deep_work(*, start, end):
@@ -187,11 +187,57 @@ def test_sleep_productivity_chunks_activitywatch_and_uses_logical_deep_work_day(
     rows = sleep_productivity(start=date(2026, 3, 1), end=date(2026, 3, 2), chunk_days=1)
 
     assert active_calls == [
-        (date(2026, 3, 2), date(2026, 3, 3)),
-        (date(2026, 3, 3), date(2026, 3, 4)),
+        (date(2026, 3, 2), date(2026, 3, 3), True),
+        (date(2026, 3, 3), date(2026, 3, 4), True),
     ]
     assert [row.workday_deep_work_min for row in rows] == [10.0, 0]
     assert [row.productivity_vs_baseline for row in rows] == [1.0, 1.0]
+
+
+def test_sleep_productivity_preserves_raw_activity_after_derived_tail(monkeypatch):
+    from lynchpin.sources import sleep as mod
+
+    entries = [
+        SimpleNamespace(
+            date=day,
+            total_minutes=420.0,
+            effective_score=80.0,
+            quality_label="good",
+        )
+        for day in (date(2026, 1, 1), date(2026, 1, 2))
+    ]
+    active_calls = []
+    derived_calls = []
+
+    def fake_active_seconds_by_date(start, end, *, ensure=True):
+        active_calls.append((start, end, ensure))
+        return {date(2026, 1, 3): 10800.0}
+
+    def fake_derived_activity(*, start, end, ensure=True):
+        derived_calls.append((start, end, ensure))
+        return (SimpleNamespace(date=date(2026, 1, 2), active_hours=2.0),)
+
+    monkeypatch.setattr(mod, "entries_in_range", lambda **_kwargs: entries)
+    monkeypatch.setattr(mod, "_activitywatch_derived_bounds", lambda: (date(2026, 1, 2), date(2026, 1, 2)))
+    monkeypatch.setattr("lynchpin.sources.sleep_composite.composite_minutes_by_date", lambda **_kwargs: {})
+    monkeypatch.setattr("lynchpin.sources.activitywatch.active_seconds_by_date", fake_active_seconds_by_date)
+    monkeypatch.setattr("lynchpin.sources.activitywatch.deep_work", lambda **_kwargs: ())
+    monkeypatch.setattr("lynchpin.sources.activitywatch_derived.iter_derived_daily_activity", fake_derived_activity)
+    monkeypatch.setattr("lynchpin.sources.activitywatch_derived.iter_derived_deep_work", lambda **_kwargs: ())
+
+    by_chunk_size = {}
+    for chunk_days in (1, 2):
+        active_calls.clear()
+        derived_calls.clear()
+        by_chunk_size[chunk_days] = sleep_productivity(
+            start=date(2026, 1, 1), end=date(2026, 1, 2), chunk_days=chunk_days, ensure=False
+        )
+        assert active_calls == [(date(2026, 1, 3), date(2026, 1, 4), False)]
+        assert derived_calls == [(date(2026, 1, 2), date(2026, 1, 2), False)]
+
+    expected = [(2.0, 0.8), (3.0, 1.2)]
+    for rows in by_chunk_size.values():
+        assert [(row.workday_active_hours, row.productivity_vs_baseline) for row in rows] == expected
 
 
 def _write_rows(path, rows):
@@ -327,7 +373,7 @@ def test_sleep_productivity_uses_composite_not_canonical_minutes(tmp_path, monke
     ])
     monkeypatch.setattr("lynchpin.sources.sleep.get_config", lambda: SimpleNamespace(sleep_jsonl=sleep_file))
     monkeypatch.setattr(
-        "lynchpin.sources.activitywatch.active_seconds_by_date", lambda start, end: {}
+        "lynchpin.sources.activitywatch.active_seconds_by_date", lambda start, end, *, ensure=True: {}
     )
     monkeypatch.setattr("lynchpin.sources.activitywatch.deep_work", lambda *, start, end: ())
     monkeypatch.setattr(

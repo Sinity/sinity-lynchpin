@@ -18,6 +18,7 @@ _DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "title_metadata",
         "communications",
     ),
+    "sleep_productivity": ("activitywatch_derived",),
     "temporal_signals": ("activitywatch_derived",),
 }
 _CANONICAL_ONLY = frozenset(

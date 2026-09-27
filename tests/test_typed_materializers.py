@@ -228,11 +228,42 @@ def test_substrate_promoters_are_not_scheduled_in_one_wave() -> None:
 
 
 def test_production_consumers_follow_their_canonical_inputs() -> None:
-    for consumer, producer in (("communications", "facebook_messenger"), ("spotify_daily", "spotify")):
+    for consumer, producer in (
+        ("communications", "facebook_messenger"),
+        ("spotify_daily", "spotify"),
+        ("sleep_productivity", "activitywatch_derived"),
+    ):
         assert producer in {dependency.product for dependency in PRODUCT_CATALOG[consumer].dependencies}
-        plan = ConvergencePlanner((PRODUCT_CATALOG[producer], PRODUCT_CATALOG[consumer])).plan(ConvergenceRequest((consumer,)))
+        plan = ConvergencePlanner(PRODUCT_CATALOG.values()).plan(ConvergenceRequest((consumer,)))
         waves = materializer_execution_waves(tuple(replace_step(step, action="materialize") for step in plan.steps))
-        assert [[step.product for step in wave] for wave in waves] == [[producer], [consumer]]
+        if consumer == "sleep_productivity":
+            products = [step.product for wave in waves for step in wave]
+            assert products.index(producer) < products.index(consumer)
+            assert next(i for i, wave in enumerate(waves) if consumer in {step.product for step in wave}) > next(
+                i for i, wave in enumerate(waves) if producer in {step.product for step in wave}
+            )
+        else:
+            assert [[step.product for step in wave] for wave in waves] == [[producer], [consumer]]
+
+
+def test_sleep_productivity_is_skipped_when_activitywatch_derived_fails() -> None:
+    plan = ConvergencePlanner(PRODUCT_CATALOG.values()).plan(ConvergenceRequest(("sleep_productivity",)))
+    calls: list[str] = []
+
+    def handler(context):
+        product = context.step.product
+        calls.append(product)
+        if product == "activitywatch_derived":
+            raise RuntimeError("synthetic ActivityWatch failure")
+
+    handlers = registry(
+        *((PRODUCT_CATALOG[step.product].handler, handler) for step in plan.steps)
+    )
+    results = LocalExecutor(handlers).execute(plan)
+
+    assert results["activitywatch_derived"].status == "failed"
+    assert results["sleep_productivity"].status == "skipped"
+    assert "sleep_productivity" not in calls
 
 
 def test_production_failure_blocks_reusable_child_and_preserves_sibling(monkeypatch) -> None:
@@ -309,6 +340,52 @@ def test_ready_consumer_is_invalidated_by_planned_producer(monkeypatch) -> None:
 
     maintenance = production.plan_materializations(cfg=object(), maintenance=True)
     assert [(step.product, step.action) for step in maintenance] == [("parent", "check-only"), ("child", "materialize")]
+
+
+def test_ready_sleep_productivity_is_invalidated_by_derived_refresh(monkeypatch) -> None:
+    from lynchpin.materializers import production
+
+    producer = PRODUCT_CATALOG["activitywatch_derived"]
+    consumer = PRODUCT_CATALOG["sleep_productivity"]
+    rows = [
+        SimpleNamespace(
+            name=producer.product,
+            status="pending",
+            reason="derived product changed",
+            first_date=None,
+            last_date=None,
+            materialized_paths=(),
+            repair_required=False,
+            tail_stale=False,
+        ),
+        SimpleNamespace(
+            name=consumer.product,
+            status="ready",
+            reason="canonical product is ready",
+            first_date=None,
+            last_date=None,
+            materialized_paths=(),
+            repair_required=False,
+            tail_stale=False,
+        ),
+    ]
+    monkeypatch.setattr(production, "PRODUCT_CATALOG", {producer.product: producer, consumer.product: consumer})
+    monkeypatch.setattr(production, "_audit", lambda: SimpleNamespace(
+        audit_materialization=lambda **_kwargs: rows,
+        _dataset_fingerprint=lambda row: row.status,
+        source_contract=lambda _name: SimpleNamespace(materialization_hint="fixture"),
+    ))
+
+    plan = production.plan_materializations(cfg=object())
+
+    assert [(step.product, step.action) for step in plan] == [
+        ("activitywatch_derived", "materialize"),
+        ("sleep_productivity", "materialize"),
+    ]
+    assert [[step.product for step in wave] for wave in production.materializer_execution_waves(plan)] == [
+        ["activitywatch_derived"],
+        ["sleep_productivity"],
+    ]
 
 
 def test_maintenance_debounce_uses_the_newest_product_output(tmp_path) -> None:
