@@ -200,6 +200,15 @@ def test_candidate_report_keeps_unbound_lifecycle_records_out_of_snapshot_rows(t
     }}
     records = [
         {"kind": "agentctl_job_observation", "source_id": "job:1", "status": "succeeded"},
+        {"kind": "agentctl_job_execution", "source_id": "agentctl:2", "reference": "job-ref",
+         "operation": "verify_quick", "phase": "succeeded", "result": "success",
+         "execution_evidence": {"selector": ["verify_quick"]},
+         "execution_receipt": {"start": {"head": "commit", "dirty": False},
+                               "end": {"head": "commit", "dirty": False}}},
+        {"kind": "agentctl_job_execution", "source_id": "agentctl:3", "reference": "dirty-job",
+         "operation": "verify_quick", "phase": "succeeded", "result": "success",
+         "execution_receipt": {"start": {"head": "commit", "dirty": True},
+                               "end": {"head": "commit", "dirty": True}}},
         {"kind": "native_evidence", "evidence_id": "bound", "candidate_revision": "commit",
          "candidate_dirty": False, "verification": [bound_check]},
         {"kind": "native_evidence", "evidence_id": "unknown-dirty", "candidate_revision": "commit",
@@ -210,7 +219,30 @@ def test_candidate_report_keeps_unbound_lifecycle_records_out_of_snapshot_rows(t
     build_reports(tmp_path, project="fixture", task_roots=[])
 
     candidates = [json.loads(line) for line in (tmp_path / "reports/candidate-evidence.jsonl").read_text().splitlines()]
-    assert [(row["snapshot_id"], row["evidence_id"]) for row in candidates] == [("primary-id", "bound")]
+    assert [(row["snapshot_id"], row["evidence_id"]) for row in candidates] == [
+        ("primary-id", "bound"), ("primary-id", "job-ref")]
+    assert candidates[1]["acceptance"] is None
+    assert candidates[1]["execution"]["execution_evidence"]["selector"] == ["verify_quick"]
     coverage = json.loads((tmp_path / "reports/coverage.json").read_text())["candidate_evidence"]
     assert coverage["unbound_native_records"] == 1
     assert coverage["lifecycle_observations_kept_separate"] == 1
+    assert coverage["bound_detailed_jobs"] == 1
+
+
+def test_neighbor_projection_filters_canonical_edges_before_pagination(tmp_path):
+    from lynchpin.sources.chisel_browse import query_records
+
+    (tmp_path / "capture.json").write_text(json.dumps({"snapshot_id": "primary-id"}))
+    structure = tmp_path / "structure"
+    structure.mkdir()
+    edges = [
+        {"kind": "python_import", "from": "a", "to": "b", "type_only": True, "deferred": False},
+        {"kind": "python_import", "from": "a", "to": "c", "type_only": False, "deferred": True},
+        {"kind": "manifest_dependency", "from": "a", "to": "package"},
+        {"kind": "python_import", "from": "a", "to": "d", "type_only": False, "deferred": False},
+    ]
+    (structure / "dependency_edges.jsonl").write_text("".join(json.dumps(row) + "\n" for row in edges))
+    all_imports = query_records(tmp_path, "neighbors", "a", 1, 1, projection="all_static_imports")
+    eager = query_records(tmp_path, "neighbors", "a", 1, 0, projection="module_initialization")
+    assert all_imports["total"] == 3 and all_imports["rows"][0]["to"] == "c"
+    assert eager["total"] == 1 and eager["rows"][0]["to"] == "d"

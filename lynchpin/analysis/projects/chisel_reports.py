@@ -299,6 +299,7 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
         by_snapshot[manifest["snapshot_id"]] = manifest["files"]
     candidates = []
     native_records = [r for r in verification if r.get("kind") == "native_evidence"]
+    execution_details = [r for r in verification if r.get("kind") == "agentctl_job_execution"]
     for selected in catalogue["snapshots"]:
         selected_id = selected.get("snapshot_id")
         selected_revision = selected.get("revision")
@@ -338,6 +339,38 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
                 "focused_tests": checks, "content_comparisons": comparisons,
                 "qualification": None, "acceptance": None, "deployment": None,
                 "interpretation": "Eligible execution endpoints associate this evidence with the snapshot; endpoints alone do not establish immutable execution or acceptance."})
+        for detail in execution_details:
+            receipt = detail.get("execution_receipt") or {}
+            start, end = receipt.get("start") or {}, receipt.get("end") or {}
+            if not isinstance(start, dict) or not isinstance(end, dict):
+                continue
+            if start.get("head") != selected_revision or end.get("head") != selected_revision:
+                continue
+            comparison = content_match(by_snapshot[selected_id], receipt)
+            if comparison["complete_scope_match"] is True:
+                method = "complete_scope_endpoint_content"
+            elif (selected.get("dirty") is False
+                  and start.get("dirty") is False and end.get("dirty") is False):
+                method = "clean_execution_endpoints"
+            else:
+                continue
+            candidates.append({
+                "snapshot_id": selected_id, "snapshot_revision": selected_revision,
+                "snapshot_dirty": selected.get("dirty"),
+                "evidence_id": detail.get("reference") or detail.get("source_id"),
+                "evidence_kind": "agentctl_job_execution", "association": method,
+                "revision_match": True, "integration": None,
+                "focused_tests": [], "qualification": None, "acceptance": None,
+                "deployment": None, "content_comparisons": [comparison],
+                "execution": {"operation": detail.get("operation"),
+                              "phase": detail.get("phase"), "result": detail.get("result"),
+                              "exit_code": detail.get("exit_code"),
+                              "execution_evidence": detail.get("execution_evidence"),
+                              "artifact_refs": detail.get("artifact_refs"),
+                              "started_at": detail.get("started_at"),
+                              "ended_at": detail.get("ended_at")},
+                "interpretation": "Owner job execution is associated by endpoint content; its result is not acceptance, and endpoints do not attest to an immutable execution interval.",
+            })
     activation_path = package / "verification/activation.json"
     if activation_path.exists():
         activation = json.loads(activation_path.read_text())
@@ -353,10 +386,12 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
                           ("preserved-work-integration", integration)):
         (out / f"{name}.jsonl").write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in records))
     (out / "task-dependencies.json").write_text(json.dumps({"snapshot_id": snapshot, **graph}, indent=2) + "\n")
-    coverage = {"schema_version": 2, "snapshot_id": snapshot,
+    coverage = {"schema_version": 3, "snapshot_id": snapshot,
         "task_roots": task_roots, "campaign_scope": "explicit roots only",
         "candidate_evidence": {"bound_rows": len(candidates), "native_records": len(native_records),
-            "unbound_native_records": len(native_records) - len({r["evidence_id"] for r in candidates}),
+            "detailed_job_records": len(execution_details),
+            "bound_detailed_jobs": sum(r.get("evidence_kind") == "agentctl_job_execution" for r in candidates),
+            "unbound_native_records": len(native_records) - len({r["evidence_id"] for r in candidates if r.get("evidence_kind") != "agentctl_job_execution"}),
             "lifecycle_observations_kept_separate": sum(r.get("kind") == "agentctl_job_observation" for r in verification),
             "status": "no_bound_evidence" if not candidates else "bounded_associations"},
         "gaps": ["Rust, SQL and Nix pattern matches retain textual-candidate status.",

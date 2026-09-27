@@ -117,6 +117,10 @@ def build_context(
                 {"kind": "agentctl_job_observation", **row}
                 for row in normalized["job_observations"]
             ),
+            *(
+                {"kind": "agentctl_job_execution", **row}
+                for row in jobs.get("details", [])
+            ),
         ],
     )
     (verification_root / "coverage.json").write_text(
@@ -400,6 +404,7 @@ def _verification_payload(
                 "record_count": len(jobs.get("records", [])),
                 "caveats": jobs.get("gaps", []),
             },
+            "job_execution_details": jobs.get("detail_coverage", {"coverage": "unavailable"}),
             "benchmark_exports": "unavailable",
             "coverage_report_exports": "unavailable",
             "hosted_ci_run_exports": "not_queried_yet",
@@ -646,6 +651,9 @@ def _read_agentctl_snapshot() -> Any:
 
 def _agentctl_jobs(project: str) -> dict[str, Any]:
     observed_at = datetime.now(timezone.utc).isoformat()
+    from .chisel_options import active_options
+    window_days = active_options.context_days
+    cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
     try:
         snapshot = _read_agentctl_snapshot()
     except (agentctl.AgentctlObservationError, OSError) as error:
@@ -656,6 +664,7 @@ def _agentctl_jobs(project: str) -> dict[str, Any]:
             "gaps": [str(error)],
         }
     records = []
+    candidates = []
     for row in snapshot.observations:
         if row.project != project:
             continue
@@ -676,14 +685,62 @@ def _agentctl_jobs(project: str) -> dict[str, Any]:
                 "caveats": json.loads(row.caveats_json),
             }
         )
+        reference = getattr(snapshot, "detail_references", {}).get(row.source_id)
+        if (row.outcome_known is True and reference and row.started_at and row.started_at >= cutoff
+                and any(word in (row.operation or "").lower()
+                        for word in ("test", "verify", "check", "benchmark", "qualif"))):
+            candidates.append((row, reference))
+    # Detail reads are intentionally bounded; the lifecycle list remains complete.
+    selected = sorted(candidates, key=lambda pair: pair[0].started_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[:24]
+    details = []
+    detail_errors = 0
+    for row, reference in selected:
+        detail = _agentctl_job_detail(row, reference)
+        if detail is None:
+            detail_errors += 1
+        else:
+            details.append(detail)
     return {
         "coverage": "all_retained_jobs",
         "observed_at": observed_at,
         "records": records,
+        "details": details,
+        "detail_coverage": {"selection": "24 most recent retained terminal test/verify/check/benchmark/qualification jobs with launch references in context window",
+                            "window_days": window_days, "window_start": cutoff.isoformat(),
+                            "eligible_count": len(candidates), "selected_count": len(selected),
+                            "captured_count": len(details), "failed_count": detail_errors,
+                            "capped": len(candidates) > len(selected)},
         "gaps": list(snapshot.caveats)
         + [
             "AgentCTL's job list is a retained lifecycle view; an operation name or terminal status does not establish that tests, benchmarks, coverage, or CI passed."
         ],
+    }
+
+
+def _agentctl_job_detail(row: Any, reference: str) -> dict[str, Any] | None:
+    job_id = row.source_id.removeprefix("agentctl:")
+    try:
+        result = subprocess.run(
+            ["agentctl", "job", "get", job_id, "--reference", reference, "--json"],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+        detail = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return None
+    if not isinstance(detail, dict) or str(detail.get("job_id")) != job_id or detail.get("reference") != reference:
+        return None
+    outcome = detail.get("outcome") if isinstance(detail.get("outcome"), dict) else {}
+    receipt = outcome.get("execution_receipt") if isinstance(outcome.get("execution_receipt"), dict) else None
+    execution = outcome.get("execution_evidence") if isinstance(outcome.get("execution_evidence"), dict) else None
+    return {
+        "source_id": row.source_id, "reference": reference,
+        "project": row.project, "operation": row.operation,
+        "phase": detail.get("phase"), "result": detail.get("result"),
+        "exit_code": detail.get("exit_code"),
+        "started_at": detail.get("started_at"), "ended_at": detail.get("ended_at"),
+        "execution_receipt": receipt, "execution_evidence": execution,
+        "artifact_refs": detail.get("artifacts"),
+        "interpretation": "Job execution and endpoint receipts do not by themselves establish test acceptance or immutable execution.",
     }
 
 

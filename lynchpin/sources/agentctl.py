@@ -18,7 +18,7 @@ from typing import Any
 
 SOURCE = "agentctl"
 WORK_KIND = "agentctl_job"
-CONTRACT_SCHEMA = 3
+CONTRACT_SCHEMA = 4
 _COMMAND = ("agentctl", "job", "list", "--json", "--all")
 
 
@@ -111,6 +111,7 @@ class AgentctlObservationSnapshot:
     generation: Mapping[str, Any]
     observations: tuple[AgentctlJobObservation, ...]
     caveats: tuple[str, ...]
+    detail_references: Mapping[str, str]
 
 
 def read_observation_snapshot(
@@ -133,15 +134,21 @@ def read_observation_snapshot(
         "AgentCTL job-list output does not publish a snapshot identity, host identity, restart/recovery marker, artifact refs, or semantic receipt refs",
     ]
     observations: list[AgentctlJobObservation] = []
+    detail_references: dict[str, str] = {}
     for job in rows:
         if not isinstance(job, Mapping):
             raise AgentctlObservationContractError("agentctl job.list contains an invalid job record")
-        observations.append(_job_observation(job, generation=generation, snapshot_caveats=caveats))
+        observation = _job_observation(job, generation=generation, snapshot_caveats=caveats)
+        observations.append(observation)
+        reference = _optional_text(job.get("reference"))
+        if reference:
+            detail_references[observation.source_id] = reference
     return AgentctlObservationSnapshot(
         contract_schema=CONTRACT_SCHEMA,
         generation=generation,
         observations=tuple(observations),
         caveats=tuple(caveats),
+        detail_references=detail_references,
     )
 
 

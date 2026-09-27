@@ -232,6 +232,25 @@ def test_agentctl_job_snapshot_cache_resets_between_builds(monkeypatch):
     assert reads == [1, 2]
 
 
+def test_agentctl_job_detail_requires_matching_launch_reference(monkeypatch):
+    from types import SimpleNamespace
+    import subprocess
+
+    row = SimpleNamespace(source_id="agentctl:12", project="polylogue", operation="verify_quick")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps({
+            "job_id": 12, "reference": "other-launch",
+            "outcome": {"execution_receipt": {"start": {"head": "abc"}}},
+        }), "")
+
+    monkeypatch.setattr(chisel_context.subprocess, "run", run)
+    assert chisel_context._agentctl_job_detail(row, "expected-launch") is None
+    assert calls[0] == ["agentctl", "job", "get", "12", "--reference", "expected-launch", "--json"]
+
+
 def test_github_actions_runs_keep_owner_facts_and_revision_applicability(tmp_path):
     pages = []
 

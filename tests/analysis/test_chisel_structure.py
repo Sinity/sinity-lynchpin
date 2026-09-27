@@ -205,6 +205,10 @@ def test_import_graph_src_layout_absolute_relative_and_cycles(tmp_path: Path) ->
     )
     output = tmp_path / "package"
     build_structure(inventory, output)
+    projections = json.loads((output / "structure/graph_projections.json").read_text())
+    assert projections["edge_dataset"] == "dependency_edges.jsonl"
+    assert projections["projections"]["all_static_imports"]["count"] == 4
+    assert not (output / "structure/all_static_imports.jsonl").exists()
     imports = _jsonl(output / "structure/imports.jsonl")
     a_imports = [row for row in imports if row["path"] == "src/pkg/sub/a.py"]
     assert {row["target_module"] for row in a_imports} == {"pkg.base", "pkg.sub.b"}

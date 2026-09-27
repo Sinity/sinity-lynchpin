@@ -156,9 +156,11 @@ def snapshot_identity(package: Path, name: str) -> str | None:
     return None
 
 
-def query_records(package: Path, command: str, value: str | None, limit: int, offset: int, snapshot: str = "primary") -> dict:
+def query_records(package: Path, command: str, value: str | None, limit: int, offset: int, snapshot: str = "primary", projection: str | None = None) -> dict:
     if limit < 1 or limit > 1000 or offset < 0:
         raise ValueError("limit must be 1..1000; offset must be nonnegative")
+    if projection not in {None, "all_static_imports", "excluding_type_only", "module_initialization"} or (projection and command != "neighbors"):
+        raise ValueError("unknown or inapplicable graph projection")
     if command == "snapshots":
         path = package / "snapshots.json"
         result = json.loads(path.read_text())["snapshots"] if path.exists() else [json.loads((package / "capture.json").read_text())]
@@ -204,6 +206,10 @@ def query_records(package: Path, command: str, value: str | None, limit: int, of
                     if command == "candidate-evidence" and not row.get("evidence_id"):
                         continue
                     if command == "differences" and snapshot != "primary" and row.get("snapshot") != snapshot:
+                        continue
+                    if projection and (row.get("kind") != "python_import"
+                                       or projection != "all_static_imports" and row.get("type_only")
+                                       or projection == "module_initialization" and row.get("deferred")):
                         continue
                     fields = {"tasks": [row.get("id")], "symbols": [row.get("name"), row.get("qualified_name")],
                               "references": [row.get("name")], "neighbors": [row.get("from"), row.get("to")],
@@ -356,6 +362,8 @@ def main() -> int:
         p.add_argument("--offset", type=int, default=0)
         p.add_argument("--json", action="store_true")
         p.add_argument("--snapshot", default="primary")
+        if command == "neighbors":
+            p.add_argument("--projection", choices=("all_static_imports", "excluding_type_only", "module_initialization"))
     args = parser.parse_args()
     try:
         if args.command in {"search", "history"}:
@@ -371,7 +379,7 @@ def main() -> int:
         if args.command == "reconstruct-snapshot":
             reconstruct_snapshot(args.package, args.snapshot, args.output)
             return 0
-        result = query_records(args.package, args.command, args.value, args.limit, args.offset, args.snapshot)
+        result = query_records(args.package, args.command, args.value, args.limit, args.offset, args.snapshot, getattr(args, "projection", None))
         print(json.dumps(result, indent=2) if args.json else "\n".join(json.dumps(row) for row in result["rows"]))
         return 0
     except (OSError, ValueError, sqlite3.Error if sqlite3 is not None else RuntimeError) as exc:

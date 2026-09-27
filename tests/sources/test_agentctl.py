@@ -35,7 +35,8 @@ def test_agentctl_native_adapter_projects_only_public_observation_fields() -> No
     snapshot = read_observation_snapshot(loader=lambda: _rows())
     row = snapshot.observations[0]
 
-    assert snapshot.contract_schema == 3
+    assert snapshot.contract_schema == 4
+    assert snapshot.detail_references[row.source_id] == "private-reference"
     assert row.source_id == "agentctl:111"
     assert row.project == "lynchpin"
     assert row.operation == "check"

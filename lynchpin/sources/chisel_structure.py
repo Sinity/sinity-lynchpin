@@ -24,7 +24,7 @@ from .chisel_cache import copy_file
 
 from .chisel_inventory import CapturedInventory
 
-_TOOL_VERSION = "chisel-structure-v3"
+_TOOL_VERSION = "chisel-structure-v4"
 _SOURCE_ROLES = {"implementation", "tests", "tooling"}
 _SOURCE_EXTENSIONS = {".py": "python", ".rs": "rust"}
 _SYMBOL_CACHE_VERSION = _TOOL_VERSION
@@ -279,11 +279,18 @@ def build_structure(
         if record["reference_class"] == "unresolved" and record["requested"].split(".")[0] in declared:
             record["reference_class"] = "declared_third_party"
             record["resolution_caveat"] = "distribution/module spelling match; imports may use another name"
-    projections = {"all_static_imports": import_edges,
-                   "excluding_type_only": [e for e in import_edges if not e.get("type_only")],
-                   "module_initialization": [e for e in import_edges if not e.get("type_only") and not e.get("deferred")]}
-    for name, projected in projections.items():
-        _write_jsonl(out / f"{name}.jsonl", projected)
+    projections = {
+        "all_static_imports": {"predicate": "kind == python_import", "count": len(import_edges)},
+        "excluding_type_only": {"predicate": "kind == python_import and not type_only",
+                                "count": sum(not edge.get("type_only") for edge in import_edges)},
+        "module_initialization": {"predicate": "kind == python_import and not type_only and not deferred",
+                                  "count": sum(not edge.get("type_only") and not edge.get("deferred") for edge in import_edges)},
+    }
+    (out / "graph_projections.json").write_text(json.dumps({
+        "schema_version": 1, "snapshot_id": snapshot_id,
+        "edge_dataset": "dependency_edges.jsonl", "projections": projections,
+        "caveat": "Static import projections preserve conditions; none is an execution graph.",
+    }, indent=2, sort_keys=True) + "\n")
     graph_nodes = _graph_node_rows(
         edges, (module for module in modules.values() if module), project, snapshot_id
     )
