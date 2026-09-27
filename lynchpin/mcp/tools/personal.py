@@ -702,28 +702,145 @@ def _keylog_text_content_from_payload(
     }
 
 
-def bookmarks_search(query: str = "", limit: int = 50) -> list[dict[str, Any]]:
-    """Search canonical browser bookmarks by title, URL, domain, or folder.
+def bookmarks_search(
+    query: str = "",
+    limit: int = 50,
+    *,
+    source: str = "all",
+    offset: int = 0,
+    expected_source_revision: str | None = None,
+) -> dict[str, Any]:
+    """Page browser and Raindrop bookmarks without merging their evidence.
 
-    Query is split on whitespace; every term must appear (case-insensitive)
-    somewhere in the bookmark's title + URL + domain + folder concatenation.
-    Empty query returns the first ``limit`` rows.
+    Results use source order, then each canonical file's row order. The
+    revision binds continuation to those files so a refreshed export cannot
+    silently move an offset onto different evidence.
     """
+    import hashlib
+    import json
     from dataclasses import asdict
+    from urllib.parse import urlsplit
 
-    from lynchpin.sources.bookmarks import iter_bookmarks
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.sources.bookmarks import bookmarks_path, iter_bookmarks
+    from lynchpin.sources.exports_raindrop import (
+        iter_raindrop_bookmarks,
+        raindrop_bookmarks_path,
+    )
 
-    _ensure_source_materialized_for_read("browser_bookmarks")
-    terms = [t for t in query.lower().split() if t]
+    if source not in {"all", "browser", "raindrop"}:
+        raise ValueError("bookmark source must be all, browser, or raindrop")
+    if not 1 <= limit <= 1000 or offset < 0:
+        raise ValueError(
+            "bookmark limit must be 1..1000 and offset must be nonnegative"
+        )
+
+    selected = ("browser", "raindrop") if source == "all" else (source,)
+    paths = {"browser": bookmarks_path(), "raindrop": raindrop_bookmarks_path()}
+    owners = {"browser": "browser_bookmarks", "raindrop": "raindrop"}
+    coverage: dict[str, dict[str, Any]] = {}
+    for name in selected:
+        try:
+            result = _ensure_source_materialized_for_read(owners[name])
+            if not paths[name].is_file():
+                raise FileNotFoundError(f"canonical {name} bookmarks are missing")
+            coverage[name] = {
+                "available": True,
+                "status": result.get("status", "unknown"),
+            }
+        except (MaterializationError, OSError, ValueError) as exc:
+            coverage[name] = {
+                "available": False,
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+
+    def revisions() -> list[tuple[str, int, int, int, int, int] | tuple[str, None]]:
+        values: list[tuple[str, int, int, int, int, int] | tuple[str, None]] = []
+        for name in selected:
+            if not coverage[name]["available"]:
+                values.append((name, None))
+                continue
+            stat = paths[name].stat()
+            values.append(
+                (
+                    name,
+                    stat.st_dev,
+                    stat.st_ino,
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    stat.st_ctime_ns,
+                )
+            )
+        return values
+
+    before = revisions()
+    source_revision = hashlib.sha256(
+        json.dumps((query.casefold(), before), separators=(",", ":")).encode()
+    ).hexdigest()
+    if (
+        expected_source_revision is not None
+        and expected_source_revision != source_revision
+    ):
+        raise ValueError("bookmark source revision changed; restart at offset 0")
+
+    terms = [term for term in query.casefold().split() if term]
+
+    def matches(row: dict[str, Any]) -> bool:
+        fields = ("title", "url", "domain", "folder", "note", "excerpt")
+        haystack = " ".join(str(row.get(field) or "") for field in fields).casefold()
+        return all(term in haystack for term in terms)
+
+    def records():
+        if coverage.get("browser", {}).get("available"):
+            for bookmark in iter_bookmarks(ensure=False):
+                row = _json_safe(asdict(bookmark))
+                row["source_population"] = "browser"
+                yield row
+        if coverage.get("raindrop", {}).get("available"):
+            for bookmark in iter_raindrop_bookmarks(ensure=False):
+                row = _json_safe(asdict(bookmark))
+                row.pop("raw", None)
+                row["source_population"] = "raindrop"
+                row["source"] = "raindrop"
+                row["bookmark_id"] = str(bookmark.id)
+                try:
+                    row["domain"] = urlsplit(bookmark.url).hostname or ""
+                except ValueError:
+                    row["domain"] = ""
+                row["source_path"] = str(paths["raindrop"])
+                yield row
+
     rows: list[dict[str, Any]] = []
-    for row in iter_bookmarks(ensure=False):
-        haystack = " ".join([row.title, row.url, row.domain, row.folder]).lower()
-        if terms and not all(t in haystack for t in terms):
+    seen = 0
+    has_more = False
+    for row in records():
+        if not matches(row):
             continue
-        rows.append(_json_safe(asdict(row)))
+        if seen < offset:
+            seen += 1
+            continue
         if len(rows) >= limit:
+            has_more = True
             break
-    return rows
+        rows.append(row)
+        seen += 1
+    if revisions() != before:
+        raise ValueError(
+            "bookmark source revision changed during read; restart at offset 0"
+        )
+    return {
+        "rows": rows,
+        "source": source,
+        "source_revision": source_revision,
+        "coverage": coverage,
+        "complete": all(entry["available"] for entry in coverage.values()),
+        "coverage_scope": "selected canonical files; acquisition freshness is separate",
+        "offset": offset,
+        "limit": limit,
+        "returned_count": len(rows),
+        "has_more": has_more,
+        "next_offset": offset + len(rows) if has_more else None,
+    }
 
 
 def bookmark_daily(start: str, end: str) -> list[dict[str, Any]]:
@@ -1547,11 +1664,24 @@ def bookmarks(
     limit: int = 50,
     start: str | None = None,
     end: str | None = None,
+    source: str = "all",
+    offset: int = 0,
+    expected_source_revision: str | None = None,
 ) -> Any:
-    """Bookmark data. view: search (search bookmarks by query), daily (daily bookmark activity for a date range; requires start and end)."""
+    """Bookmark data. Search pages selected browser/Raindrop sources; daily summarizes browser activity."""
     if view == "search":
-        return bookmarks_search(query=query, limit=limit)
+        if start is not None or end is not None:
+            raise ValueError("start and end apply only to bookmark daily view")
+        return bookmarks_search(
+            query=query,
+            limit=limit,
+            source=source,
+            offset=offset,
+            expected_source_revision=expected_source_revision,
+        )
     if view == "daily":
+        if source != "all" or offset or expected_source_revision is not None:
+            raise ValueError("source and continuation apply only to bookmark search")
         if start is None or end is None:
             return {"error": "start and end are required for view=daily"}
         return bookmark_daily(start=start, end=end)

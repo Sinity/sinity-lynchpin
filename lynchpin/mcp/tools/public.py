@@ -889,12 +889,16 @@ def lynchpin_personal(
     source: str | None = None,
     query: str = "",
     limit: int = 100,
+    offset: int = 0,
+    expected_source_revision: str | None = None,
 ) -> dict[str, Any]:
     """Personal router. action: daily, activity, phone, health, communications, web, bookmarks, media, operator, reports."""
     if invalid := _mark_route("lynchpin_personal", action):
         return invalid
     if invalid := _require_view("lynchpin_personal", action, view):
         return invalid
+    if action != "bookmarks" and (offset or expected_source_revision is not None):
+        return _error("invalid_argument", "offset and expected_source_revision apply only to bookmark search")
     if action == "daily":
         return _internal_call("lynchpin.mcp.tools.personal", "personal_daily_signals", start=start, end=end, source=source, limit=limit)
     if action == "activity":
@@ -929,7 +933,13 @@ def lynchpin_personal(
             return _error("invalid_argument", "query and limit apply only to the takeout view")
         return _internal_call("lynchpin.mcp.tools.personal", "web", view=view or "daily", start=start, end=end)
     if action == "bookmarks":
-        return _internal_call("lynchpin.mcp.tools.personal", "bookmarks", view=view or "search", query=query, start=start, end=end, limit=limit)
+        if view == "daily" and (source is not None or offset or expected_source_revision is not None):
+            return _error("invalid_argument", "source and continuation apply only to bookmark search")
+        return _internal_call(
+            "lynchpin.mcp.tools.personal", "bookmarks", view=view or "search",
+            query=query, start=start, end=end, limit=limit, source=source or "all",
+            offset=offset, expected_source_revision=expected_source_revision,
+        )
     if action == "media":
         return _internal_call("lynchpin.mcp.tools.personal", "spotify_daily", start=start, end=end)
     if action == "operator":

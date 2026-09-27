@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -1433,3 +1434,125 @@ class TestActivitySemanticDaily:
             )
 
         assert result == []
+
+def test_bookmark_search_pages_browser_and_raindrop_without_losing_late_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import csv
+    import json
+
+    from lynchpin.mcp.tools import personal, public
+    from lynchpin.sources import bookmarks as browser_source
+    from lynchpin.sources import exports_raindrop as raindrop_source
+
+    browser_path = tmp_path / "browser.ndjson"
+    browser_path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "bookmark_id": str(index),
+                    "source": "chrome",
+                    "title": f"Browser {index}",
+                    "url": f"https://browser.example/{index}",
+                }
+            )
+            for index in range(2)
+        )
+        + "\n"
+    )
+    raindrop_path = tmp_path / "raindrop.csv"
+    with raindrop_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=("id", "title", "url", "folder"))
+        writer.writeheader()
+        for index in range(10_001):
+            writer.writerow(
+                {
+                    "id": index + 1,
+                    "title": "unique late bookmark"
+                    if index == 10_000
+                    else f"Raindrop {index}",
+                    "url": f"https://raindrop.example/{index}",
+                    "folder": "saved",
+                }
+            )
+
+    monkeypatch.setattr(
+        browser_source, "bookmarks_path", lambda root=None: browser_path
+    )
+    monkeypatch.setattr(
+        raindrop_source, "raindrop_bookmarks_path", lambda: raindrop_path
+    )
+    monkeypatch.setattr(
+        personal,
+        "_ensure_source_materialized_for_read",
+        lambda _name: {"status": "ready"},
+    )
+
+    first = public.lynchpin_personal(action="bookmarks", limit=2)
+    assert first["ok"]
+    assert [row["source_population"] for row in first["data"]["rows"]] == [
+        "browser",
+        "browser",
+    ]
+    assert first["data"]["has_more"] is True
+    revision = first["data"]["source_revision"]
+    next_page = public.lynchpin_personal(
+        action="bookmarks", limit=2, offset=2, expected_source_revision=revision
+    )
+    assert next_page["ok"]
+    assert [row["bookmark_id"] for row in next_page["data"]["rows"]] == ["1", "2"]
+    assert all(
+        row["source_population"] == "raindrop" for row in next_page["data"]["rows"]
+    )
+    late = public.lynchpin_personal(
+        action="bookmarks", query="unique late", source="all", limit=2
+    )
+    assert late["ok"] and late["data"]["complete"] is True
+    assert [row["bookmark_id"] for row in late["data"]["rows"]] == ["10001"]
+    tail = public.lynchpin_personal(
+        action="bookmarks", source="raindrop", offset=10_000, limit=2
+    )
+    assert tail["ok"] and [row["bookmark_id"] for row in tail["data"]["rows"]] == [
+        "10001"
+    ]
+    with raindrop_path.open("a") as handle:
+        handle.write("10002,New,https://raindrop.example/new,saved\n")
+    stale = public.lynchpin_personal(
+        action="bookmarks", limit=2, offset=2, expected_source_revision=revision
+    )
+    assert stale["ok"] is False
+
+
+def test_bookmark_search_reports_unavailable_source_instead_of_empty_complete(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import json
+
+    from lynchpin.mcp.tools import personal
+    from lynchpin.sources import bookmarks as browser_source
+    from lynchpin.sources import exports_raindrop as raindrop_source
+
+    browser_path = tmp_path / "browser.ndjson"
+    browser_path.write_text(
+        json.dumps(
+            {"bookmark_id": "one", "title": "Known", "url": "https://example.test"}
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(
+        browser_source, "bookmarks_path", lambda root=None: browser_path
+    )
+    monkeypatch.setattr(
+        raindrop_source, "raindrop_bookmarks_path", lambda: tmp_path / "missing.csv"
+    )
+    monkeypatch.setattr(
+        personal,
+        "_ensure_source_materialized_for_read",
+        lambda _name: {"status": "ready"},
+    )
+
+    page = personal.bookmarks_search(query="Known")
+    assert [row["bookmark_id"] for row in page["rows"]] == ["one"]
+    assert page["complete"] is False
+    assert page["coverage"]["browser"]["available"] is True
+    assert page["coverage"]["raindrop"]["available"] is False

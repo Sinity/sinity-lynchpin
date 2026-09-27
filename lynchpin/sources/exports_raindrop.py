@@ -19,6 +19,7 @@ __all__ = [
     "RaindropBookmark",
     "RaindropExport",
     "RaindropDayActivity",
+    "raindrop_bookmarks_path",
     "list_raindrop_exports",
     "iter_raindrop_bookmarks",
     "iter_raindrop_bookmarks_by_name",
@@ -59,6 +60,11 @@ class RaindropDayActivity:
     unique_tags: int
 
 
+def raindrop_bookmarks_path() -> Path:
+    """Return the canonical, materialized Raindrop bookmark file."""
+    return get_config().accounts_root / "raindrop/processed/bookmarks.csv"
+
+
 def list_raindrop_exports(root: Optional[Path] = None) -> list[RaindropExport]:
     cfg = get_config()
     base = Path(root) if root else cfg.raindrop_dir
@@ -87,8 +93,7 @@ def iter_raindrop_bookmarks(
     ensure: bool = True,
 ) -> Iterator[RaindropBookmark]:
     """Iterate Raindrop bookmarks, optionally bounded by half-open logical dates."""
-    cfg = get_config()
-    canonical = cfg.accounts_root / "raindrop/processed/bookmarks.csv"
+    canonical = raindrop_bookmarks_path()
     if csv_path is None:
         if ensure:
             from ..materialization import ensure_materialized
