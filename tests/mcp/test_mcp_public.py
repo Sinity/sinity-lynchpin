@@ -159,6 +159,47 @@ def test_lynchpin_query_rejects_mismatched_expected_refresh(
     }
 
 
+@pytest.mark.parametrize("mode", ["sql", "dsl"])
+def test_lynchpin_query_pins_publication_even_when_promotion_is_unchanged(
+    mode: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = setup_substrate(tmp_path, monkeypatch)
+    import duckdb
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO substrate_promotion_run "
+            "(refresh_id, status, started_at, finished_at) VALUES "
+            "('same-promotion', 'ok', TIMESTAMPTZ '2026-01-01 00:00:00+00', "
+            "TIMESTAMPTZ '2026-01-01 00:01:00+00')"
+        )
+        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_id', 'new-publication')")
+        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_at', '2026-01-01T00:02:00+00:00')")
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.substrate.ensure_substrate_materialized_for_read",
+        lambda **_kwargs: {"status": "ready"},
+    )
+    from lynchpin.mcp.tools.public import lynchpin_query
+
+    query: dict[str, object] = (
+        {"mode": "sql", "sql": "SELECT 1 AS value"}
+        if mode == "sql" else {"mode": "dsl", "table": "commit_fact", "select": ["sha"]}
+    )
+    mismatch = lynchpin_query({
+        **query, "expected_refresh_id": "same-promotion",
+        "expected_publication_id": "old-publication",
+    })
+    assert mismatch["ok"] is False
+    assert mismatch["error_code"] == "publication_mismatch"
+    assert mismatch["details"] == {
+        "expected_publication_id": "old-publication",
+        "actual_publication_id": "new-publication",
+    }
+    matched = lynchpin_query({**query, "expected_publication_id": "new-publication"})
+    assert matched["ok"] is True
+    assert matched["data"]["serving"]["publication_id"] == "new-publication"
+
+
 def test_lynchpin_project_routes_repo_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     setup_substrate(tmp_path, monkeypatch)
 

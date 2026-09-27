@@ -359,6 +359,7 @@ def _query_sql(
     parameters: list[Any] | None = None,
     max_rows: int = 1000,
     expected_refresh_id: str | None = None,
+    expected_publication_id: str | None = None,
 ) -> dict[str, Any]:
     from lynchpin.mcp.tools.substrate import query_substrate
 
@@ -367,6 +368,7 @@ def _query_sql(
         parameters=parameters,
         max_rows=max_rows,
         expected_refresh_id=expected_refresh_id,
+        expected_publication_id=expected_publication_id,
     )
 
 
@@ -434,6 +436,7 @@ def _query_dsl(spec: dict[str, Any]) -> dict[str, Any]:
         params,
         max_rows=limit,
         expected_refresh_id=spec.get("expected_refresh_id"),
+        expected_publication_id=spec.get("expected_publication_id"),
     )
     if spec.get("explain"):
         result["sql"] = sql
@@ -531,7 +534,7 @@ def lynchpin_catalog(
 
 @app.tool(annotations=_tool_annotations("lynchpin_query"))
 def lynchpin_query(spec: dict[str, Any]) -> dict[str, Any]:
-    """Read-only DSL/SQL query; optionally pin reads with expected_refresh_id."""
+    """Read-only DSL/SQL query with optional promotion and publication pins."""
     mode = str(spec.get("mode") or "dsl")
     if invalid := _mark_route("lynchpin_query", mode):
         return invalid
@@ -540,7 +543,12 @@ def lynchpin_query(spec: dict[str, Any]) -> dict[str, Any]:
         not isinstance(expected_refresh_id, str) or not expected_refresh_id
     ):
         return _error("invalid_expected_refresh_id", "expected_refresh_id must be a non-empty string")
-    from lynchpin.mcp.tools.substrate import QueryRefreshMismatch
+    expected_publication_id = spec.get("expected_publication_id")
+    if expected_publication_id is not None and (
+        not isinstance(expected_publication_id, str) or not expected_publication_id
+    ):
+        return _error("invalid_expected_publication_id", "expected_publication_id must be a non-empty string")
+    from lynchpin.mcp.tools.substrate import QueryPublicationMismatch, QueryRefreshMismatch
 
     caveats_token = _MATERIALIZATION_CAVEATS.set([])
     try:
@@ -550,6 +558,7 @@ def lynchpin_query(spec: dict[str, Any]) -> dict[str, Any]:
                 parameters=spec.get("parameters"),
                 max_rows=int(spec.get("max_rows") or spec.get("limit") or 1000),
                 expected_refresh_id=expected_refresh_id,
+                expected_publication_id=expected_publication_id,
             )
             route = "lynchpin.mcp.tools.substrate.query_substrate"
         elif mode == "dsl":
@@ -574,6 +583,15 @@ def lynchpin_query(spec: dict[str, Any]) -> dict[str, Any]:
                 "expected_refresh_id": exc.expected_refresh_id,
                 "actual_refresh_id": exc.actual_refresh_id,
                 "serving_kind": exc.serving_kind,
+            },
+        )
+    except QueryPublicationMismatch as exc:
+        return _error(
+            "publication_mismatch",
+            str(exc),
+            details={
+                "expected_publication_id": exc.expected_publication_id,
+                "actual_publication_id": exc.actual_publication_id,
             },
         )
     except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors.

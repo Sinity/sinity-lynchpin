@@ -18,7 +18,7 @@ def test_query_substrate_select_passes(tmp_path: Path, monkeypatch: pytest.Monke
     assert result["row_count"] == 1
     assert result["rows"][0][0] == 0
     assert result["truncated"] is False
-    assert result["serving"] == {"kind": "canonical", "refresh_id": None}
+    assert result["serving"] == {"kind": "canonical", "refresh_id": None, "publication_id": None}
 
 
 def test_query_substrate_reports_served_generation_when_convergence_is_blocked(
@@ -50,7 +50,7 @@ def test_query_substrate_reports_served_generation_when_convergence_is_blocked(
     )
 
     assert result["rows"] == [["served-generation"]]
-    assert result["serving"] == {"kind": "canonical", "refresh_id": "served-generation"}
+    assert result["serving"] == {"kind": "canonical", "refresh_id": "served-generation", "publication_id": None}
 
 
 def test_query_substrate_identifies_read_snapshot_fallback(
@@ -92,7 +92,7 @@ def test_query_substrate_identifies_read_snapshot_fallback(
     result = query_substrate("SELECT 'readable' AS value")
 
     assert result["rows"] == [["readable"]]
-    assert result["serving"] == {"kind": "read_snapshot", "refresh_id": "snapshot-generation"}
+    assert result["serving"] == {"kind": "read_snapshot", "refresh_id": "snapshot-generation", "publication_id": None}
 
 
 def test_query_substrate_rejects_drop_table() -> None:

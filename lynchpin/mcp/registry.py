@@ -92,15 +92,15 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
         actions=(
             ActionSpec(
                 "dsl",
-                "Structured table/entity query with filters, ordering, limits, and optional serving-generation pinning.",
-                parameters=("entity", "table", "select", "where", "time", "order_by", "limit", "explain", "expected_refresh_id"),
+                "Structured table/entity query with filters, ordering, limits, and optional promotion or exact publication pinning.",
+                parameters=("entity", "table", "select", "where", "time", "order_by", "limit", "explain", "expected_refresh_id", "expected_publication_id"),
                 response_kind="query_result",
                 examples=({"entity": "commits", "select": ["sha", "repo"], "where": {"repo": "lynchpin"}, "limit": 20},),
             ),
             ActionSpec(
                 "sql",
-                "SELECT-only SQL query with parameters, row cap, and optional serving-generation pinning.",
-                parameters=("sql", "parameters", "max_rows", "expected_refresh_id"),
+                "SELECT-only SQL query with parameters, row cap, and optional promotion or exact publication pinning.",
+                parameters=("sql", "parameters", "max_rows", "expected_refresh_id", "expected_publication_id"),
                 response_kind="query_result",
                 examples=({"mode": "sql", "sql": "SELECT COUNT(*) AS cnt FROM commit_fact"},),
             ),

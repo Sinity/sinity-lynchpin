@@ -48,6 +48,18 @@ class QueryRefreshMismatch(Exception):
         )
 
 
+class QueryPublicationMismatch(Exception):
+    """A requested exact publication is not the selected serving publication."""
+
+    def __init__(self, *, expected_publication_id: str, actual_publication_id: str | None) -> None:
+        self.expected_publication_id = expected_publication_id
+        self.actual_publication_id = actual_publication_id
+        super().__init__(
+            "serving publication does not match the requested publication: "
+            f"expected {expected_publication_id!r}, got {actual_publication_id!r}"
+        )
+
+
 def _is_select_only(sql: str) -> bool:
     """Return True only for one DuckDB-parsed SELECT statement.
 
@@ -99,6 +111,7 @@ def query_substrate(
     parameters: list[Any] | None = None,
     max_rows: int = 1000,
     expected_refresh_id: str | None = None,
+    expected_publication_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute a read-only SELECT against the lynchpin substrate.
 
@@ -108,8 +121,9 @@ def query_substrate(
 
     The connection is opened with ``read_only=True`` so DuckDB enforces the
     constraint at the engine level in addition to the parser check.
-    When ``expected_refresh_id`` is set, the query runs only if that ID matches
-    the serving generation selected under the publication lock.
+    ``expected_refresh_id`` checks the logical promotion. For an exact serving
+    content pin, ``expected_publication_id`` checks the selected publication
+    under the same lock.
 
     Returns:
         {
@@ -117,7 +131,8 @@ def query_substrate(
             "rows": [[val, ...], ...],
             "row_count": N,
             "truncated": bool,
-            "serving": {"kind": "canonical | read_snapshot", "refresh_id": str | None},
+            "serving": {"kind": "canonical | read_snapshot", "refresh_id": str | None,
+                        "publication_id": str | None},
         }
 
     max_rows is capped at 10 000.
@@ -149,6 +164,11 @@ def query_substrate(
                 actual_refresh_id=refresh_id,
                 serving_kind=serving_kind,
             )
+        if expected_publication_id is not None and expected_publication_id != serving.publication_id:
+            raise QueryPublicationMismatch(
+                expected_publication_id=expected_publication_id,
+                actual_publication_id=serving.publication_id,
+            )
         result = conn.execute(sql, params)
         columns = [desc[0] for desc in result.description]
         # Fetch one extra row to detect truncation without a separate COUNT query
@@ -162,7 +182,8 @@ def query_substrate(
         "rows": [_json_safe(list(row)) for row in rows],
         "row_count": len(rows),
         "truncated": truncated,
-        "serving": {"kind": serving_kind, "refresh_id": refresh_id},
+        "serving": {"kind": serving_kind, "refresh_id": refresh_id,
+                    "publication_id": serving.publication_id},
     }
 
 
@@ -1083,7 +1104,7 @@ def ai_attribution_backfill(
     now_iso = _dt.now(_tz.utc).isoformat()
 
     if not dry_run:
-        with candidate_generation():
+        with candidate_generation(changed_products=("commit_fact",)):
             with connect() as conn:
                 for sha, repo, subject, cnt, kinds, event_ids in matches:
                     attribution = _json.dumps({
@@ -1184,7 +1205,7 @@ def substrate_prune(
             "dry_run": True,
         }
 
-    with candidate_generation():
+    with candidate_generation(changed_products=("evidence_graph_build", "evidence_node", "evidence_edge")):
         with connect() as conn:
             for rid in to_delete:
                 conn.execute("DELETE FROM evidence_edge WHERE refresh_id = ?", [rid])
