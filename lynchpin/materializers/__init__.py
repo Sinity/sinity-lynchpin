@@ -1,6 +1,6 @@
 """Typed, serializable convergence planning and local execution."""
 
-from .executor import ClosedHandlerRegistry, HandlerDefinition, LocalExecutor, StepContext, validate_step_contract
+from .executor import ClosedHandlerRegistry, HandlerDefinition, StepContext, validate_step_contract
 from .partition_store import ArtifactStore, ProductPartitionKey, deterministic_input_digest
 from .plan import ConvergencePlanner, validate_acyclic
 from .specs import (
@@ -26,7 +26,6 @@ __all__ = [
     "Dependency",
     "ClosedHandlerRegistry",
     "HandlerDefinition",
-    "LocalExecutor",
     "PartitionRef",
     "PlanStep",
     "ProductSpec",

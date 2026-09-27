@@ -161,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         plan = [step for step in plan if step.product in selected]
     _progress(f"plan ready: {len(plan)} step(s)")
     dependency_model = materializer_dependency_model(plan)
-    writer_waves = materializer_execution_waves(dependency_model)
+    planned_writer_waves = materializer_execution_waves(dependency_model)
     if args.plan_json:
         sys.stdout.write(json.dumps([step.to_json() for step in plan], indent=2, sort_keys=True) + "\n")
         return 0
@@ -214,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_measurement,
                 metrics=(
                     {"name": "completed_materializer_steps", "unit": "steps", "value": len(completed_steps)},
-                    {"name": "materializer_writer_waves", "unit": "waves", "value": len(writer_waves)},
+                    {"name": "planned_materializer_writer_waves", "unit": "waves", "value": len(planned_writer_waves)},
                 ),
             )
             _progress("canonical materialization complete")

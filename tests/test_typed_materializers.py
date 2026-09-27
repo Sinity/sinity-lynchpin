@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
-import time
+from contextvars import ContextVar
 from datetime import date
 from types import SimpleNamespace
 
@@ -14,7 +14,6 @@ from lynchpin.materializers import (
     ConvergencePlanner,
     ConvergenceRequest,
     HandlerDefinition,
-    LocalExecutor,
     ProductSpec,
     ResourceHints,
     validate_step_contract,
@@ -44,6 +43,19 @@ def planned(*names: ProductSpec) -> ConvergencePlan:
 
 def registry(*handlers):
     return ClosedHandlerRegistry({identity: HandlerDefinition(identity, fn) for identity, fn in handlers})
+
+
+def production_harness(monkeypatch, handlers, receipts):
+    from lynchpin.materializers import production
+
+    monkeypatch.setattr(production, "handler_registry", lambda: registry(*handlers))
+    monkeypatch.setattr(production, "_audit", lambda: SimpleNamespace(
+        _record_materialization_step=lambda _refresh, product, status, *_args, **_kwargs: receipts.append((product, status)),
+        _int_or_none=lambda value: value,
+        _window_payload=lambda value: [item.isoformat() for item in value] if value else None,
+        _PRODUCT_REFRESHED_AT={},
+        monotonic=lambda: 1.0,
+    ))
 
 
 def test_plan_round_trip_and_digest_are_deterministic() -> None:
@@ -79,38 +91,85 @@ def test_personal_signals_plan_reconverges_communications_first() -> None:
     assert products.index("communications") < products.index("personal_daily_signals")
 
 
-def test_independent_steps_run_in_parallel() -> None:
+def test_production_starts_dependent_before_unrelated_slow_step_finishes(monkeypatch) -> None:
+    from lynchpin.materializers import production
+
     entered: list[str] = []
-    lock = threading.Lock()
+    child_started = threading.Event()
+    context_value = ContextVar("materialization_test_context", default="missing")
+    observed: list[str] = []
 
     def work(context):
+        entered.append(context.step.product)
+        observed.append(context_value.get())
+        if context.step.product == "slow":
+            assert child_started.wait(1), "dependent waited for unrelated work"
+        if context.step.product == "child":
+            assert context.dependency_results["parent"].status == "succeeded"
+            child_started.set()
+
+    receipts = []
+    production_harness(monkeypatch, [(f"test:{name}", work) for name in ("parent", "slow", "child")], receipts)
+    plan = ConvergencePlanner((spec("parent"), spec("slow"), spec("child", dependencies=("parent",)))).plan(ConvergenceRequest(("child", "slow")))
+    steps = tuple(replace_step(step, action="materialize") for step in plan.steps)
+    token = context_value.set("candidate")
+    try:
+        assert {step.product for step in production.run_materialization_plan(steps)} == {"parent", "slow", "child"}
+    finally:
+        context_value.reset(token)
+    assert set(entered) == {"parent", "slow", "child"}
+    assert observed == ["candidate"] * 3
+
+
+def test_production_exclusive_writers_do_not_overlap(monkeypatch) -> None:
+    from lynchpin.materializers import production
+    from lynchpin.materializers.specs import ResourceHints
+
+    active = 0
+    overlaps = []
+    lock = threading.Lock()
+
+    def work(_context):
+        nonlocal active
         with lock:
-            entered.append(context.step.product)
-        time.sleep(0.05)
+            active += 1
+            overlaps.append(active)
+        threading.Event().wait(0.02)
+        with lock:
+            active -= 1
 
-    handlers = [(f"test:{name}", work) for name in ("a", "b")]
+    receipts = []
+    production_harness(monkeypatch, [("test:a", work), ("test:b", work)], receipts)
     plan = ConvergencePlanner((spec("a"), spec("b"))).plan(ConvergenceRequest(("a", "b")))
-    started = time.monotonic()
-    results = LocalExecutor(registry(*handlers), max_workers=2).execute(plan)
-    elapsed = time.monotonic() - started
-    assert {name: result.status for name, result in results.items()} == {"a": "succeeded", "b": "succeeded"}
-    assert set(entered) == {"a", "b"}
-    assert elapsed < 0.09
+    steps = tuple(replace_step(step, action="materialize", resources=ResourceHints(exclusive=("shared-writer",))) for step in plan.steps)
+
+    assert {step.product for step in production.run_materialization_plan(steps)} == {"a", "b"}
+    assert overlaps == [1, 1]
 
 
-def test_failure_propagates_as_explicit_skip_and_reuse_is_reported() -> None:
+def test_production_failure_skips_dependent_and_reports_reuse(monkeypatch) -> None:
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.materializers import production
+
+    calls = []
+    receipts = []
+
     def broken(_context):
         raise RuntimeError("broken")
 
     plan = planned(spec("base"), spec("child", dependencies=("base",)))
-    results = LocalExecutor(registry(("test:base", broken), ("test:child", lambda _context: None))).execute(plan)
-    assert results["base"].status == "failed"
-    assert results["child"].status == "skipped"
-    assert results["child"].reason == "dependency base failed"
+    steps = tuple(replace_step(step, action="materialize") for step in plan.steps)
+    production_harness(monkeypatch, [("test:base", broken), ("test:child", lambda _context: calls.append("child"))], receipts)
+    with pytest.raises(MaterializationError, match="base, child"):
+        production.run_materialization_plan(steps, continue_on_error=True)
+    assert calls == []
+    assert ("base", "error") in receipts
+    assert ("child", "skipped") in receipts
 
-    reused = LocalExecutor(registry(("test:base", lambda _context: None), ("test:child", lambda _context: None))).execute(plan, reuse={"base"})
-    assert reused["base"].status == "reused"
-    assert reused["child"].status == "succeeded"
+    production_harness(monkeypatch, [("test:child", lambda context: calls.append(context.dependency_results["base"].status))], receipts)
+    reused = (replace_step(steps[0], action="skip", status="ready"), steps[1])
+    assert production.run_materialization_plan(reused) == [steps[1]]
+    assert calls == ["reused"]
 
 
 def test_serialized_plan_rejects_arbitrary_callable() -> None:
@@ -316,9 +375,13 @@ def test_production_consumers_follow_their_canonical_inputs() -> None:
             assert [[step.product for step in wave] for wave in waves] == [[producer], [consumer]]
 
 
-def test_sleep_productivity_is_skipped_when_activitywatch_derived_fails() -> None:
+def test_sleep_productivity_is_skipped_when_activitywatch_derived_fails(monkeypatch) -> None:
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.materializers import production
+
     plan = ConvergencePlanner(PRODUCT_CATALOG.values()).plan(ConvergenceRequest(("sleep_productivity",)))
     calls: list[str] = []
+    receipts = []
 
     def handler(context):
         product = context.step.product
@@ -326,13 +389,13 @@ def test_sleep_productivity_is_skipped_when_activitywatch_derived_fails() -> Non
         if product == "activitywatch_derived":
             raise RuntimeError("synthetic ActivityWatch failure")
 
-    handlers = registry(
-        *((PRODUCT_CATALOG[step.product].handler, handler) for step in plan.steps)
-    )
-    results = LocalExecutor(handlers).execute(plan)
+    production_harness(monkeypatch, [(PRODUCT_CATALOG[step.product].handler, handler) for step in plan.steps], receipts)
+    steps = tuple(replace_step(step, action="materialize") for step in plan.steps)
+    with pytest.raises(MaterializationError, match="activitywatch_derived"):
+        production.run_materialization_plan(steps, continue_on_error=True)
 
-    assert results["activitywatch_derived"].status == "failed"
-    assert results["sleep_productivity"].status == "skipped"
+    assert ("activitywatch_derived", "error") in receipts
+    assert ("sleep_productivity", "skipped") in receipts
     assert "sleep_productivity" not in calls
 
 

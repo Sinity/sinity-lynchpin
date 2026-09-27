@@ -8,7 +8,7 @@ execution ordering.
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextvars import copy_context
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
@@ -17,7 +17,7 @@ from typing import Any, Iterable, Literal, TYPE_CHECKING
 
 from .catalog import PRODUCT_CATALOG, handler_registry
 from .executor import StepContext, validate_step_contract
-from .specs import PlanStep, ProductSpec
+from .specs import PlanStep, ProductSpec, StepResult
 
 if TYPE_CHECKING:
     from ..materialization import MaterializationResult
@@ -462,13 +462,18 @@ def run_materialization_plan(
     refresh_id = refresh_id or f"materialize:{datetime.now(timezone.utc).isoformat()}"
     ran: list[PlanStep] = []
     ran_lock = Lock()
-    outcomes: dict[str, str] = {
-        step.product: ("ready" if step.status == "ready" else "unavailable")
+    outcomes: dict[str, StepResult] = {
+        step.product: StepResult(
+            step.product,
+            "reused" if step.status == "ready" else "unavailable",
+            step.reason,
+            step.output if step.status == "ready" else None,
+        )
         for step in steps
         if step.action != "materialize"
     }
 
-    def run_one(step: PlanStep) -> str:
+    def run_one(step: PlanStep, dependencies: dict[str, StepResult]) -> StepResult:
         definition = registry.resolve(step.spec.handler)
         validate_step_contract(step, definition)
         effective_window = step.effective_window if step.effective_window is not None else window
@@ -478,7 +483,7 @@ def run_materialization_plan(
             value = definition.handler(
                 StepContext(
                     step,
-                    {},
+                    dependencies,
                     {"refresh_id": refresh_id, "window": effective_window, "full": full},
                 )
             )
@@ -493,7 +498,7 @@ def run_materialization_plan(
             )
             if not continue_on_error:
                 raise
-            return "error"
+            return StepResult(step.product, "failed", "handler raised", error=f"{type(exc).__name__}: {exc}")
         row_count = audit._int_or_none(value.get("row_count")) if isinstance(value, dict) else None
         audit._record_materialization_step(
             refresh_id,
@@ -507,35 +512,47 @@ def run_materialization_plan(
         audit._PRODUCT_REFRESHED_AT[step.product] = audit.monotonic()
         with ran_lock:
             ran.append(step)
-        return "ok"
+        return StepResult(step.product, "succeeded", "materialized", step.output)
 
-    for wave in materializer_execution_waves(selected):
-        runnable: list[PlanStep] = []
-        for step in wave:
-            blocked = next(
-                (dependency for dependency in step.dependencies if outcomes.get(dependency) in {"error", "skipped", "unavailable"}),
-                None,
-            )
-            if blocked is not None:
-                outcomes[step.product] = "skipped"
-                audit._record_materialization_step(
-                    refresh_id,
-                    step.product,
-                    "skipped",
-                    f"dependency {blocked} {outcomes[blocked]}",
-                    finished_at=datetime.now(timezone.utc),
+    pending = {step.product: step for step in selected}
+    running: dict[Future[StepResult], PlanStep] = {}
+    with ThreadPoolExecutor(max_workers=max(1, len(selected)), thread_name_prefix="lynchpin-materialize") as executor:
+        while pending or running:
+            progressed = False
+            occupied = set().union(*(step.resources.exclusive for step in running.values()))
+            active_products = {step.product for step in running.values()}
+            for product, step in sorted(tuple(pending.items())):
+                if any(dependency in pending or dependency in active_products for dependency in step.dependencies):
+                    continue
+                blocked = next(
+                    (dependency for dependency in step.dependencies if dependency in outcomes and outcomes[dependency].status in {"failed", "skipped", "unavailable"}),
+                    None,
                 )
-            else:
-                runnable.append(step)
-        if len(runnable) == 1:
-            outcomes[runnable[0].product] = run_one(runnable[0])
-        else:
-            if runnable:
-                with ThreadPoolExecutor(max_workers=len(runnable), thread_name_prefix="lynchpin-materialize") as executor:
-                    futures = {executor.submit(copy_context().run, run_one, step): step.product for step in runnable}
-                    for future, product in futures.items():
-                        outcomes[product] = future.result()
-    failed = sorted(product for product, outcome in outcomes.items() if outcome in {"error", "skipped"})
+                if blocked is not None:
+                    reason = f"dependency {blocked} {outcomes[blocked].status}"
+                    outcomes[product] = StepResult(product, "skipped", reason)
+                    audit._record_materialization_step(
+                        refresh_id, product, "skipped", reason, finished_at=datetime.now(timezone.utc),
+                    )
+                elif occupied.isdisjoint(step.resources.exclusive):
+                    dependencies = {name: outcomes[name] for name in step.dependencies if name in outcomes}
+                    future = executor.submit(copy_context().run, run_one, step, dependencies)
+                    running[future] = step
+                    active_products.add(product)
+                    occupied.update(step.resources.exclusive)
+                else:
+                    continue
+                pending.pop(product)
+                progressed = True
+            if progressed:
+                continue
+            if not running:
+                raise ValueError(f"materialization dependency cycle or unresolved producer: {', '.join(sorted(pending))}")
+            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            for future in done:
+                step = running.pop(future)
+                outcomes[step.product] = future.result()
+    failed = sorted(product for product, outcome in outcomes.items() if outcome.status in {"failed", "skipped"})
     if failed:
         from ..core.errors import MaterializationError
 
