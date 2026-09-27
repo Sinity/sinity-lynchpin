@@ -10,7 +10,12 @@ _DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "activitywatch_event_index": ("activitywatch",),
     "activitywatch_derived": ("activitywatch", "activitywatch_event_index"),
     "activity_content": ("activitywatch_derived", "title_metadata"),
-    "personal_daily_signals": ("activity_content", "activitywatch_derived", "title_metadata"),
+    "personal_daily_signals": (
+        "activity_content",
+        "activitywatch_derived",
+        "title_metadata",
+        "communications",
+    ),
     "temporal_signals": ("activitywatch_derived",),
 }
 _CANONICAL_ONLY = frozenset(

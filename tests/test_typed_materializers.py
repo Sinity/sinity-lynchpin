@@ -67,6 +67,17 @@ def test_cycle_rejected_and_dependency_closure_is_explicit() -> None:
     assert [step.product for step in non_alphabetic.steps] == ["z-base", "a-target"]
 
 
+def test_personal_signals_plan_reconverges_communications_first() -> None:
+    plan = ConvergencePlanner(PRODUCT_CATALOG.values()).plan(
+        ConvergenceRequest(
+            ("personal_daily_signals",),
+            (date(2026, 1, 1), date(2026, 1, 3)),
+        )
+    )
+    products = [step.product for step in plan.steps]
+    assert products.index("communications") < products.index("personal_daily_signals")
+
+
 def test_independent_steps_run_in_parallel() -> None:
     entered: list[str] = []
     lock = threading.Lock()

@@ -1,6 +1,6 @@
 import csv
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from lynchpin.ingest.exports_materialize import (
@@ -81,6 +81,106 @@ def test_communications_materialize_includes_themotte(tmp_path, monkeypatch) -> 
     assert report["sources"] == ["themotte"]
     assert [row["raw_kind"] for row in rows] == ["themotte_private_message", "themotte_notification"]
     assert rows[0]["direction"] == "inbound"
+
+
+def test_communications_identity_uses_full_semantics_and_daily_counts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    from lynchpin.ingest import communications_materialize
+    from lynchpin.sources.communications import daily_communication_activity
+
+    accounts = tmp_path / "accounts"
+    messenger_path = accounts / "facebook-messenger/processed/canonical/messages.ndjson"
+    messenger_path.parent.mkdir(parents=True)
+    messenger_path.write_text("fixture\n", encoding="utf-8")
+    output = tmp_path / "communication_events.ndjson"
+    manifest = tmp_path / "communication_events.manifest.json"
+    cfg = SimpleNamespace(
+        accounts_root=accounts,
+        teams_root=tmp_path / "teams",
+        themotte_root=tmp_path / "themotte",
+        themotte_username="operator",
+    )
+
+    def message(*, day: int, **changes):
+        values = {
+            "thread_name": "conversation",
+            "participants": ["sender", "recipient"],
+            "sender": "sender",
+            "timestamp": datetime(2026, 2, day, 10, tzinfo=timezone.utc),
+            "text": "",
+            "kind": "message",
+            "media_count": 0,
+            "source": f"/raw/{day}/default",
+        }
+        values.update(changes)
+        return SimpleNamespace(**values)
+
+    long_prefix = "x" * 240
+    messages = [
+        message(day=1, text=long_prefix + " alpha", source="/raw/long/alpha"),
+        message(
+            day=1,
+            text=long_prefix + " alpha",
+            timestamp=datetime(2026, 2, 1, 12, tzinfo=timezone(timedelta(hours=2))),
+            participants=["recipient", "sender"],
+            source="/raw/long/duplicate",
+        ),
+        message(day=1, text=long_prefix + " alpha", source="/raw/long/raw-path-only"),
+        message(day=1, text=long_prefix + " bravo", source="/raw/long/bravo"),
+        message(day=5, text="timestamp identity", timestamp=None, source="/raw/timestamp/null"),
+        message(day=5, text="timestamp identity", source="/raw/timestamp/dated"),
+        message(day=2, media_count=1, source="/raw/media/one"),
+        message(day=2, media_count=2, source="/raw/media/two"),
+        message(day=3, kind="message", source="/raw/kind/message"),
+        message(day=3, kind="reaction", source="/raw/kind/reaction"),
+        message(day=4, participants=["sender", "recipient-a"], source="/raw/recipient/a"),
+        message(day=4, participants=["sender", "recipient-b"], source="/raw/recipient/b"),
+    ]
+
+    monkeypatch.setattr(communications_materialize, "get_config", lambda: cfg)
+    monkeypatch.setattr(communications_materialize, "communication_manifest_path", lambda: manifest)
+    monkeypatch.setattr(communications_materialize, "themotte_input_files", lambda **_kwargs: ())
+    monkeypatch.setattr(
+        communications_materialize,
+        "iter_fbmessenger_messages",
+        lambda **_kwargs: iter(messages),
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.communications.communication_events_path",
+        lambda root=None: output,
+    )
+
+    result = communications_materialize.materialize_communication_events(output=output)
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    by_path = {row["raw_path"]: row for row in rows}
+    daily = daily_communication_activity(
+        start=date(2026, 2, 1),
+        end=date(2026, 2, 6),
+        ensure=False,
+    )
+
+    assert result["schema_version"] == communications_materialize.COMMUNICATION_EVENTS_SCHEMA_VERSION == 2
+    assert result["row_count"] == 10
+    assert len(rows) == len({row["event_id"] for row in rows})
+    assert by_path["/raw/long/alpha"]["event_id"] != by_path["/raw/long/bravo"]["event_id"]
+    assert "/raw/long/duplicate" not in by_path
+    assert "/raw/long/raw-path-only" not in by_path
+    assert by_path["/raw/media/one"]["event_id"] != by_path["/raw/media/two"]["event_id"]
+    assert by_path["/raw/kind/message"]["event_id"] != by_path["/raw/kind/reaction"]["event_id"]
+    assert by_path["/raw/recipient/a"]["event_id"] != by_path["/raw/recipient/b"]["event_id"]
+    assert by_path["/raw/recipient/a"]["recipients"] != by_path["/raw/recipient/b"]["recipients"]
+    assert by_path["/raw/timestamp/null"]["timestamp"] is None
+    assert by_path["/raw/timestamp/null"]["event_id"] != by_path["/raw/timestamp/dated"]["event_id"]
+    assert [(row.date.isoformat(), row.event_count) for row in daily] == [
+        ("2026-02-01", 2),
+        ("2026-02-02", 2),
+        ("2026-02-03", 2),
+        ("2026-02-04", 2),
+        ("2026-02-05", 1),
+    ]
 
 
 def test_export_roots_only_accept_dated_directories(tmp_path: Path) -> None:

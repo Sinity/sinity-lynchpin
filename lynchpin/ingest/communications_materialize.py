@@ -25,7 +25,8 @@ from ._manifest import atomic_write_ndjson, write_manifest
 
 _SENT_RE = re.compile(r"^\s*(Sent|Wysłano|Date):\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 _TEAMS_RE = re.compile(r"^(?P<stamp>[A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{4}\s+\d\d:\d\d:\d\d\s+GMT[+-]\d{4}).*?--\s*(?P<kind>\w+)\s*--\s*(?P<body>.*)$")
-COMMUNICATION_EVENTS_SCHEMA_VERSION = 1
+_COMMUNICATION_EVENT_IDENTITY_VERSION = 1
+COMMUNICATION_EVENTS_SCHEMA_VERSION = 2
 
 
 def materialize_communication_events(*, output: Path | None = None) -> dict[str, Any]:
@@ -260,12 +261,26 @@ def _event(
     confidence: str,
     caveats: tuple[str, ...],
 ) -> CommunicationEvent:
-    excerpt = " ".join(text.split())[:240]
-    digest = hashlib.sha1(
-        f"{source}\0{account}\0{conversation_id}\0{timestamp}\0{sender}\0{subject}\0{excerpt}".encode(
-            "utf-8", errors="replace"
-        )
+    # This is semantic duplicate suppression; without provider IDs, identical
+    # semantic events cannot be distinguished as separate physical occurrences.
+    identity = {
+        "version": _COMMUNICATION_EVENT_IDENTITY_VERSION,
+        "source": source,
+        "account": account,
+        "conversation_id": conversation_id,
+        "timestamp": _canonical_timestamp(timestamp),
+        "direction": direction,
+        "sender": sender,
+        "recipients": sorted({str(recipient) for recipient in recipients}),
+        "subject": subject,
+        "text": text,
+        "media_count": media_count,
+        "raw_kind": raw_kind,
+    }
+    digest = hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+    excerpt = " ".join(text.split())[:240]
     return CommunicationEvent(
         event_id=digest,
         source=source,
@@ -284,6 +299,14 @@ def _event(
         confidence=confidence,
         caveats=caveats,
     )
+
+
+def _canonical_timestamp(timestamp: datetime | None) -> str | None:
+    if timestamp is None:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc).isoformat()
 
 
 def _dedupe(rows: Iterator[CommunicationEvent]) -> Iterator[CommunicationEvent]:

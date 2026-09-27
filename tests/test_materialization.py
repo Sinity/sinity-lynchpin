@@ -1678,7 +1678,7 @@ def test_communications_audit_marks_old_schema_partial(monkeypatch, tmp_path) ->
                 "last_date": "2026-01-01",
                 "input_file_count": 1,
                 "input_latest_mtime": datetime.fromtimestamp(source.stat().st_mtime, timezone.utc).astimezone().isoformat(),
-                "schema_version": 0,
+                "schema_version": 1,
             }
         ),
         encoding="utf-8",

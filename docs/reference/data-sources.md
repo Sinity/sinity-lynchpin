@@ -29,6 +29,11 @@ availability, coverage, provenance, iterators, and source-local summaries.
 | Media and libraries | `spotify`, `substack`, `spotify_genres`, `audio_features`, export adapters | Streams, sessions, downloaded publication archives, library records, daily media signals. |
 | Generated evidence | `analysis_artifacts`, `source_observations`, `observability_catalog` | Artifact inventory, extracted claims, source/role definitions. |
 
+Canonical communication event IDs hash the versioned semantic fields, including
+the complete message text, normalized timestamp, recipients, media count, and
+raw kind. The 240-character excerpt is presentation data only; exact semantic
+duplicates still coalesce because providers do not always supply event IDs.
+
 The exact filesystem roots come from `LynchpinConfig`. Tests use temporary
 roots and neutral fixtures; the public source tree does not depend on one
 operator's data layout.
