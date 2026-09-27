@@ -617,7 +617,7 @@ def promote_analysis_product(
     if dry_run:
         return {"promoted": False, "node_id": node_id, "dry_run": True}
 
-    with candidate_generation():
+    with candidate_generation(changed_products=("analysis_product",)):
         with connect() as conn:
             if refresh_id is None:
                 refresh_id = latest_materialized_refresh_id(conn, caller="adversarial_review")

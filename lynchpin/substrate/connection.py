@@ -18,7 +18,7 @@ from __future__ import annotations
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 import ctypes
 import errno
 import fcntl
@@ -83,6 +83,7 @@ class CandidateGeneration:
     seed_source: Path
     seed_mode: Literal["reflink", "logical-index-rebuild", "bootstrap"]
     seed_logical_rows: int
+    changed_products: tuple[str, ...] = ()
     receipt_refresh_id: str | None = None
     expected_refresh_id: str | None = None
     expected_graph_refresh_id: str | None = None
@@ -103,6 +104,7 @@ class ServingGeneration:
     database_path: Path
     snapshot_path: Path
     manifest: dict[str, object] | None
+    publication_id: str | None = None
 
 
 def in_candidate_generation() -> bool:
@@ -203,6 +205,22 @@ def generation_refresh_id(path: Path) -> str | None:
         # pre-substrate files must preserve the ordinary snapshot fallback.
         return None
     return str(row[0]) if source_count else None
+
+
+def generation_publication_identity(path: Path) -> tuple[str, datetime] | None:
+    """Read the identity of bytes published through the candidate protocol."""
+    import duckdb
+
+    try:
+        with duckdb.connect(str(path), read_only=True) as conn:
+            rows = dict(conn.execute(
+                "SELECT key, value FROM substrate_meta WHERE key IN ('publication_id', 'publication_at')"
+            ).fetchall())
+        if not rows.get("publication_id") or not rows.get("publication_at"):
+            return None
+        return str(rows["publication_id"]), datetime.fromisoformat(rows["publication_at"])
+    except (duckdb.Error, ValueError, OSError):
+        return None
 
 
 def _archive_generation(path: Path, label: str) -> Path | None:
@@ -1102,7 +1120,7 @@ def _latest_verified_generation(canonical: Path) -> Path:
         database = artifacts.get("database")
         if database is not None:
             candidates.append(Path(str(database)))
-    verified: list[tuple[datetime, Path]] = []
+    verified: list[tuple[datetime, int, Path]] = []
     for path in candidates:
         refresh_id = generation_refresh_id(path)
         if refresh_id is None:
@@ -1122,12 +1140,49 @@ def _latest_verified_generation(canonical: Path) -> Path:
         except duckdb.Error:
             continue
         if row is not None and isinstance(row[0], datetime):
-            verified.append((row[0], path))
+            publication = generation_publication_identity(path)
+            verified.append((
+                publication[1] if publication is not None else row[0],
+                int(path == canonical),
+                path,
+            ))
     if not verified:
         raise CandidateGenerationRejected(
             "candidate generation requires a readable verified substrate source"
         )
-    return max(verified, key=lambda item: (item[0], item[1].name))[1]
+    return max(verified, key=lambda item: item[:2])[2]
+
+
+def _record_publication_identity(generation: CandidateGeneration) -> None:
+    """Bind the candidate's attempt and changed products to its serving bytes."""
+    import duckdb
+
+    from lynchpin.substrate.run_steps import record_run_step
+
+    products = generation.changed_products or (
+        ("promotion",) if generation.expected_refresh_id is not None else ("unknown",)
+    )
+    published_at = datetime.now(UTC)
+    promotion_refresh_id = generation_refresh_id(generation.candidate)
+    with duckdb.connect(str(generation.candidate)) as conn:
+        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_id', ?)",
+                     [generation.refresh_id])
+        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_at', ?)",
+                     [published_at.isoformat()])
+        record_run_step(
+            conn,
+            refresh_id=generation.refresh_id,
+            step="publication_lineage",
+            status="ok",
+            message=json.dumps({
+                "schema": "lynchpin.publication-lineage.v1",
+                "publication_id": generation.refresh_id,
+                "promotion_refresh_id": promotion_refresh_id,
+                "changed_products": products,
+            }, sort_keys=True),
+            finished_at=published_at,
+        )
+        conn.execute("CHECKPOINT")
 
 
 def _record_candidate_phase(
@@ -1305,6 +1360,7 @@ def candidate_generation(
     bootstrap: bool = False,
     receipt_refresh_id: str | None = None,
     retain_failed: bool = False,
+    changed_products: tuple[str, ...] = (),
 ) -> Iterator[CandidateGeneration]:
     """Stage a complete materialization before replacing the serving generation.
 
@@ -1420,6 +1476,7 @@ def candidate_generation(
                 seed_source=seed_source,
                 seed_mode=seed_mode,
                 seed_logical_rows=seed_logical_rows,
+                changed_products=changed_products,
                 receipt_refresh_id=receipt_refresh_id,
                 predecessor_identity=(
                     predecessor["device"], predecessor["inode"], predecessor["size"]
@@ -1437,6 +1494,7 @@ def candidate_generation(
                     generation.expected_graph_refresh_id,
                 )
                 _bind_candidate_attempt_evidence(generation)
+            _record_publication_identity(generation)
             with measure_phase("publication") as publication_measurement:
                 with _defer_candidate_interruptions() as deferred:
                     _publish_candidate(generation)
@@ -1628,6 +1686,7 @@ def serving_generation(path: Path | str | None = None) -> Iterator[ServingGenera
                 database_path=target,
                 snapshot_path=target.with_suffix(".read-snapshot.duckdb"),
                 manifest=None,
+                publication_id=(identity[0] if (identity := generation_publication_identity(target)) else None),
             )
         return
 
@@ -1646,6 +1705,10 @@ def serving_generation(path: Path | str | None = None) -> Iterator[ServingGenera
             selected = snapshot
             conn = duckdb.connect(str(selected), read_only=True)
         try:
+            manifest = (
+                _load_stable_substrate_status_manifest(target)
+                if selected == target else None
+            )
             yield ServingGeneration(
                 connection=conn,
                 database_path=selected,
@@ -1653,10 +1716,11 @@ def serving_generation(path: Path | str | None = None) -> Iterator[ServingGenera
                 # The only serving manifest describes canonical inode metadata.
                 # A fallback snapshot has no matching sidecar, so returning the
                 # canonical manifest here would create a mixed generation.
-                manifest=(
-                    _load_stable_substrate_status_manifest(target)
-                    if selected == target
-                    else None
+                manifest=manifest,
+                publication_id=(
+                    str(manifest["publication_id"])
+                    if manifest is not None and manifest.get("publication_id")
+                    else (identity[0] if (identity := generation_publication_identity(selected)) else None)
                 ),
             )
         finally:

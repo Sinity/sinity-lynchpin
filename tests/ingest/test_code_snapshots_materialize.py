@@ -111,6 +111,13 @@ def test_materialize_promotes_through_a_candidate_generation(
     assert manifest["run_count"] == 1
     assert manifest["slice_count"] == 1
 
+    from lynchpin.substrate.status_manifest import load_current_substrate_status_manifest
+
+    serving_manifest = load_current_substrate_status_manifest(isolated_substrate)
+    assert serving_manifest is not None
+    assert serving_manifest["publication_products"] == ["code_snapshots"]
+    assert serving_manifest["latest_publication_reason"] == "code_snapshots: 1 runs"
+
     with connect(read_only=True) as conn:
         runs = conn.execute(
             "SELECT project FROM code_snapshot_run WHERE refresh_id = 'latest'"

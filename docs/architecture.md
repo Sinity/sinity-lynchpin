@@ -63,6 +63,14 @@ rather than joining arbitrary generations of tables. Substrate schema changes
 may rebuild the database because source inputs and materialized products remain
 the durable authorities.
 
+The serving database also carries a `publication_id`, distinct from the logical
+promotion `refresh_id`. Every candidate publication changes this ID even when
+it updates a product inside the same promotion. The status manifest records the
+ID, publication time, changed products, and a publication reason. Old
+generations without this metadata have an unknown publication ID. An audited
+index rebuild seeds from the newest publication and prefers serving on a
+legacy timestamp tie.
+
 The query surface supports stable readers, a structured JSON query DSL, and
 SELECT-only SQL with row caps. Mutation is not exposed through query tools.
 

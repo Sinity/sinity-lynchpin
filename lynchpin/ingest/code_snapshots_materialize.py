@@ -117,7 +117,7 @@ def materialize_code_snapshots() -> dict[str, Any]:
     if in_candidate_generation():
         n_runs, n_slices = _promote()
     elif substrate_path().exists():
-        with candidate_generation():
+        with candidate_generation(changed_products=("code_snapshots",)):
             n_runs, n_slices = _promote()
     else:
         # These two tables are one product inside a complete substrate

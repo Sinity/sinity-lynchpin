@@ -510,6 +510,53 @@ def test_candidate_generation_recovers_from_archived_verified_source(
     assert generation_refresh_id(archived) == "prior"
 
 
+def test_publication_identity_changes_with_same_promotion_and_rebuild_seeds_serving(
+    isolated_substrate: Path,
+) -> None:
+    """A second publication must be distinguishable and survive index rebuilding."""
+    from lynchpin.substrate.connection import serving_generation
+
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    assert write_substrate_status_manifest(isolated_substrate) is not None
+
+    publication_ids = []
+    for marker in ("first", "second"):
+        with candidate_generation(changed_products=("fixture_product",)):
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE substrate_source_status SET reason = ? WHERE refresh_id = 'prior'",
+                    [marker],
+                )
+        manifest = load_current_substrate_status_manifest(isolated_substrate)
+        assert manifest is not None
+        assert manifest["latest_refresh_id"] == "prior"
+        assert manifest["publication_products"] == ["fixture_product"]
+        assert manifest["latest_publication_reason"] == "fixture_product"
+        publication_ids.append(manifest["publication_id"])
+        with serving_generation() as serving:
+            assert serving.publication_id == manifest["publication_id"]
+            assert serving.connection.execute(
+                "SELECT reason FROM substrate_source_status WHERE refresh_id = 'prior'"
+            ).fetchone() == (marker,)
+
+    assert publication_ids[0] != publication_ids[1]
+    with candidate_generation(rebuild_indexes=True, changed_products=("indexes",)) as generation:
+        assert generation.seed_source == isolated_substrate
+        with connect() as conn:
+            assert conn.execute(
+                "SELECT reason FROM substrate_source_status WHERE refresh_id = 'prior'"
+            ).fetchone() == ("second",)
+
+    rebuilt_manifest = load_current_substrate_status_manifest(isolated_substrate)
+    assert rebuilt_manifest is not None
+    with duckdb.connect(str(isolated_substrate)) as conn:
+        conn.execute("DELETE FROM substrate_source_status")
+    with serving_generation() as serving:
+        assert serving.manifest is None
+        assert serving.publication_id == rebuilt_manifest["publication_id"]
+
+
 @pytest.mark.parametrize("failure_call", (1, 2, 3))
 def test_candidate_publication_rolls_back_every_rename_failure(
     isolated_substrate: Path,
@@ -1153,6 +1200,7 @@ def test_serving_generation_omits_manifest_for_snapshot_fallback(
     with serving_generation() as generation:
         assert generation.database_path == substrate_read_snapshot_path()
         assert generation.manifest is None
+        assert generation.publication_id is None
         assert generation.connection.execute(
             "SELECT refresh_id FROM substrate_promotion_run"
         ).fetchone() == ("prior",)

@@ -578,7 +578,7 @@ def _promote_github_context_with_retry(ndjson_path: Path) -> SubstratePromotionR
                 # Stage those writes in the normal candidate-generation
                 # publication boundary so a Chisel prerequisite cannot mutate
                 # the canonical DuckDB file directly.
-                with candidate_generation():
+                with candidate_generation(changed_products=("github_context",)):
                     rows = _promote_github_context_to_substrate(ndjson_path)
             else:
                 # These six tables are only one product inside a complete

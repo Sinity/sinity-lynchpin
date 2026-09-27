@@ -21,7 +21,8 @@ def _stub_candidate_publication_boundary(monkeypatch, tmp_path: Path, *, serving
     entered: list[str] = []
 
     @contextmanager
-    def candidate():
+    def candidate(*, changed_products: tuple[str, ...] = ()):
+        assert changed_products == ("github_context",)
         entered.append("candidate")
         yield None
 

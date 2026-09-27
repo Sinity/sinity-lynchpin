@@ -90,12 +90,33 @@ def _read_substrate_status(path: Path) -> dict[str, Any]:
             latest_status = _latest_source_status(conn, "evidence_graph")
             latest_promotion = _latest_promotion(conn)
             promotion_count = _successful_promotion_count(conn)
+            publication_rows = dict(conn.execute(
+                "SELECT key, value FROM substrate_meta WHERE key IN ('publication_id', 'publication_at')"
+            ).fetchall())
+            publication_id = publication_rows.get("publication_id")
+            lineage_row = (conn.execute(
+                "SELECT message FROM substrate_run_step WHERE refresh_id = ? "
+                "AND step = 'publication_lineage' ORDER BY recorded_at DESC LIMIT 1",
+                [publication_id],
+            ).fetchone() if publication_id else None)
+            publication_products = (
+                json.loads(lineage_row[0]).get("changed_products") if lineage_row else None
+            )
+            publication_reason = None
+            if publication_products:
+                publication_reason = ", ".join(publication_products)
+                if "code_snapshots" in publication_products:
+                    publication_reason += f": {_scalar_count(conn, 'code_snapshot_run')} runs"
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001 - sidecar writer must not break promotion.
         return {
             "builds": None,
             "latest_refresh_id": None,
+            "publication_id": None,
+            "publication_at": None,
+            "publication_products": None,
+            "latest_publication_reason": None,
             "latest_graph_refresh_id": None,
             "latest_promotion_status": None,
             "latest_promotion_reason": None,
@@ -119,6 +140,10 @@ def _read_substrate_status(path: Path) -> dict[str, Any]:
         last_date = first_date
     return {
         "builds": builds,
+        "publication_id": publication_id,
+        "publication_at": publication_rows.get("publication_at"),
+        "publication_products": publication_products,
+        "latest_publication_reason": publication_reason,
         "latest_refresh_id": (
             latest_promotion["refresh_id"]
             if latest_promotion is not None
