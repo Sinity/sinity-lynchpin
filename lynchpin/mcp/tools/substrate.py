@@ -695,7 +695,7 @@ def analysis_claims(
     limit: int = 200,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    rows, _selected_refresh_id = _read_analysis_claims(
+    rows, _selected_refresh_id, _publication_id = _read_analysis_claims(
         refresh_id=refresh_id,
         project=project,
         start=start,
@@ -718,13 +718,13 @@ def _read_analysis_claims(
     min_confidence: float | None,
     limit: int,
     offset: int,
-) -> tuple[list[dict[str, Any]], str | None]:
+) -> tuple[list[dict[str, Any]], str, str | None]:
     """Persisted analysis claims with confidence, caveats, and evidence IDs."""
     from datetime import date as _date
 
-    from lynchpin.mcp.tools._utils import require_best_materialized_refresh_id
+    from lynchpin.mcp.tools._utils import best_materialized_refresh_id
     from lynchpin.substrate.claims import load_analysis_claims
-    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.connection import serving_generation, substrate_path
 
     start_d = _date.fromisoformat(start) if start else None
     end_d = _date.fromisoformat(end) if end else None
@@ -734,13 +734,19 @@ def _read_analysis_claims(
             window=half_open_date_window(start_d, end_d),
         )
 
-    with connect(substrate_path(), read_only=True) as conn:
+    with serving_generation(substrate_path()) as serving:
+        conn = serving.connection
         if refresh_id is None:
-            refresh_id = require_best_materialized_refresh_id(
+            refresh_id = best_materialized_refresh_id(
                 conn,
                 "analysis_claim",
                 caller="analysis_claims",
-                tool="analysis_claims",
+            )
+        if refresh_id is None:
+            raise RuntimeError(
+                "analysis_claims requires substrate table 'analysis_claim', "
+                "but no promoted rows exist. Run materialization and inspect "
+                "materialization_status / substrate_readiness_report."
             )
         rows = [
             _json_safe(row)
@@ -757,7 +763,7 @@ def _read_analysis_claims(
             )
         ]
     selected_refresh_id = refresh_id or (rows[0].get("refresh_id") if rows else None)
-    return rows, selected_refresh_id
+    return rows, selected_refresh_id, serving.publication_id
 
 
 def analysis_claims_page(
@@ -776,7 +782,7 @@ def analysis_claims_page(
     if page_offset < 0:
         raise ValueError("offset must be non-negative")
 
-    rows, selected_refresh_id = _read_analysis_claims(
+    rows, selected_refresh_id, publication_id = _read_analysis_claims(
         refresh_id=refresh_id,
         project=project,
         start=start,
@@ -791,6 +797,7 @@ def analysis_claims_page(
     return {
         "rows": selected,
         "refresh_id": selected_refresh_id,
+        "publication_id": publication_id,
         "limit": page_limit,
         "offset": page_offset,
         "has_more": has_more,
@@ -804,19 +811,36 @@ def claim_evidence(
 ) -> dict[str, Any]:
     """Return one claim and integrity of its selected logical generation."""
     from lynchpin.substrate.claims import load_claim_evidence
-    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.mcp.tools._utils import best_materialized_refresh_id
+    from lynchpin.substrate.connection import serving_generation, substrate_path
 
     if refresh_id is None:
         ensure_substrate_materialized_for_read(caller="claim_evidence")
 
-    with connect(substrate_path(), read_only=True) as conn:
+    with serving_generation(substrate_path()) as serving:
+        conn = serving.connection
         if refresh_id is None:
-            refresh_id = latest_materialized_refresh_id(conn, caller="claim_evidence")
+            refresh_id = best_materialized_refresh_id(
+                conn,
+                "analysis_claim",
+                caller="claim_evidence",
+            )
+        if refresh_id is None:
+            raise RuntimeError(
+                "claim_evidence requires substrate table 'analysis_claim', "
+                "but no promoted rows exist. Run materialization and inspect "
+                "materialization_status / substrate_readiness_report."
+            )
         row = load_claim_evidence(conn, claim_id=claim_id, refresh_id=refresh_id)
         integrity = measure_graph_integrity(conn, refresh_id)
     result = _json_safe(row) if row is not None else {
-        "summary": {"status": "missing"}, "claim_id": claim_id,
+        "summary": {"status": "missing"},
+        "claim_id": claim_id,
+        "refresh_id": refresh_id,
     }
+    if row is not None:
+        result["refresh_id"] = refresh_id
+    result["publication_id"] = serving.publication_id
     result["graph_integrity"] = integrity
     result["caveats"] = list(result.get("caveats") or []) + [
         asdict(caveat) for caveat in integrity_caveats(integrity)

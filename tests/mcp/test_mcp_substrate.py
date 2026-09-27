@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -562,7 +564,11 @@ def test_analysis_claims_materializes_substrate_for_default_snapshot(
     monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
     monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Conn())
     monkeypatch.setattr(
-        "lynchpin.mcp.tools._utils.require_best_materialized_refresh_id",
+        "lynchpin.substrate.connection.serving_generation",
+        lambda *_args, **_kwargs: nullcontext(SimpleNamespace(connection=Conn(), publication_id=None)),
+    )
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools._utils.best_materialized_refresh_id",
         lambda *_args, **_kwargs: "rid",
     )
     monkeypatch.setattr(
@@ -713,6 +719,166 @@ def test_analysis_claims_page_rejects_negative_offset() -> None:
         analysis_claims_page(offset=-1)
 
 
+def test_public_claim_routes_share_coverage_generation_and_pin_continuations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.substrate.ensure_substrate_materialized_for_read",
+        lambda **_kwargs: {"status": "ready"},
+    )
+
+    from lynchpin.mcp.tools.public import lynchpin_evidence
+    from lynchpin.substrate.claims import AnalysisClaimRow, promote_analysis_claims
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    def claim(identifier: str, summary: str) -> AnalysisClaimRow:
+        return AnalysisClaimRow(
+            claim_id=identifier,
+            claim_type="supported_work",
+            project="lynchpin",
+            date=date(2026, 5, 1),
+            support_level="strong",
+            confidence=0.85,
+            score=4.2,
+            summary=summary,
+            source_ids=(),
+            relation_ids=(),
+            caveats=(),
+            payload={},
+        )
+
+    with connect(substrate_path()) as conn:
+        promote_analysis_claims(
+            conn,
+            refresh_id="broad",
+            claims=[claim("claim:common", "common broad"), claim("claim:only-broad", "only broad")],
+        )
+        promote_analysis_claims(
+            conn,
+            refresh_id="narrow",
+            claims=[claim("claim:common", "common narrow")],
+        )
+        conn.execute(
+            """
+            INSERT INTO substrate_source_status (
+                refresh_id, source, kind, status, reason, row_count,
+                window_start, window_end, recorded_at
+            ) VALUES
+              ('broad', 'analysis_claim', 'source', 'ok', NULL, 2,
+               DATE '2026-05-01', DATE '2026-05-31', TIMESTAMPTZ '2026-05-10 00:00:00+00'),
+              ('narrow', 'analysis_claim', 'source', 'ok', NULL, 1,
+               DATE '2026-05-01', DATE '2026-05-01', TIMESTAMPTZ '2026-05-20 00:00:00+00')
+            """
+        )
+        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_id', 'pub-broad')")
+        conn.execute(
+            "INSERT OR REPLACE INTO substrate_meta VALUES "
+            "('publication_at', '2026-05-21T00:00:00+00:00')"
+        )
+
+    first = lynchpin_evidence(action="claims", limit=1)
+    assert first["ok"] is True
+    assert first["meta"]["refresh_id"] == "broad"
+    assert first["meta"]["publication_id"] == "pub-broad"
+    assert first["meta"]["has_more"] is True
+
+    detail = lynchpin_evidence(action="claim_evidence", claim_id="claim:only-broad")
+    assert detail["ok"] is True
+    assert detail["data"]["refresh_id"] == "broad"
+    assert detail["data"]["publication_id"] == "pub-broad"
+    assert detail["meta"]["refresh_id"] == "broad"
+    assert detail["meta"]["publication_id"] == "pub-broad"
+    assert detail["data"]["summary"] == "only broad"
+
+    missing = lynchpin_evidence(
+        action="claim_evidence", claim_id="claim:only-broad", refresh_id="narrow"
+    )
+    assert missing["ok"] is True
+    assert missing["data"]["summary"] == {"status": "missing"}
+    assert missing["data"]["refresh_id"] == "narrow"
+    assert missing["data"]["publication_id"] == "pub-broad"
+    assert missing["meta"]["refresh_id"] == "narrow"
+    assert missing["meta"]["publication_id"] == "pub-broad"
+
+    with connect(substrate_path()) as conn:
+        promote_analysis_claims(
+            conn,
+            refresh_id="newest",
+            claims=[claim("claim:newest", "newer narrow claim")],
+        )
+        conn.execute(
+            "INSERT INTO substrate_source_status "
+            "(refresh_id, source, kind, status, row_count, recorded_at) VALUES "
+            "('newest', 'analysis_claim', 'source', 'ok', 1, "
+            "TIMESTAMPTZ '2026-05-22 00:00:00+00')"
+        )
+        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_id', 'pub-newest')")
+        conn.execute(
+            "INSERT OR REPLACE INTO substrate_meta VALUES "
+            "('publication_at', '2026-05-22T00:00:00+00:00')"
+        )
+
+    second = lynchpin_evidence(
+        action="claims",
+        refresh_id=first["meta"]["refresh_id"],
+        limit=1,
+        offset=first["meta"]["next_offset"],
+    )
+    assert second["ok"] is True
+    assert second["meta"]["refresh_id"] == "broad"
+    assert second["meta"]["publication_id"] == "pub-newest"
+    assert [row["claim_id"] for row in first["data"] + second["data"]] == [
+        "claim:common", "claim:only-broad",
+    ]
+
+
+def test_public_claim_routes_distinguish_unavailable_from_available_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.substrate.ensure_substrate_materialized_for_read",
+        lambda **_kwargs: {"status": "ready"},
+    )
+
+    from lynchpin.mcp.tools.public import lynchpin_evidence
+    from lynchpin.substrate.claims import AnalysisClaimRow, promote_analysis_claims
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    unavailable = lynchpin_evidence(action="claims")
+    assert unavailable["ok"] is False
+    assert unavailable["error_code"] == "tool_error"
+
+    claim = AnalysisClaimRow(
+        claim_id="claim:present",
+        claim_type="supported_work",
+        project="lynchpin",
+        date=date(2026, 5, 1),
+        support_level="strong",
+        confidence=0.85,
+        score=4.2,
+        summary="present",
+        source_ids=(),
+        relation_ids=(),
+        caveats=(),
+        payload={},
+    )
+    with connect(substrate_path()) as conn:
+        promote_analysis_claims(conn, refresh_id="available", claims=[claim])
+        conn.execute(
+            "INSERT INTO substrate_source_status "
+            "(refresh_id, source, kind, status, row_count, recorded_at) VALUES "
+            "('available', 'analysis_claim', 'source', 'ok', 1, "
+            "TIMESTAMPTZ '2026-05-22 00:00:00+00')"
+        )
+
+    empty = lynchpin_evidence(action="claims", project="absent-project")
+    assert empty["ok"] is True
+    assert empty["data"] == []
+    assert empty["meta"]["refresh_id"] == "available"
+
+
 def test_claim_evidence_default_snapshot_prefers_broad_claim_materialization(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -794,8 +960,25 @@ def test_claim_evidence_materializes_for_default_snapshot(
     monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
     monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Conn())
     monkeypatch.setattr(
+        "lynchpin.substrate.connection.serving_generation",
+        lambda *_args, **_kwargs: nullcontext(SimpleNamespace(connection=Conn(), publication_id=None)),
+    )
+    monkeypatch.setattr(
         "lynchpin.substrate.claims.load_claim_evidence",
         lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools._utils.best_materialized_refresh_id",
+        lambda *_args, **_kwargs: "rid",
+    )
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.substrate.measure_graph_integrity",
+        lambda *_args, **_kwargs: {
+            "status": "unavailable",
+            "message": "not measured",
+            "orphaned_edges": None,
+            "measured": False,
+        },
     )
 
     from lynchpin.mcp.tools.substrate import claim_evidence
@@ -803,6 +986,8 @@ def test_claim_evidence_materializes_for_default_snapshot(
     result = claim_evidence("claim:missing")
     assert result["summary"] == {"status": "missing"}
     assert result["claim_id"] == "claim:missing"
+    assert result["refresh_id"] == "rid"
+    assert result["publication_id"] is None
     assert result["graph_integrity"]["orphaned_edges"] is None
     assert result["graph_integrity"]["measured"] is False
     assert result["caveats"]

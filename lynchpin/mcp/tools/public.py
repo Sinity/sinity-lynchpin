@@ -662,6 +662,7 @@ def lynchpin_evidence(
             result["data"] = page["rows"]
             result["meta"].update({
                 "refresh_id": page["refresh_id"],
+                "publication_id": page["publication_id"],
                 "limit": page["limit"],
                 "offset": page["offset"],
                 "has_more": page["has_more"],
@@ -671,7 +672,18 @@ def lynchpin_evidence(
     if action == "claim_evidence":
         if not claim_id:
             return _error("missing_argument", "claim_id is required for claim_evidence")
-        return _internal_call("lynchpin.mcp.tools.substrate", "analysis_evidence", view="evidence", claim_id=claim_id, refresh_id=refresh_id, limit=limit)
+        return _internal_call(
+            "lynchpin.mcp.tools.substrate",
+            "analysis_evidence",
+            view="evidence",
+            claim_id=claim_id,
+            refresh_id=refresh_id,
+            limit=limit,
+            _meta=lambda evidence: {
+                "refresh_id": evidence.get("refresh_id"),
+                "publication_id": evidence.get("publication_id"),
+            },
+        )
     if action == "coverage":
         return _internal_call("lynchpin.mcp.tools.substrate", "contract_coverage", source=project, start=start, end=end)
     if action == "confidence":

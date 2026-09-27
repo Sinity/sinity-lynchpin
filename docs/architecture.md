@@ -71,6 +71,13 @@ generations without this metadata have an unknown publication ID. An audited
 index rebuild seeds from the newest publication and prefers serving on a
 legacy timestamp tie.
 
+Claim pages and claim detail share the highest-coverage materialized claims
+refresh by default. A page returns both its `refresh_id` and serving
+`publication_id`; pass the refresh ID with `next_offset` to keep later pages on
+that logical generation. Detail responses include the same identities, including
+when the pinned generation does not contain the requested claim. Explicit
+refresh IDs are authoritative and never fall back to another generation.
+
 The query surface supports stable readers, a structured JSON query DSL, and
 SELECT-only SQL with row caps. Mutation is not exposed through query tools.
 

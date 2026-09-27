@@ -501,7 +501,8 @@ def test_claims_route_passes_pagination_offset(monkeypatch: pytest.MonkeyPatch) 
     def fake_analysis_evidence(**kwargs):
         calls.append(kwargs)
         return {
-            "rows": [], "refresh_id": "rid", "limit": 25, "offset": 50,
+            "rows": [], "refresh_id": "rid", "publication_id": "pub",
+            "limit": 25, "offset": 50,
             "has_more": False, "next_offset": None,
         }
 
@@ -517,6 +518,7 @@ def test_claims_route_passes_pagination_offset(monkeypatch: pytest.MonkeyPatch) 
     assert result["ok"] is True
     assert result["data"] == []
     assert result["meta"]["refresh_id"] == "rid"
+    assert result["meta"]["publication_id"] == "pub"
     assert result["meta"]["next_offset"] is None
     assert calls == [{
         "view": "claims", "refresh_id": "rid", "limit": 25, "offset": 50,
