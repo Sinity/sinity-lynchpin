@@ -7,6 +7,8 @@ from .specs import ArtifactRef, Dependency, ProductSpec, ResourceHints
 
 
 _DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "communications": ("facebook_messenger",),
+    "spotify_daily": ("spotify",),
     "activitywatch_event_index": ("activitywatch",),
     "activitywatch_derived": ("activitywatch", "activitywatch_event_index"),
     "activity_content": ("activitywatch_derived", "title_metadata"),

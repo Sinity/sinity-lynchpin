@@ -227,6 +227,90 @@ def test_substrate_promoters_are_not_scheduled_in_one_wave() -> None:
     assert [[step.product for step in wave] for wave in waves] == [["code_snapshots"], ["github_context"]]
 
 
+def test_production_consumers_follow_their_canonical_inputs() -> None:
+    for consumer, producer in (("communications", "facebook_messenger"), ("spotify_daily", "spotify")):
+        assert producer in {dependency.product for dependency in PRODUCT_CATALOG[consumer].dependencies}
+        plan = ConvergencePlanner((PRODUCT_CATALOG[producer], PRODUCT_CATALOG[consumer])).plan(ConvergenceRequest((consumer,)))
+        waves = materializer_execution_waves(tuple(replace_step(step, action="materialize") for step in plan.steps))
+        assert [[step.product for step in wave] for wave in waves] == [[producer], [consumer]]
+
+
+def test_production_failure_blocks_reusable_child_and_preserves_sibling(monkeypatch) -> None:
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.materializers import production
+
+    calls: list[str] = []
+    receipts: list[tuple[str, str]] = []
+    broken = True
+
+    def parent(_context):
+        calls.append("parent")
+        if broken:
+            raise RuntimeError("synthetic failure")
+
+    def sibling(_context):
+        calls.append("sibling")
+
+    handlers = registry(
+        ("test:parent", parent),
+        ("test:child", lambda _context: calls.append("child")),
+        ("test:sibling", sibling),
+    )
+    monkeypatch.setattr(production, "handler_registry", lambda: handlers)
+    monkeypatch.setattr(production, "_audit", lambda: SimpleNamespace(
+        _record_materialization_step=lambda _refresh, product, status, *_args, **_kwargs: receipts.append((product, status)),
+        _int_or_none=lambda value: value,
+        _window_payload=lambda value: [item.isoformat() for item in value] if value else None,
+        _PRODUCT_REFRESHED_AT={},
+        monotonic=lambda: 1.0,
+    ))
+    plan = planned(spec("parent"), spec("child", dependencies=("parent",)))
+    steps = tuple(replace_step(step, action="materialize") for step in plan.steps)
+    sibling_step = replace_step(ConvergencePlanner((spec("sibling"),)).plan(ConvergenceRequest(("sibling",))).steps[0], action="materialize")
+
+    with pytest.raises(MaterializationError, match="parent, child|child, parent"):
+        production.run_materialization_plan((*steps, sibling_step), continue_on_error=True)
+    assert calls == ["parent", "sibling"]
+    assert ("child", "skipped") in receipts
+
+    broken = False
+    calls.clear()
+    receipts.clear()
+    completed = production.run_materialization_plan((*steps, replace_step(sibling_step, action="skip", status="ready")), continue_on_error=True)
+    assert {step.product for step in completed} == {"parent", "child"}
+    assert calls == ["parent", "child"]
+
+    calls.clear()
+    with pytest.raises(MaterializationError, match="child"):
+        production.run_materialization_plan((replace_step(steps[0], action="check-only", status="pending"), steps[1]), continue_on_error=True)
+    assert calls == []
+
+
+def test_ready_consumer_is_invalidated_by_planned_producer(monkeypatch) -> None:
+    from lynchpin.materializers import production
+
+    rows = [
+        SimpleNamespace(name=name, status=status, reason=status, first_date=None, last_date=None, materialized_paths=(), repair_required=False, tail_stale=False)
+        for name, status in (("parent", "pending"), ("child", "ready"), ("sibling", "ready"))
+    ]
+    monkeypatch.setattr(production, "PRODUCT_CATALOG", {
+        "parent": spec("parent"),
+        "child": spec("child", dependencies=("parent",)),
+        "sibling": spec("sibling"),
+    })
+    monkeypatch.setattr(production, "_audit", lambda: SimpleNamespace(
+        audit_materialization=lambda **_kwargs: rows,
+        _dataset_fingerprint=lambda row: row.status,
+        source_contract=lambda _name: SimpleNamespace(materialization_hint="fixture"),
+    ))
+    plan = production.plan_materializations(cfg=object())
+    assert [(step.product, step.action) for step in plan] == [("parent", "materialize"), ("child", "materialize")]
+    assert [[step.product for step in wave] for wave in production.materializer_execution_waves(plan)] == [["parent"], ["child"]]
+
+    maintenance = production.plan_materializations(cfg=object(), maintenance=True)
+    assert [(step.product, step.action) for step in maintenance] == [("parent", "check-only"), ("child", "materialize")]
+
+
 def test_maintenance_debounce_uses_the_newest_product_output(tmp_path) -> None:
     from os import utime
     from time import time

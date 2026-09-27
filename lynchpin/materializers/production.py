@@ -277,7 +277,8 @@ def plan_materializations(
     cfg = cfg or audit.get_config()
     end = maintenance_end or (date.today() + timedelta(days=1))
     steps: list[PlanStep] = []
-    for row in audit.audit_materialization(cfg=cfg):
+    rows = tuple(audit.audit_materialization(cfg=cfg))
+    for row in rows:
         spec = PRODUCT_CATALOG.get(row.name)
         if spec is None:
             continue
@@ -322,6 +323,37 @@ def plan_materializations(
             action, reason = "skip", "canonical product is ready"
         if action != "skip":
             steps.append(_step(spec, row=row, action=action, reason=reason, window=step_window))
+    # A ready consumer is invalidated by a producer rebuilt in this pass or
+    # by a prerequisite that the plan cannot bring to readiness.
+    by_product = {step.product: step for step in steps}
+    while True:
+        added = False
+        for row in rows:
+            spec = PRODUCT_CATALOG.get(row.name)
+            if spec is None or row.name in by_product:
+                continue
+            producers = [
+                by_product[dependency.product]
+                for dependency in spec.dependencies
+                if dependency.product in by_product
+                and (
+                    by_product[dependency.product].action == "materialize"
+                    or by_product[dependency.product].status != "ready"
+                )
+            ]
+            if producers:
+                producer_windows = [step.effective_window for step in producers]
+                step_window = (
+                    (min(item[0] for item in producer_windows if item is not None), max(item[1] for item in producer_windows if item is not None))
+                    if spec.window_policy == "bounded" and all(item is not None for item in producer_windows)
+                    else None
+                )
+                step = _step(spec, row=row, action="materialize", reason="dependency is materialized in this plan", window=step_window)
+                steps.append(step)
+                by_product[row.name] = step
+                added = True
+        if not added:
+            break
     if maintenance:
         materialized_windows = [step.effective_window for step in steps if step.action == "materialize" and step.effective_window is not None]
         if materialized_windows:
@@ -394,12 +426,18 @@ def run_materialization_plan(
 
     audit = _audit()
     registry = handler_registry()
+    steps = tuple(steps)
     selected = tuple(step for step in steps if step.action == "materialize")
     refresh_id = refresh_id or f"materialize:{datetime.now(timezone.utc).isoformat()}"
     ran: list[PlanStep] = []
     ran_lock = Lock()
+    outcomes: dict[str, str] = {
+        step.product: ("ready" if step.status == "ready" else "unavailable")
+        for step in steps
+        if step.action != "materialize"
+    }
 
-    def run_one(step: PlanStep) -> None:
+    def run_one(step: PlanStep) -> str:
         definition = registry.resolve(step.spec.handler)
         validate_step_contract(step, definition)
         effective_window = step.effective_window if step.effective_window is not None else window
@@ -424,7 +462,7 @@ def run_materialization_plan(
             )
             if not continue_on_error:
                 raise
-            return
+            return "error"
         row_count = audit._int_or_none(value.get("row_count")) if isinstance(value, dict) else None
         audit._record_materialization_step(
             refresh_id,
@@ -438,15 +476,42 @@ def run_materialization_plan(
         audit._PRODUCT_REFRESHED_AT[step.product] = audit.monotonic()
         with ran_lock:
             ran.append(step)
+        return "ok"
 
     for wave in materializer_execution_waves(selected):
-        if len(wave) == 1:
-            run_one(wave[0])
+        runnable: list[PlanStep] = []
+        for step in wave:
+            blocked = next(
+                (dependency for dependency in step.dependencies if outcomes.get(dependency) in {"error", "skipped", "unavailable"}),
+                None,
+            )
+            if blocked is not None:
+                outcomes[step.product] = "skipped"
+                audit._record_materialization_step(
+                    refresh_id,
+                    step.product,
+                    "skipped",
+                    f"dependency {blocked} {outcomes[blocked]}",
+                    finished_at=datetime.now(timezone.utc),
+                )
+            else:
+                runnable.append(step)
+        if len(runnable) == 1:
+            outcomes[runnable[0].product] = run_one(runnable[0])
         else:
-            with ThreadPoolExecutor(max_workers=len(wave), thread_name_prefix="lynchpin-materialize") as executor:
-                futures = [executor.submit(copy_context().run, run_one, step) for step in wave]
-                for future in futures:
-                    future.result()
+            if runnable:
+                with ThreadPoolExecutor(max_workers=len(runnable), thread_name_prefix="lynchpin-materialize") as executor:
+                    futures = {executor.submit(copy_context().run, run_one, step): step.product for step in runnable}
+                    for future, product in futures.items():
+                        outcomes[product] = future.result()
+    failed = sorted(product for product, outcome in outcomes.items() if outcome in {"error", "skipped"})
+    if failed:
+        from ..core.errors import MaterializationError
+
+        raise MaterializationError(
+            "convergence",
+            reason=f"materialization failed or skipped for {', '.join(failed)}; candidate promotion requires compatible products",
+        )
     return sorted(ran, key=lambda step: step.product)
 
 
