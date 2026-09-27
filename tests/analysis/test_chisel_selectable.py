@@ -227,6 +227,44 @@ def test_candidate_report_keeps_unbound_lifecycle_records_out_of_snapshot_rows(t
     assert coverage["unbound_native_records"] == 1
     assert coverage["lifecycle_observations_kept_separate"] == 1
     assert coverage["bound_detailed_jobs"] == 1
+    report = json.loads((tmp_path / "reports/coverage.json").read_text())
+    assert report["dataset_coverage"]["verification/records.jsonl"] == {
+        "status": "available", "records": len(records),
+    }
+
+
+def test_candidate_report_distinguishes_missing_and_empty_evidence_datasets(tmp_path):
+    from lynchpin.analysis.projects.chisel_reports import build_reports
+    from lynchpin.sources.chisel_browse import query_records
+
+    package = tmp_path / "missing"
+    package.mkdir()
+    (package / "capture.json").write_text(json.dumps({"snapshot_id": "primary-id"}))
+    (package / "source").mkdir()
+
+    build_reports(package, project="fixture", task_roots=[])
+    missing = query_records(package, "candidate-evidence", None, 10, 0)["evidence_coverage"]
+    assert missing["status"] == "unavailable"
+    assert missing["native_records"] is None
+    assert missing["lifecycle_observations_kept_separate"] is None
+    assert missing["dataset_coverage"]["verification/records.jsonl"] == {
+        "status": "unavailable", "records": None,
+    }
+    assert missing["dataset_coverage"]["inventory.jsonl"] == {
+        "status": "unavailable", "records": None,
+    }
+
+    verification = package / "verification"
+    verification.mkdir()
+    (verification / "records.jsonl").write_text("")
+    build_reports(package, project="fixture", task_roots=[])
+    empty = query_records(package, "candidate-evidence", None, 10, 0)["evidence_coverage"]
+    assert empty["status"] == "partial_coverage"
+    assert empty["native_records"] == 0
+    assert empty["lifecycle_observations_kept_separate"] == 0
+    assert empty["dataset_coverage"]["verification/records.jsonl"] == {
+        "status": "empty", "records": 0,
+    }
 
 
 def test_neighbor_projection_filters_canonical_edges_before_pagination(tmp_path):

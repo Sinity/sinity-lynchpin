@@ -226,6 +226,10 @@ def query_records(package: Path, command: str, value: str | None, limit: int, of
             "status": "legacy_report_binding_unavailable",
             "interpretation": "Rows without evidence IDs are omitted; older packages do not declare candidate binding coverage.",
         }
+        if coverage.is_file():
+            report_coverage = json.loads(coverage.read_text())
+            if "dataset_coverage" in report_coverage:
+                response["evidence_coverage"]["dataset_coverage"] = report_coverage["dataset_coverage"]
     return response
 
 

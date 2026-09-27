@@ -17,6 +17,14 @@ def rows(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line] if path.exists() else []
 
 
+def _dataset_coverage(path: Path) -> dict[str, Any]:
+    """Report whether a captured dataset was absent, empty, or populated."""
+    if not path.is_file():
+        return {"status": "unavailable", "records": None}
+    count = len(rows(path)) if path.suffix in {".jsonl", ".ndjson"} else None
+    return {"status": "empty" if count == 0 else "available", "records": count}
+
+
 def task_graph(tasks: list[dict[str, Any]], roots: list[str]) -> dict[str, Any]:
     by_id = {r["id"]: r for r in tasks if "id" in r}
     edges = {key: sorted({str(e["depends_on_id"]) for e in row.get("dependencies", [])
@@ -413,12 +421,44 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
     (out / "task-dependencies.json").write_text(json.dumps({"snapshot_id": snapshot, **graph}, indent=2) + "\n")
     coverage = {"schema_version": 3, "snapshot_id": snapshot,
         "task_roots": task_roots, "campaign_scope": "explicit roots only",
-        "candidate_evidence": {"bound_rows": len(candidates), "native_records": len(native_records),
-            "detailed_job_records": len(execution_details),
-            "bound_detailed_jobs": sum(r.get("evidence_kind") == "agentctl_job_execution" for r in candidates),
-            "unbound_native_records": len(native_records) - len({r["evidence_id"] for r in candidates if r.get("evidence_kind") != "agentctl_job_execution"}),
-            "lifecycle_observations_kept_separate": sum(r.get("kind") == "agentctl_job_observation" for r in verification),
-            "status": "no_bound_evidence" if not candidates else "bounded_associations"},
+        "dataset_coverage": {
+            name: _dataset_coverage(package / name)
+            for name in (
+                "inventory.jsonl",
+                "trackers/beads-export.jsonl",
+                "structure/dependency_edges.jsonl",
+                "structure/symbols.jsonl",
+                "verification/records.jsonl",
+                "owners/jobs.json",
+                "owners/tasks.json",
+            )
+        },
+        "candidate_evidence": {
+            "bound_rows": len(candidates) if (
+                (package / "verification/records.jsonl").is_file() or owner_jobs.is_file()
+            ) else None,
+            "native_records": len(native_records) if (package / "verification/records.jsonl").is_file() else None,
+            "detailed_job_records": len(execution_details) if (
+                owner_jobs.is_file() or (package / "verification/records.jsonl").is_file()
+            ) else None,
+            "bound_detailed_jobs": sum(r.get("evidence_kind") == "agentctl_job_execution" for r in candidates)
+            if (owner_jobs.is_file() or (package / "verification/records.jsonl").is_file()) else None,
+            "unbound_native_records": len(native_records) - len({
+                r["evidence_id"] for r in candidates
+                if r.get("evidence_kind") != "agentctl_job_execution"
+            }) if (package / "verification/records.jsonl").is_file() else None,
+            "lifecycle_observations_kept_separate": sum(
+                r.get("kind") == "agentctl_job_observation" for r in verification
+            ) if (package / "verification/records.jsonl").is_file() else None,
+            "status": (
+                "unavailable" if not verification and not execution_details
+                and not (package / "verification/records.jsonl").is_file() and not owner_jobs.is_file()
+                else "partial_coverage" if not (package / "verification/records.jsonl").is_file()
+                or not owner_jobs.is_file()
+                else "no_bound_evidence" if not candidates
+                else "bounded_associations"
+            ),
+        },
         "gaps": ["Rust, SQL and Nix pattern matches retain textual-candidate status.",
                  "Symbol references are conservative same-file candidates.",
                  "Text patch equivalence does not establish semantic equivalence or supersession.",
