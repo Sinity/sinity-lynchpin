@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from lynchpin.analysis.projects import chisel_build as chisel
+from lynchpin.sources import chisel as source_chisel
 
 
 def test_root_index_persists_worker_measured_stage_timings(tmp_path: Path) -> None:
@@ -102,6 +103,7 @@ def test_project_log_block_cannot_be_interleaved_by_other_worker(monkeypatch, de
             worker.start()
 
     monkeypatch.setattr(chisel, "_print", fake_print)
+    monkeypatch.setattr(source_chisel, "_print", fake_print)
     chisel._print_project_summary(
         1,
         2,

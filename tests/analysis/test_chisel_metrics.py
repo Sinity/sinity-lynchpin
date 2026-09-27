@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from lynchpin.sources import chisel
+from lynchpin.analysis.projects import chisel_build as chisel
 from lynchpin.sources.chisel_metrics import build_metrics
 
 

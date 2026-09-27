@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from lynchpin.analysis.projects import chisel_build as chisel
+from lynchpin.sources import chisel as source_chisel
 from lynchpin.sources.github import GitHubActor, GitHubItem
 from lynchpin.sources.github_context import GitHubContextRow
 
@@ -680,9 +681,9 @@ def test_collect_tokei_stats_buckets_agent_docs_tests_and_other(
         commands.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, chisel.json.dumps(payload), "")
 
-    monkeypatch.setattr(chisel, "_run", fake_run)
+    monkeypatch.setattr(source_chisel, "_run", fake_run)
     monkeypatch.setattr(
-        chisel,
+        source_chisel,
         "_tokei_input_paths",
         lambda _plan: (visible_paths, "git-tracked-and-nonignored-working-tree"),
     )
@@ -735,7 +736,7 @@ def test_tokei_inputs_exclude_ignored_local_corpora_but_keep_tracked_agent_files
         assert cwd == repo
         return subprocess.CompletedProcess(cmd, 0, git_visible, "")
 
-    monkeypatch.setattr(chisel, "_run", fake_run)
+    monkeypatch.setattr(source_chisel, "_run", fake_run)
 
     paths, policy = chisel._tokei_input_paths(plan)
 
@@ -1158,7 +1159,7 @@ def test_run_slice_disables_gitignore_for_agent_slices(
         output_path.write_text("<xml />", encoding="utf-8")
         return output_path.stem, output_path.stat().st_size
 
-    monkeypatch.setattr(chisel, "_run_repomix", fake_run_repomix)
+    monkeypatch.setattr(source_chisel, "_run_repomix", fake_run_repomix)
 
     chisel._run_slice(
         "repomix",
@@ -1199,7 +1200,7 @@ def test_run_scratchpad_uses_curated_include_without_skip_manifest(
         output_path.write_text("<xml />", encoding="utf-8")
         return output_path.stem, output_path.stat().st_size
 
-    monkeypatch.setattr(chisel, "_run_repomix", fake_run_repomix)
+    monkeypatch.setattr(source_chisel, "_run_repomix", fake_run_repomix)
 
     result = chisel._run_scratchpad("repomix", tmp_path, plan, git, "now")
 
@@ -1455,6 +1456,12 @@ def test_build_chisel_bundles_reports_scope_and_grouped_repo_logs(
     monkeypatch.setattr(
         chisel, "_print", lambda message="", **_kwargs: printed.append(str(message))
     )
+    monkeypatch.setattr(source_chisel, "_console", None)
+    monkeypatch.setattr(
+        source_chisel,
+        "_print",
+        lambda message="", **_kwargs: printed.append(str(message)),
+    )
     monkeypatch.setattr(chisel, "REPO_PLANS", {"alpha": plan_a, "beta": plan_b})
     monkeypatch.setattr(chisel, "_require_repomix", lambda: "repomix")
     monkeypatch.setattr(chisel, "_repomix_version", lambda _bin: "test-version")
@@ -1618,7 +1625,7 @@ def test_build_one_buffers_project_stages_for_its_summary(monkeypatch, tmp_path:
 def test_build_one_keeps_failed_stage_time_and_skips_package_finalization(
     monkeypatch, tmp_path: Path
 ) -> None:
-    from lynchpin.analysis.projects import chisel_package
+    from lynchpin.sources import chisel_package
 
     plan = chisel.RepoPlan(
         name="alpha",
