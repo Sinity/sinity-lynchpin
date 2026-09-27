@@ -12,46 +12,92 @@ def test_materialize_activitywatch_event_index_writes_logical_day_files(monkeypa
     from lynchpin.ingest import activitywatch_event_index_materialize as mod
     from lynchpin.sources.activitywatch_event_index import ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
 
-    canonical = tmp_path / "activitywatch/events.ndjson"
-    canonical.parent.mkdir(parents=True)
-    canonical.write_text(
-        "\n".join(
+    live_db = tmp_path / "activitywatch.sqlite"
+    monkeypatch.setattr(mod, "activitywatch_event_index_input_files", lambda: (live_db,))
+    monkeypatch.setattr(
+        mod,
+        "events_from_activitywatch_dbs",
+        lambda *_args, **_kwargs: iter(
             [
-                json.dumps(
-                    {
-                        "bucket": "aw-watcher-window_host",
-                        "start": "2026-03-15T02:00:00+00:00",
-                        "end": "2026-03-15T02:05:00+00:00",
-                        "data": {"app": "kitty"},
-                    }
+                SimpleNamespace(
+                    bucket="aw-watcher-window_host",
+                    start=datetime(2026, 3, 15, 2, tzinfo=timezone.utc),
+                    end=datetime(2026, 3, 15, 2, 5, tzinfo=timezone.utc),
+                    data={"app": "kitty"},
                 ),
-                json.dumps(
-                    {
-                        "bucket": "aw-watcher-afk_host",
-                        "start": "2026-03-15T08:00:00+00:00",
-                        "end": "2026-03-15T09:00:00+00:00",
-                        "data": {"status": "not-afk"},
-                    }
+                SimpleNamespace(
+                    bucket="aw-watcher-afk_host",
+                    start=datetime(2026, 3, 15, 8, tzinfo=timezone.utc),
+                    end=datetime(2026, 3, 15, 9, tzinfo=timezone.utc),
+                    data={"status": "not-afk"},
                 ),
             ]
-        )
-        + "\n",
-        encoding="utf-8",
+        ),
     )
-    canonical.with_suffix(".manifest.json").write_text('{"row_count": 2}\n', encoding="utf-8")
-    monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: canonical)
 
-    manifest = mod.materialize_activitywatch_event_index(root=tmp_path)
+    manifest = mod.materialize_activitywatch_event_index(root=tmp_path, full=True)
 
     assert manifest["schema_version"] == ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
     assert manifest["row_count"] == 2
     assert manifest["covered_dates"] == ["2026-03-14", "2026-03-15"]
     assert manifest["generation"].startswith("generation-")
+    assert manifest["canonical_row_count_verified"] is False
+    assert manifest["full_source_scan_completed"] is True
     assert all(Path(path).exists() for path in manifest["product_paths"].values())
 
 
-def test_full_index_repair_rejects_unverified_canonical_row_count(monkeypatch, tmp_path):
+def test_unbounded_event_index_rebuild_requires_explicit_full(monkeypatch, tmp_path):
     from lynchpin.core.errors import MaterializationError
+    from lynchpin.ingest import activitywatch_event_index_materialize as mod
+
+    try:
+        mod.materialize_activitywatch_event_index(root=tmp_path)
+    except MaterializationError as exc:
+        assert "requires explicit full=True" in str(exc)
+    else:
+        raise AssertionError("expected refusal of unbounded rebuild without explicit opt-in")
+
+    assert not (tmp_path / "activitywatch/events_by_day/manifest.json").exists()
+
+
+def test_module_cli_requires_and_forwards_full(monkeypatch, capsys):
+    from lynchpin.ingest import activitywatch_event_index_materialize as mod
+
+    calls: list[bool] = []
+    monkeypatch.setattr(mod, "materialize_activitywatch_event_index", lambda **kwargs: calls.append(kwargs["full"]) or {})
+    try:
+        mod.main([])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("module CLI accepted an unscoped rebuild without --full")
+    assert calls == []
+
+    assert mod.main(["--full"]) == 0
+    assert calls == [True]
+    assert json.loads(capsys.readouterr().out) == {}
+
+
+def test_production_source_handler_forwards_full_opt_in(monkeypatch):
+    from lynchpin.materializers import handlers
+
+    calls: list[dict[str, object]] = []
+    monkeypatch.setitem(
+        handlers._SOURCE_HANDLERS,
+        "activitywatch_event_index",
+        lambda **kwargs: calls.append(kwargs) or {},
+    )
+    context = SimpleNamespace(
+        step=SimpleNamespace(product="activitywatch_event_index", effective_window=None),
+        runtime={"full": True, "window": None},
+    )
+
+    handlers.run_source_handler(context)
+
+    assert calls == [{"full": True}]
+
+
+def test_full_rebuild_uses_live_source_past_stale_canonical_carrier(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_event_index_materialize as mod
 
     canonical = tmp_path / "activitywatch/events.ndjson"
@@ -60,46 +106,59 @@ def test_full_index_repair_rejects_unverified_canonical_row_count(monkeypatch, t
         json.dumps(
             {
                 "bucket": "aw-watcher-window_host",
-                "start": "2026-03-15T08:00:00+00:00",
-                "end": "2026-03-15T08:30:00+00:00",
-                "data": {"app": "only-row"},
+                "start": "2026-08-24T08:00:00+00:00",
+                "end": "2026-08-24T08:30:00+00:00",
+                "data": {"app": "stale-carrier-only"},
             }
         )
         + "\n",
         encoding="utf-8",
     )
-    canonical.with_suffix(".manifest.json").write_text('{"row_count": 2}\n', encoding="utf-8")
-    monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: canonical)
+    canonical.with_suffix(".manifest.json").write_text('{"row_count": 1, "last_date": "2026-08-24"}\n', encoding="utf-8")
+    monkeypatch.setattr(mod, "activitywatch_event_index_input_files", lambda: (canonical,))
+    observed_calls: list[dict[str, object]] = []
 
-    try:
-        mod.materialize_activitywatch_event_index(root=tmp_path)
-    except MaterializationError as exc:
-        assert "row count does not match" in str(exc)
-    else:
-        raise AssertionError("expected full-index verification failure")
+    def live_rows(*_args, **kwargs):
+        observed_calls.append(kwargs)
+        return iter(
+            [
+                SimpleNamespace(
+                    bucket="aw-watcher-window_host",
+                    start=datetime(2026, 8, 24, 8, tzinfo=timezone.utc),
+                    end=datetime(2026, 8, 24, 8, 30, tzinfo=timezone.utc),
+                    data={"app": "source-before-carrier-end"},
+                ),
+                SimpleNamespace(
+                    bucket="aw-watcher-window_host",
+                    start=datetime(2026, 9, 26, 8, tzinfo=timezone.utc),
+                    end=datetime(2026, 9, 26, 8, 30, tzinfo=timezone.utc),
+                    data={"app": "source-after-carrier-end"},
+                ),
+            ]
+        )
 
-    assert not (tmp_path / "activitywatch/events_by_day/manifest.json").exists()
+    monkeypatch.setattr(mod, "events_from_activitywatch_dbs", live_rows)
+    manifest = mod.materialize_activitywatch_event_index(root=tmp_path, full=True)
+
+    assert observed_calls == [{"start": None, "end": None, "order": "bucket", "dedupe": False}]
+    assert manifest["covered_dates"] == ["2026-08-24", "2026-09-26"]
+    assert manifest["last_date"] == "2026-09-26"
+    assert manifest["canonical_row_count_verified"] is False
+    assert manifest["full_source_scan_completed"] is True
+    indexed_rows = [
+        json.loads(line)
+        for path in manifest["product_paths"].values()
+        for line in Path(path).read_text(encoding="utf-8").splitlines()
+    ]
+    assert {row["data"]["app"] for row in indexed_rows} == {
+        "source-before-carrier-end",
+        "source-after-carrier-end",
+    }
 
 
 def test_materialize_activitywatch_event_index_replaces_only_requested_window(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_event_index_materialize as mod
 
-    canonical = tmp_path / "activitywatch/events.ndjson"
-    canonical.parent.mkdir(parents=True)
-    canonical.write_text(
-        json.dumps(
-            {
-                "bucket": "aw-watcher-window_host",
-                "start": "2026-06-06T08:00:00+00:00",
-                "end": "2026-06-06T08:30:00+00:00",
-                "data": {"app": "new-window"},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    canonical.with_suffix(".manifest.json").write_text('{"row_count": 1}\n', encoding="utf-8")
-    monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: canonical)
     monkeypatch.setattr(
         mod,
         "events_from_activitywatch_dbs",
@@ -236,8 +295,6 @@ def test_event_index_repairs_missing_member_only_inside_requested_window(
 def test_materialize_activitywatch_event_index_reads_only_bounded_raw_tail(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_event_index_materialize as mod
 
-    canonical = tmp_path / "activitywatch/events.ndjson"
-    monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: canonical)
     calls: list[tuple[object, object]] = []
 
     def raw_events(*_args, **kwargs):

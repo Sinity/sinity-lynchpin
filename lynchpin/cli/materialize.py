@@ -73,6 +73,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan-json", action="store_true", help="write the materialization plan as JSON and exit without changing products")
     parser.add_argument("--force", action="store_true", help="rebuild all locally materializable products")
     parser.add_argument(
+        "--full",
+        action="store_true",
+        help="explicitly rebuild the ActivityWatch event index from live SQLite and archived databases",
+    )
+    parser.add_argument(
         "--rebuild-candidate-indexes",
         action="store_true",
         help="explicit audited recovery: copy verified logical rows into fresh DuckDB indexes",
@@ -94,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--only cannot bootstrap an incomplete substrate")
     if args.force and not args.all:
         parser.error("--force requires --all")
+    if args.full and not (args.all and args.promote and args.history == "all"):
+        parser.error("--full requires --all --promote --history all")
     if args.rebuild_candidate_indexes and not (args.all and args.promote):
         parser.error("--rebuild-candidate-indexes requires --all --promote")
 
@@ -199,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
                     plan,
                     refresh_id=publication_refresh_id,
                     window=window,
+                    full=args.full,
                     continue_on_error=args.promote,
                 )
             _record_incremental_phase(

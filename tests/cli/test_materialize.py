@@ -78,6 +78,25 @@ def test_plan_json_exits_before_materialization(monkeypatch, capsys) -> None:
     assert capsys.readouterr().out == "[]\n"
 
 
+def test_full_event_index_option_requires_all_history() -> None:
+    from lynchpin.cli import materialize
+
+    with pytest.raises(SystemExit) as exc:
+        materialize.main(
+            [
+                "--all",
+                "--promote",
+                "--start",
+                "2026-09-01",
+                "--end",
+                "2026-09-02",
+                "--full",
+            ]
+        )
+
+    assert exc.value.code == 2
+
+
 def test_materialize_history_all_derives_window(monkeypatch, tmp_path: Path) -> None:
     from lynchpin.cli import materialize
     from lynchpin.materialization import MaterializedDataset
@@ -104,8 +123,9 @@ def test_materialize_history_all_derives_window(monkeypatch, tmp_path: Path) -> 
     monkeypatch.setattr(
         materialize,
         "run_materialization_plan",
-        lambda plan, window=None, continue_on_error=False: calls.update(
-            continue_on_error=continue_on_error
+        lambda plan, window=None, continue_on_error=False, full=False: calls.update(
+            continue_on_error=continue_on_error,
+            full=full,
         )
         or [],
     )
@@ -121,10 +141,11 @@ def test_materialize_history_all_derives_window(monkeypatch, tmp_path: Path) -> 
     monkeypatch.setattr(snapshot, "main", fake_snapshot)
     monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
 
-    code = materialize.main(["--all", "--promote", "--history", "all"])
+    code = materialize.main(["--all", "--promote", "--history", "all", "--full"])
 
     assert code == 0
     assert calls["continue_on_error"] is True
+    assert calls["full"] is True
     assert forwarded["argv"][:4] == [
         "--start",
         "2013-03-27",

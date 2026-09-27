@@ -40,7 +40,7 @@ def test_public_focus_query_refreshes_new_day_and_later_events(monkeypatch):
     start = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc).replace(hour=10)
     append(start - timedelta(days=1))
     materialize_activitywatch_events()
-    materialize_activitywatch_event_index()
+    materialize_activitywatch_event_index(full=True)
     materialize_activitywatch_derived(start=today - timedelta(days=1), end=today)
     recovery = canonical_activitywatch_events_path().read_bytes()
 

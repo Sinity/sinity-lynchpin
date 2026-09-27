@@ -1896,7 +1896,10 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
         and not missing_days
     )
     inputs_current = _manifest_inputs_current(meta, input_files)
-    repair_required = products_ready and schema_current and not bool(meta.get("canonical_row_count_verified"))
+    repair_completed = bool(meta.get("canonical_row_count_verified")) or bool(
+        meta.get("full_source_scan_completed")
+    )
+    repair_required = products_ready and schema_current and not repair_completed
     tail_stale = False
     if schema_current and missing_days:
         status = "partial"
@@ -1909,7 +1912,7 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
         reason = "ActivityWatch event index schema is older than the current reader contract"
     elif products_ready and repair_required:
         status = "partial"
-        reason = "ActivityWatch event index needs an explicit full equivalence repair against the canonical recovery carrier"
+        reason = "ActivityWatch event index needs an explicit full rebuild from canonical or live-source authority"
     elif products_ready and not inputs_current:
         status = "partial"
         tail_stale = True

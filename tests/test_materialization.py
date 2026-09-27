@@ -2240,7 +2240,8 @@ def test_activitywatch_event_index_audit_reads_precise_covered_dates(monkeypatch
                     canonical_manifest.stat().st_mtime, timezone.utc
                 ).astimezone().isoformat(),
                 "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
-                "canonical_row_count_verified": True,
+                "canonical_row_count_verified": False,
+                "full_source_scan_completed": True,
             }
         ),
         encoding="utf-8",

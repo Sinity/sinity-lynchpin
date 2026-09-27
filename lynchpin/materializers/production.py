@@ -387,6 +387,7 @@ def run_materialization_plan(
     *,
     refresh_id: str | None = None,
     window: tuple[date, date] | None = None,
+    full: bool = False,
     continue_on_error: bool = False,
 ) -> list[PlanStep]:
     """Execute typed source steps while preserving receipts and failure policy."""
@@ -405,7 +406,13 @@ def run_materialization_plan(
         started = datetime.now(timezone.utc)
         audit._record_materialization_step(refresh_id, step.product, "started", step.reason, started_at=started)
         try:
-            value = definition.handler(StepContext(step, {}, {"refresh_id": refresh_id, "window": effective_window}))
+            value = definition.handler(
+                StepContext(
+                    step,
+                    {},
+                    {"refresh_id": refresh_id, "window": effective_window, "full": full},
+                )
+            )
         except Exception as exc:
             audit._record_materialization_step(
                 refresh_id,

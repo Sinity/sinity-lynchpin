@@ -1,4 +1,4 @@
-"""Materialize a logical-day index over canonical ActivityWatch events."""
+"""Materialize a logical-day index over owner-native ActivityWatch events."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ from ..sources.activitywatch_event_index import (
     activitywatch_event_index_manifest_path,
 )
 from ..sources.activitywatch_raw import (
-    canonical_activitywatch_events_path,
     events_from_activitywatch_dbs,
 )
 from .activitywatch_materialize import BUCKET_PREFIXES, activitywatch_input_files
@@ -30,7 +29,7 @@ from ._manifest import write_manifest
 
 
 def activitywatch_event_index_input_files() -> tuple[Path, ...]:
-    """Return the bounded raw inputs used to build logical-day partitions."""
+    """Return owner-native databases and WALs used to build the day index."""
     databases = activitywatch_input_files(get_config())
     return tuple(
         path
@@ -45,22 +44,27 @@ def materialize_activitywatch_event_index(
     root: Path | None = None,
     start: date | None = None,
     end: date | None = None,
+    full: bool = False,
 ) -> dict[str, Any]:
-    canonical = canonical_activitywatch_events_path()
     output_dir = activitywatch_event_index_dir(root)
     output_dir.mkdir(parents=True, exist_ok=True)
     window_dates = _exclusive_window_dates(start, end)
 
     previous: dict[str, Any] = {}
     if window_dates is None:
+        if not full:
+            raise MaterializationError(
+                "activitywatch_event_index_materialize",
+                reason="an unbounded ActivityWatch event-index rebuild requires explicit full=True",
+            )
+        if not activitywatch_event_index_input_files():
+            raise FileNotFoundError(
+                "live ActivityWatch SQLite and archived databases are missing; "
+                "cannot perform a full event-index rebuild"
+            )
         paths: dict[str, str] = {}
         row_counts: dict[str, int] = {}
-        if not canonical.exists():
-            raise FileNotFoundError(
-                "canonical ActivityWatch events are missing; run "
-                "python -m lynchpin.ingest.activitywatch_materialize first"
-            )
-        rows = _iter_canonical_rows(canonical)
+        rows = _iter_live_rows()
     else:
         previous = _read_existing_manifest(activitywatch_event_index_manifest_path(root))
         paths = _string_dict(previous.get("product_paths"))
@@ -138,25 +142,20 @@ def materialize_activitywatch_event_index(
 
     covered_dates = tuple(sorted(row_counts))
     canonical_row_count_verified = bool(previous.get("canonical_row_count_verified"))
+    full_source_scan_completed = bool(previous.get("full_source_scan_completed"))
     if window_dates is None:
-        canonical_meta = _read_existing_manifest(canonical.with_suffix(".manifest.json"))
-        expected_rows = canonical_meta.get("row_count")
-        actual_rows = sum(row_counts.values())
-        if isinstance(expected_rows, int) and actual_rows != expected_rows:
-            raise MaterializationError(
-                "activitywatch_event_index_materialize",
-                reason=(
-                    "full ActivityWatch index row count does not match the "
-                    f"canonical recovery carrier ({actual_rows} != {expected_rows})"
-                ),
-            )
-        canonical_row_count_verified = isinstance(expected_rows, int)
+        # The carrier is intentionally not used here: it can lag the owner
+        # SQLite/archive sources and a matching carrier count proves only that
+        # the stale carrier was copied faithfully.
+        canonical_row_count_verified = False
+        full_source_scan_completed = True
     input_files = activitywatch_event_index_input_files()
     manifest = {
         "dataset": "lynchpin.activitywatch_event_index",
         "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
         "generation": generation,
         "canonical_row_count_verified": canonical_row_count_verified,
+        "full_source_scan_completed": full_source_scan_completed,
         "date_boundary": "logical_06:00_local",
         "partition": "logical_date(event.start)",
         "product_paths": paths,
@@ -179,38 +178,12 @@ def materialize_activitywatch_event_index(
     return manifest
 
 
-def _iter_canonical_rows(path: Path) -> Iterable[dict[str, Any]]:
-    from ..materializers.partition_store import ArtifactStore
-
-    store = ArtifactStore(path.with_name(f".{path.stem}.partitions"))
-    selected = store.logical_partitions()
-    if selected:
-        for ref in sorted(selected.values(), key=lambda item: item.key.value):
-            for line in store.read(ref).decode().splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(payload, dict):
-                    yield payload
-        return
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                yield payload
-
-
-def _iter_tail_rows(*, start: date | None, end: date | None) -> Iterable[dict[str, Any]]:
-    assert start is not None and end is not None
-    source_start, source_end = date_to_dt_range(start, end - date.resolution)
+def _iter_live_rows(
+    *, start: date | None = None, end: date | None = None
+) -> Iterable[dict[str, Any]]:
+    source_start = source_end = None
+    if start is not None and end is not None:
+        source_start, source_end = date_to_dt_range(start, end - date.resolution)
     raw = events_from_activitywatch_dbs(
         BUCKET_PREFIXES,
         start=source_start,
@@ -225,6 +198,11 @@ def _iter_tail_rows(*, start: date | None, end: date | None) -> Iterable[dict[st
             "end": event.end.isoformat(),
             "data": event.data,
         }
+
+
+def _iter_tail_rows(*, start: date | None, end: date | None) -> Iterable[dict[str, Any]]:
+    assert start is not None and end is not None
+    yield from _iter_live_rows(start=start, end=end)
 
 
 def _exclusive_window_dates(start: date | None, end: date | None) -> frozenset[date] | None:
@@ -268,8 +246,14 @@ def _int_dict(value: Any) -> dict[str, int]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Materialize ActivityWatch logical-day event index")
-    parser.parse_args(argv)
-    report = materialize_activitywatch_event_index()
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        required=True,
+        help="explicitly rebuild every day from live SQLite and archived databases",
+    )
+    args = parser.parse_args(argv)
+    report = materialize_activitywatch_event_index(full=args.full)
     sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
     return 0
 
