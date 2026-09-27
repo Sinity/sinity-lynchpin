@@ -720,6 +720,14 @@ def test_google_takeout_audit_uses_product_manifest_bounds(monkeypatch, tmp_path
     assert row.first_date == date(2026, 1, 1)
     assert row.last_date == date(2026, 1, 2)
 
+    inventory_manifest = inventory_dir / "manifest.json"
+    payload = json.loads(inventory_manifest.read_text(encoding="utf-8"))
+    payload["unreadable_archives"] = [str(archive)]
+    inventory_manifest.write_text(json.dumps(payload), encoding="utf-8")
+    incomplete = materialization._google_takeout_dataset(cfg)
+    assert incomplete.status == "partial"
+    assert "1 raw Takeout archives could not be inventoried" in incomplete.reason
+
 
 def test_google_takeout_audit_marks_old_inventory_schema_partial(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization

@@ -8,7 +8,7 @@ import zipfile
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from ..core.config import get_config
 from .takeout_chrome import iter_takeout_chrome_visits
@@ -84,7 +84,7 @@ def product_counts(members: tuple[TakeoutMember, ...]) -> Counter[str]:
     return Counter(member.product for member in members)
 
 
-def iter_archive_members(path: Path) -> Iterator[TakeoutMember]:
+def iter_archive_members(path: Path, *, on_error: Callable[[Exception], None] | None = None) -> Iterator[TakeoutMember]:
     if path.suffix.lower() == ".zip":
         try:
             with zipfile.ZipFile(path) as zf:
@@ -98,7 +98,9 @@ def iter_archive_members(path: Path) -> Iterator[TakeoutMember]:
                         product=_takeout_product(member_path),
                         size_bytes=info.file_size,
                     )
-        except (OSError, zipfile.BadZipFile):
+        except (OSError, zipfile.BadZipFile) as exc:
+            if on_error is not None:
+                on_error(exc)
             return
         return
 
@@ -114,7 +116,9 @@ def iter_archive_members(path: Path) -> Iterator[TakeoutMember]:
                     product=_takeout_product(member_path),
                     size_bytes=member.size,
                 )
-    except (OSError, tarfile.TarError):
+    except (OSError, tarfile.TarError) as exc:
+        if on_error is not None:
+            on_error(exc)
         return
 
 

@@ -1778,6 +1778,7 @@ def _google_takeout_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     products_schema_current = product_meta.get("schema_version") == GOOGLE_TAKEOUT_PRODUCTS_SCHEMA_VERSION
     gmail_schema_current = gmail_meta.get("schema_version") == GMAIL_EVENTS_SCHEMA_VERSION
     inventory_inputs_current = _manifest_inputs_current(meta, archives)
+    unreadable_archives = meta.get("unreadable_archives")
     products_inputs_current = _manifest_inputs_current(product_meta, archives)
     gmail_inputs_current = _manifest_inputs_current(gmail_meta, archives)
     raw_product_counts = product_meta.get("products")
@@ -1809,6 +1810,9 @@ def _google_takeout_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     elif products_manifest_valid and not inventory_schema_current:
         status = "partial"
         reason = "Google Takeout inventory manifest schema is older than the current reader contract"
+    elif products_manifest_valid and unreadable_archives:
+        status = "partial"
+        reason = f"{len(unreadable_archives)} raw Takeout archives could not be inventoried"
     elif products_manifest_valid and not products_schema_current:
         status = "partial"
         reason = "Google Takeout typed product manifest schema is older than the current reader contract"
