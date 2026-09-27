@@ -90,9 +90,14 @@ def _read_substrate_status(path: Path) -> dict[str, Any]:
             latest_status = _latest_source_status(conn, "evidence_graph")
             latest_promotion = _latest_promotion(conn)
             promotion_count = _successful_promotion_count(conn)
-            publication_rows = dict(conn.execute(
-                "SELECT key, value FROM substrate_meta WHERE key IN ('publication_id', 'publication_at')"
-            ).fetchall())
+            try:
+                publication_rows = dict(conn.execute(
+                    "SELECT key, value FROM substrate_meta "
+                    "WHERE key IN ('publication_id', 'publication_at')"
+                ).fetchall())
+            except duckdb.CatalogException:
+                # Existing graph-only substrates predate publication metadata.
+                publication_rows = {}
             publication_id = publication_rows.get("publication_id")
             lineage_row = (conn.execute(
                 "SELECT message FROM substrate_run_step WHERE refresh_id = ? "
