@@ -174,30 +174,3 @@ def verify_snapshot(inventory: CapturedInventory) -> None:
             path = inventory.root / record.path
             if hashlib.sha256(path.read_bytes()).hexdigest() != record.sha256:
                 raise ValueError(f"captured snapshot hash mismatch: {record.path}")
-
-
-def build_overlay_views(primary: CapturedInventory, package: Path, cache: Path, datasets: tuple[str, ...]) -> None:
-    """Temporarily assemble overlays using links, retaining only their computed views."""
-    from .chisel_metrics import build_metrics
-    from .chisel_structure import build_structure
-
-    for path in sorted((package / "snapshots").glob("*/manifest.json")):
-        manifest = json.loads(path.read_text())
-        if manifest["snapshot_id"] == primary.snapshot_id:
-            continue
-        with tempfile.TemporaryDirectory(prefix=".overlay-view-", dir=package.parent) as temporary:
-            root = Path(temporary)
-            records = tuple(InventoryFile(**row) for row in manifest["files"])
-            for record in records:
-                if not record.included:
-                    continue
-                source = (path.parent / "files" if record.path in manifest["changed"] else primary.root) / record.path
-                target = root / record.path
-                target.parent.mkdir(parents=True, exist_ok=True)
-                os.link(source, target)
-            inventory = replace(primary, root=root, files=records,
-                snapshot_id=manifest["snapshot_id"], revision=manifest["revision"], dirty=manifest["dirty"])
-            if "metrics" in datasets:
-                build_metrics(inventory, path.parent)
-            if "structure" in datasets:
-                build_structure(inventory, path.parent, cache_dir=cache / "structure")

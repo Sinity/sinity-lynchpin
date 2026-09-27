@@ -2,7 +2,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from lynchpin.sources import chisel, chisel_context
+from lynchpin.analysis.projects import chisel_build as chisel
+from lynchpin.sources import chisel_context
 from lynchpin.sources.github import (
     GitHubActor,
     GitHubItem,

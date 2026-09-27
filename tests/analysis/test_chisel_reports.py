@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from lynchpin.sources import chisel
+from lynchpin.analysis.projects import chisel_build as chisel
 
 
 def test_beads_history_reports_unplaced_closures_and_current_open_count() -> None:

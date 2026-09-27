@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from lynchpin.analysis.projects.chisel_reports import build_reports
-from lynchpin.sources import chisel as source_chisel
+from lynchpin.analysis.projects import chisel_build
 from lynchpin.sources.chisel import (  # noqa: F401
     DEFAULT_IGNORE,
     DEFAULT_ISSUE_LIMIT,
@@ -22,4 +22,4 @@ from lynchpin.cli.chisel import main as run_from_cli  # noqa: F401
 
 
 def build_chisel_bundles(**kwargs: Any) -> dict[str, Any]:
-    return source_chisel.build_chisel_bundles(report_builder=build_reports, **kwargs)
+    return chisel_build.build_chisel_bundles(report_builder=build_reports, **kwargs)

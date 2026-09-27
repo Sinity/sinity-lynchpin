@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from lynchpin.sources import chisel
+from lynchpin.analysis.projects import chisel_build as chisel
 
 
 def _plan(path: Path) -> chisel.RepoPlan:

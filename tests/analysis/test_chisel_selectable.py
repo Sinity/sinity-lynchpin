@@ -8,11 +8,11 @@ from lynchpin.analysis.projects.chisel_reports import task_graph
 from lynchpin.cli.chisel import main
 from lynchpin.sources.chisel_attachments import build_attachments
 from lynchpin.sources.chisel_options import BuildOptions
-from lynchpin.sources.chisel_structure import _python_imports
+from lynchpin.analysis.projects.chisel_structure import _python_imports
 
 
 def test_cli_default_and_safe_selection(monkeypatch):
-    from lynchpin.sources import chisel
+    from lynchpin.analysis.projects import chisel_build as chisel
 
     calls = []
     monkeypatch.setattr(chisel, "build_chisel_bundles", lambda **kw: calls.append(kw) or {"published": True})
@@ -103,7 +103,8 @@ def test_default_attachments_include_portfolio_and_individual_projects(tmp_path)
 
 
 def test_default_context_never_invokes_network(monkeypatch):
-    from lynchpin.sources import chisel, chisel_options
+    from lynchpin.analysis.projects import chisel_build as chisel
+    from lynchpin.sources import chisel_options
 
     monkeypatch.setattr(chisel_options, "active_options", BuildOptions())
     monkeypatch.setattr(chisel, "_github_context_ready", None)

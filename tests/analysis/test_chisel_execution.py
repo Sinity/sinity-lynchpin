@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from lynchpin.sources import chisel
+from lynchpin.analysis.projects import chisel_build as chisel
 
 
 def test_root_index_persists_worker_measured_stage_timings(tmp_path: Path) -> None:
@@ -159,7 +159,7 @@ def test_cli_returns_success_when_all_projects_generated(monkeypatch) -> None:
 
 def test_projects_typer_command_exits_nonzero_for_partial_project(monkeypatch) -> None:
     from lynchpin.analysis.projects import cli as projects_cli
-    from lynchpin.sources import chisel as source_chisel
+    from lynchpin.analysis.projects import chisel_build as source_chisel
 
     monkeypatch.setattr(source_chisel, "build_chisel_bundles",
         lambda **_kwargs: {"projects": {"alpha": {"status": "partial"}}})

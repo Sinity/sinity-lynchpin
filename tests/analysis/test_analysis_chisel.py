@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from lynchpin.sources import chisel
+from lynchpin.analysis.projects import chisel_build as chisel
 from lynchpin.sources.github import GitHubActor, GitHubItem
 from lynchpin.sources.github_context import GitHubContextRow
 
@@ -1545,7 +1545,8 @@ def _mock_captured_build_seams(
         return [], 0
 
     monkeypatch.setattr(chisel_package, "captured_sidecars", sidecars)
-    monkeypatch.setattr(chisel_package, "evidence_outputs", lambda *_args, **_kwargs: [])
+    from lynchpin.analysis.projects import chisel_package as derived_package
+    monkeypatch.setattr(derived_package, "evidence_outputs", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(chisel_package, "verify_history_bundle", lambda *_args: None)
     monkeypatch.setattr(chisel_inventory, "verify_capture", lambda *_args: None)
 
@@ -1617,7 +1618,7 @@ def test_build_one_buffers_project_stages_for_its_summary(monkeypatch, tmp_path:
 def test_build_one_keeps_failed_stage_time_and_skips_package_finalization(
     monkeypatch, tmp_path: Path
 ) -> None:
-    from lynchpin.sources import chisel_package
+    from lynchpin.analysis.projects import chisel_package
 
     plan = chisel.RepoPlan(
         name="alpha",

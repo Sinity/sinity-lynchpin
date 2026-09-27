@@ -8,9 +8,11 @@ import tarfile
 import pytest
 
 from lynchpin.sources.chisel_options import BuildOptions
-from lynchpin.sources import chisel
+from lynchpin.analysis.projects import chisel_build as chisel
+from lynchpin.sources import chisel as source_chisel
 from lynchpin.analysis.projects.chisel import build_chisel_bundles
-from lynchpin.sources.chisel_package import evidence_outputs, verify_history_bundle
+from lynchpin.analysis.projects.chisel_package import evidence_outputs
+from lynchpin.sources.chisel_package import verify_history_bundle
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
@@ -148,7 +150,7 @@ def test_bundle_and_history_ref_mismatch_is_rejected(tmp_path, monkeypatch):
     (tmp_path / "history").mkdir()
     (tmp_path / "history/refs.jsonl").write_text(
         '{"name":"refs/heads/main","object":"abc"}\n')
-    monkeypatch.setattr(chisel, "_run", lambda *args, **kwargs:
+    monkeypatch.setattr(source_chisel, "_run", lambda *args, **kwargs:
                         subprocess.CompletedProcess([], 0, "def refs/heads/main\n", ""))
     with pytest.raises(RuntimeError, match="bundle refs do not match"):
         verify_history_bundle(SimpleNamespace(name="demo", path=tmp_path),
@@ -198,7 +200,7 @@ def test_bundle_rejects_missing_or_mismatched_head_and_true_refs(
     (tmp_path / "history/refs.jsonl").write_text(
         '{"name":"refs/heads/main","object":"abc"}\n')
     (tmp_path / "capture.json").write_text("{}\n")
-    monkeypatch.setattr(chisel, "_run", lambda *args, **kwargs:
+    monkeypatch.setattr(source_chisel, "_run", lambda *args, **kwargs:
                         subprocess.CompletedProcess([], 0, bundle_heads, ""))
     with pytest.raises(RuntimeError, match="bundle refs do not match"):
         verify_history_bundle(SimpleNamespace(name="demo", path=tmp_path),

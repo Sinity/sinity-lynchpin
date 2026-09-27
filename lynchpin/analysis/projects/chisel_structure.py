@@ -20,10 +20,10 @@ from collections import Counter, defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
-from .chisel_cache import atomic_write_text, copy_file
-from .chisel_compact import open_text, resolved_stream
+from lynchpin.sources.chisel_cache import atomic_write_text, copy_file
+from lynchpin.sources.chisel_compact import open_text, resolved_stream
 
-from .chisel_inventory import CapturedInventory
+from lynchpin.sources.chisel_inventory import CapturedInventory
 
 _TOOL_VERSION = "chisel-structure-v5"
 _SOURCE_ROLES = {"implementation", "tests", "tooling"}

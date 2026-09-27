@@ -8,9 +8,9 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-import lynchpin.sources.chisel_structure as structure
+import lynchpin.analysis.projects.chisel_structure as structure
 from lynchpin.sources.chisel_inventory import CapturedInventory, InventoryFile
-from lynchpin.sources.chisel_structure import build_structure
+from lynchpin.analysis.projects.chisel_structure import build_structure
 
 
 def _inventory(
@@ -271,7 +271,7 @@ def test_import_graph_src_layout_absolute_relative_and_cycles(tmp_path: Path) ->
 def test_portfolio_links_use_explicit_local_paths_not_dependency_names(
     tmp_path: Path,
 ) -> None:
-    from lynchpin.sources.chisel_structure import build_portfolio_links
+    from lynchpin.analysis.projects.chisel_structure import build_portfolio_links
 
     source_path = tmp_path / "repos" / "source"
     target_path = tmp_path / "repos" / "target"
