@@ -115,7 +115,7 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
             ActionSpec("graph", "Evidence graph build list or summary.", "converge", parameters=("refresh_id", "start", "end"), response_kind="evidence_graph"),
             ActionSpec("timeline", "Evidence/project-day timeline rows.", "converge", parameters=("refresh_id", "start", "end", "project", "limit"), response_kind="timeline"),
             ActionSpec("walk", "Walk evidence graph edges from a node.", "converge", parameters=("start_id", "refresh_id", "limit"), requires=("start_id",), response_kind="evidence_walk"),
-            ActionSpec("claims", "Analysis claims.", "converge", parameters=("start", "end", "project", "refresh_id", "limit"), response_kind="analysis_claims"),
+            ActionSpec("claims", "Paginated analysis claims; reuse refresh_id and next_offset to continue one snapshot.", "converge", parameters=("start", "end", "project", "refresh_id", "limit", "offset"), response_kind="analysis_claims"),
             ActionSpec("claim_evidence", "Evidence for one analysis claim.", "converge", parameters=("claim_id", "refresh_id", "limit"), requires=("claim_id",), response_kind="claim_evidence"),
             ActionSpec("coverage", "Source contract coverage.", "read", parameters=("project", "start", "end"), response_kind="coverage"),
             ActionSpec("confidence", "Substrate confidence matrix.", "read", parameters=("refresh_id",), response_kind="confidence_matrix"),
@@ -141,7 +141,7 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
             ActionSpec("verification_regression", "Comparable command and acceptance outcome changes.", "read", parameters=tuple(PROJECT_INPUTS["verification_regression"].model_fields), requires=tuple(input_schema("verification_regression").get("required", [])), response_kind="verification_regression"),
             ActionSpec("project_trajectory", "Bounded retained attempt and publication timeline.", "read", parameters=tuple(PROJECT_INPUTS["project_trajectory"].model_fields), requires=tuple(input_schema("project_trajectory").get("required", [])), response_kind="project_trajectory"),
             ActionSpec("project_context", "Bounded project context with independent owner coverage and one graph generation.", "read", parameters=tuple(PROJECT_INPUTS["project_context"].model_fields), requires=tuple(input_schema("project_context").get("required", [])), response_kind="project_context"),
-            ActionSpec("snapshots", "Chisel/code snapshot status, slices, and audit.", "read", parameters=("repo", "project", "view"), views=("status", "runs", "slices", "audit"), response_kind="code_snapshots"),
+            ActionSpec("snapshots", "Chisel/code snapshot status, slices, and audit.", "read", parameters=("repo", "project", "view"), views=("status", "slices", "audit"), response_kind="code_snapshots"),
         ),
     ),
     PublicToolSpec(

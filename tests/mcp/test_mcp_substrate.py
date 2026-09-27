@@ -498,6 +498,97 @@ def test_analysis_claims_includes_end_date(tmp_path: Path, monkeypatch: pytest.M
     assert [row["summary"] for row in rows] == ["on-end"]
 
 
+def test_analysis_claims_page_reports_and_continues_beyond_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+
+    from lynchpin.mcp.tools.substrate import analysis_claims_page
+    from lynchpin.substrate.claims import AnalysisClaimRow, promote_analysis_claims
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    claims = [
+        AnalysisClaimRow(
+            claim_id=f"claim:{index}",
+            claim_type="supported_work",
+            project="lynchpin",
+            date=date(2026, 5, 1),
+            support_level="strong",
+            confidence=0.85,
+            score=4.2,
+            summary=f"claim {index}",
+            source_ids=(),
+            relation_ids=(),
+            caveats=(),
+            payload={},
+        )
+        for index in range(3)
+    ]
+    with connect(substrate_path()) as conn:
+        promote_analysis_claims(conn, refresh_id="rid-claims-old", claims=claims)
+
+    selected = {"refresh_id": "rid-claims-old"}
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.substrate.ensure_substrate_materialized_for_read",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools._utils.require_best_materialized_refresh_id",
+        lambda *_args, **_kwargs: selected["refresh_id"],
+    )
+
+    empty = analysis_claims_page(project="not-present")
+    assert empty["rows"] == []
+    assert empty["refresh_id"] == "rid-claims-old"
+
+    first = analysis_claims_page(limit=2)
+    assert first["refresh_id"] == "rid-claims-old"
+    assert first["offset"] == 0
+    assert first["has_more"] is True
+    assert first["next_offset"] == 2
+    assert len(first["rows"]) == 2
+
+    with connect(substrate_path()) as conn:
+        promote_analysis_claims(
+            conn,
+            refresh_id="rid-claims-new",
+            claims=[AnalysisClaimRow(
+                claim_id="claim:new",
+                claim_type="supported_work",
+                project="lynchpin",
+                date=date(2026, 5, 2),
+                support_level="strong",
+                confidence=0.95,
+                score=5.2,
+                summary="new claim",
+                source_ids=(),
+                relation_ids=(),
+                caveats=(),
+                payload={},
+            )],
+        )
+    selected["refresh_id"] = "rid-claims-new"
+
+    second = analysis_claims_page(
+        refresh_id=first["refresh_id"],
+        limit=2,
+        offset=first["next_offset"],
+    )
+    assert second["has_more"] is False
+    assert second["next_offset"] is None
+    assert second["refresh_id"] == "rid-claims-old"
+    assert [row["claim_id"] for row in first["rows"] + second["rows"]] == [
+        "claim:0", "claim:1", "claim:2",
+    ]
+
+
+def test_analysis_claims_page_rejects_negative_offset() -> None:
+    from lynchpin.mcp.tools.substrate import analysis_claims_page
+
+    with pytest.raises(ValueError, match="offset must be non-negative"):
+        analysis_claims_page(offset=-1)
+
+
 def test_claim_evidence_default_snapshot_prefers_broad_claim_materialization(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

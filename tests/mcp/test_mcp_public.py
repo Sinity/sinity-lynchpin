@@ -70,26 +70,30 @@ def test_lynchpin_project_routes_repo_names(tmp_path: Path, monkeypatch: pytest.
     assert isinstance(result["data"], list)
 
 
-def test_lynchpin_project_routes_snapshot_audit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lynchpin_project_dispatches_every_declared_snapshot_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     setup_substrate(tmp_path, monkeypatch)
-    root = tmp_path / "snapshots"
-    project_dir = root / "alpha"
-    project_dir.mkdir(parents=True)
-    (project_dir / "alpha-snapshot-audit.json").write_text(
-        '{"project":"alpha","status":"ok","open_first":[]}\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("lynchpin.sources.code_snapshots.code_snapshots_path", lambda project=None: root / project if project else root)
+    expected = {
+        "status": {"view": "status"},
+        "slices": {"view": "slices", "project": "alpha"},
+        "audit": {"view": "audit", "project": "alpha"},
+    }
+    monkeypatch.setattr("lynchpin.mcp.tools.code_snapshots.code_snapshot_status", lambda: expected["status"])
+    monkeypatch.setattr("lynchpin.mcp.tools.code_snapshots.list_code_snapshot_slices", lambda *, project=None: {"view": "slices", "project": project})
+    monkeypatch.setattr("lynchpin.mcp.tools.code_snapshots.code_snapshot_audit", lambda *, project=None: {"view": "audit", "project": project})
 
+    from lynchpin.mcp.registry import public_action_spec
     from lynchpin.mcp.tools.public import lynchpin_project
 
-    result = lynchpin_project(action="snapshots", view="audit", project="alpha")
+    spec = public_action_spec("lynchpin_project", "snapshots")
+    assert spec is not None
+    assert set(spec.views) == set(expected)
 
-    assert result["ok"] is True
-    assert result["meta"]["tool"] == "lynchpin_project"
-    assert result["meta"]["action"] == "snapshots"
-    assert result["data"]["audit_count"] == 1
-    assert result["data"]["audits"][0]["project"] == "alpha"
+    for view in spec.views:
+        result = lynchpin_project(action="snapshots", view=view, project="alpha")
+        assert result["ok"] is True
+        assert result["data"] == expected[view]
 
 
 def test_invalid_actions_return_structured_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -250,6 +254,34 @@ def test_project_and_evidence_routes_label_source_modes(
     assert timeline["meta"]["coverage_end"] == "2026-06-30"
     assert timeline["meta"]["matched_row_count"] == 0
     assert "freshness_warning" in timeline["meta"]
+
+
+def test_claims_route_passes_pagination_offset(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def fake_analysis_evidence(**kwargs):
+        calls.append(kwargs)
+        return {
+            "rows": [], "refresh_id": "rid", "limit": 25, "offset": 50,
+            "has_more": False, "next_offset": None,
+        }
+
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.substrate.analysis_evidence",
+        fake_analysis_evidence,
+    )
+
+    from lynchpin.mcp.tools.public import lynchpin_evidence
+
+    result = lynchpin_evidence(action="claims", refresh_id="rid", limit=25, offset=50)
+
+    assert result["ok"] is True
+    assert result["data"] == []
+    assert result["meta"]["refresh_id"] == "rid"
+    assert result["meta"]["next_offset"] is None
+    assert calls == [{
+        "view": "claims", "refresh_id": "rid", "limit": 25, "offset": 50,
+    }]
 
 
 def test_timeline_metadata_observes_the_generation_returned_after_refresh(

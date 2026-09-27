@@ -536,6 +536,7 @@ def lynchpin_evidence(
     claim_id: str | None = None,
     limit: int = 100,
     start_id: str | None = None,
+    offset: int = 0,
 ) -> dict[str, Any]:
     """Evidence router. action: graph, timeline, walk, claims, claim_evidence, coverage, confidence, crossref."""
     if invalid := _mark_route("lynchpin_evidence", action):
@@ -562,7 +563,18 @@ def lynchpin_evidence(
             return _error("missing_argument", "start_id is required for evidence walk")
         return _internal_call("lynchpin.mcp.tools.views", "walk_evidence", start_id=start_id, refresh_id=refresh_id, max_nodes=limit)
     if action == "claims":
-        return _internal_call("lynchpin.mcp.tools.substrate", "analysis_evidence", view="claims", start=start, end=end, project=project, refresh_id=refresh_id, limit=limit)
+        result = _internal_call("lynchpin.mcp.tools.substrate", "analysis_evidence", view="claims", start=start, end=end, project=project, refresh_id=refresh_id, limit=limit, offset=offset)
+        if result.get("ok"):
+            page = result["data"]
+            result["data"] = page["rows"]
+            result["meta"].update({
+                "refresh_id": page["refresh_id"],
+                "limit": page["limit"],
+                "offset": page["offset"],
+                "has_more": page["has_more"],
+                "next_offset": page["next_offset"],
+            })
+        return result
     if action == "claim_evidence":
         if not claim_id:
             return _error("missing_argument", "claim_id is required for claim_evidence")

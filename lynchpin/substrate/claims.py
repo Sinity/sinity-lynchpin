@@ -175,6 +175,7 @@ def load_analysis_claims(
     claim_type: str | None = None,
     min_confidence: float | None = None,
     limit: int = 200,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     from lynchpin.substrate.graph import _logical_graph_relation
 
@@ -220,7 +221,9 @@ def load_analysis_claims(
         clauses.append("confidence >= ?")
         params.append(float(min_confidence))
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
-    params.append(min(max(limit, 1), 10_000))
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
+    params.extend((min(max(limit, 1), 10_001), offset))
     rows = conn.execute(
         f"""
         SELECT refresh_id, claim_id, claim_type, project, date, support_level,
@@ -228,8 +231,9 @@ def load_analysis_claims(
                materialized_at
         FROM {relation}
         {where}
-        ORDER BY confidence DESC, score DESC, date DESC NULLS LAST, project
+        ORDER BY confidence DESC, score DESC, date DESC NULLS LAST, project, claim_id
         LIMIT ?
+        OFFSET ?
         """,
         params,
     ).fetchall()

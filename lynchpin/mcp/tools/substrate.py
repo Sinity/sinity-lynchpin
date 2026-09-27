@@ -670,7 +670,32 @@ def analysis_claims(
     claim_type: str | None = None,
     min_confidence: float | None = None,
     limit: int = 200,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
+    rows, _selected_refresh_id = _read_analysis_claims(
+        refresh_id=refresh_id,
+        project=project,
+        start=start,
+        end=end,
+        claim_type=claim_type,
+        min_confidence=min_confidence,
+        limit=limit,
+        offset=offset,
+    )
+    return rows
+
+
+def _read_analysis_claims(
+    *,
+    refresh_id: str | None,
+    project: str | None,
+    start: str | None,
+    end: str | None,
+    claim_type: str | None,
+    min_confidence: float | None,
+    limit: int,
+    offset: int,
+) -> tuple[list[dict[str, Any]], str | None]:
     """Persisted analysis claims with confidence, caveats, and evidence IDs."""
     from datetime import date as _date
 
@@ -694,7 +719,7 @@ def analysis_claims(
                 caller="analysis_claims",
                 tool="analysis_claims",
             )
-        return [
+        rows = [
             _json_safe(row)
             for row in load_analysis_claims(
                 conn,
@@ -705,8 +730,49 @@ def analysis_claims(
                 claim_type=claim_type,
                 min_confidence=min_confidence,
                 limit=limit,
+                offset=offset,
             )
         ]
+    selected_refresh_id = refresh_id or (rows[0].get("refresh_id") if rows else None)
+    return rows, selected_refresh_id
+
+
+def analysis_claims_page(
+    refresh_id: str | None = None,
+    project: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    claim_type: str | None = None,
+    min_confidence: float | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Return one stable claim page, with enough metadata to continue it."""
+    page_limit = min(max(int(limit), 1), 10_000)
+    page_offset = int(offset)
+    if page_offset < 0:
+        raise ValueError("offset must be non-negative")
+
+    rows, selected_refresh_id = _read_analysis_claims(
+        refresh_id=refresh_id,
+        project=project,
+        start=start,
+        end=end,
+        claim_type=claim_type,
+        min_confidence=min_confidence,
+        limit=page_limit + 1,
+        offset=page_offset,
+    )
+    has_more = len(rows) > page_limit
+    selected = rows[:page_limit]
+    return {
+        "rows": selected,
+        "refresh_id": selected_refresh_id,
+        "limit": page_limit,
+        "offset": page_offset,
+        "has_more": has_more,
+        "next_offset": page_offset + len(selected) if has_more else None,
+    }
 
 
 def claim_evidence(
@@ -1300,16 +1366,17 @@ def analysis_evidence(
     min_confidence: float | None = None,
     refresh_id: str | None = None,
     limit: int = 200,
+    offset: int = 0,
 ) -> Any:
     """Analysis claims and evidence.
 
     Parameters:
-        view: claims (list analysis claims for date range),
+        view: claims (one paged analysis-claims result for the date range),
               calibration (claim calibration statistics),
               evidence (evidence for a specific claim; requires claim_id).
     """
     if view == "claims":
-        return analysis_claims(
+        return analysis_claims_page(
             refresh_id=refresh_id,
             project=project,
             start=start,
@@ -1317,6 +1384,7 @@ def analysis_evidence(
             claim_type=claim_type,
             min_confidence=min_confidence,
             limit=limit,
+            offset=offset,
         )
     if view == "calibration":
         return analysis_claim_calibration(refresh_id=refresh_id, project=project, claim_type=claim_type, limit=limit)
