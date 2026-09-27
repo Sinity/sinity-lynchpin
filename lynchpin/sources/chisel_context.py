@@ -61,7 +61,7 @@ def build_context(
 
     owner_id, owner_descriptor = _owner_project(package_dir / "source", project)
     evidence = read_native_evidence(owner_id)
-    jobs = _agentctl_jobs(owner_id)
+    jobs = _compact_job_details(_agentctl_jobs(owner_id), package_dir, revision)
     from .campaign import read_batches
     from .beads import read_tasks
 
@@ -116,10 +116,6 @@ def build_context(
             *(
                 {"kind": "agentctl_job_observation", **row}
                 for row in normalized["job_observations"]
-            ),
-            *(
-                {"kind": "agentctl_job_execution", **row}
-                for row in jobs.get("details", [])
             ),
         ],
     )
@@ -742,6 +738,55 @@ def _agentctl_job_detail(row: Any, reference: str) -> dict[str, Any] | None:
         "artifact_refs": detail.get("artifacts"),
         "interpretation": "Job execution and endpoint receipts do not by themselves establish test acceptance or immutable execution.",
     }
+
+
+def _compact_job_details(jobs: dict[str, Any], package_dir: Path, primary_revision: str) -> dict[str, Any]:
+    """Keep owner details once, with reusable content manifests by digest."""
+    catalogue = package_dir / "snapshots.json"
+    revisions = {primary_revision}
+    if catalogue.is_file():
+        revisions.update(row["revision"] for row in json.loads(catalogue.read_text()).get("snapshots", [])
+                         if isinstance(row, dict) and isinstance(row.get("revision"), str))
+    manifest_dir = package_dir / "owners/content-manifests"
+    compact = []
+    full = summarized = 0
+    for detail in jobs.get("details", []):
+        entry = dict(detail)
+        receipt = entry.get("execution_receipt")
+        if isinstance(receipt, dict):
+            receipt = dict(receipt)
+            start = receipt.get("start") or {}
+            end = receipt.get("end") or {}
+            relevant = (isinstance(start, dict) and isinstance(end, dict)
+                        and start.get("head") == end.get("head")
+                        and start.get("head") in revisions)
+            for endpoint in ("start", "end"):
+                observed = receipt.get(endpoint)
+                if not isinstance(observed, dict):
+                    continue
+                observed = dict(observed)
+                manifest = observed.pop("content_manifest", None)
+                if isinstance(manifest, dict):
+                    observed["content_manifest_summary"] = {
+                        key: manifest.get(key) for key in ("schema_version", "sha256", "coverage", "scope", "coherence", "bytes_hashed", "omissions")
+                    }
+                    if relevant:
+                        encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+                        digest = hashlib.sha256(encoded).hexdigest()
+                        manifest_dir.mkdir(parents=True, exist_ok=True)
+                        path = manifest_dir / f"{digest}.json"
+                        if not path.exists():
+                            path.write_bytes(encoded + b"\n")
+                        observed["content_manifest_ref"] = f"sha256:{digest}"
+                receipt[endpoint] = observed
+            entry["execution_receipt"] = receipt
+            full += bool(relevant)
+            summarized += not relevant
+        compact.append(entry)
+    coverage = dict(jobs.get("detail_coverage") or {})
+    coverage.update({"full_content_details": full, "endpoint_summary_only": summarized,
+                     "unique_content_manifests": len(list(manifest_dir.glob("*.json"))) if manifest_dir.exists() else 0})
+    return {**jobs, "details": compact, "detail_coverage": coverage}
 
 
 def _write_verification_markdown(path: Path, payload: dict[str, Any]) -> None:

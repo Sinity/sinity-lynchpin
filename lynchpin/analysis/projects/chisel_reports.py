@@ -200,6 +200,29 @@ def content_match(files: list[dict[str, Any]], receipt: dict[str, Any] | None) -
             "interpretation": "Endpoint content match does not establish interval immutability or acceptance."}
 
 
+def _owner_receipt(package: Path, receipt: dict[str, Any]) -> dict[str, Any]:
+    """Expand only digest-addressed manifests needed for a snapshot comparison."""
+    result = dict(receipt)
+    for endpoint in ("start", "end"):
+        row = result.get(endpoint)
+        if not isinstance(row, dict) or "content_manifest" in row:
+            continue
+        ref = row.get("content_manifest_ref")
+        if not isinstance(ref, str) or not ref.startswith("sha256:"):
+            continue
+        digest = ref.removeprefix("sha256:")
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            continue
+        path = package / "owners/content-manifests" / f"{digest}.json"
+        if not path.is_file():
+            continue
+        raw = path.read_bytes().rstrip(b"\n")
+        if hashlib.sha256(raw).hexdigest() != digest:
+            continue
+        result[endpoint] = {**row, "content_manifest": json.loads(raw)}
+    return result
+
+
 def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict[str, Any]:
     capture = json.loads((package / "capture.json").read_text())
     snapshot = capture["snapshot_id"]
@@ -299,7 +322,9 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
         by_snapshot[manifest["snapshot_id"]] = manifest["files"]
     candidates = []
     native_records = [r for r in verification if r.get("kind") == "native_evidence"]
-    execution_details = [r for r in verification if r.get("kind") == "agentctl_job_execution"]
+    owner_jobs = package / "owners/jobs.json"
+    execution_details = (json.loads(owner_jobs.read_text()).get("details") or []) if owner_jobs.is_file() else [
+        r for r in verification if r.get("kind") == "agentctl_job_execution"]
     for selected in catalogue["snapshots"]:
         selected_id = selected.get("snapshot_id")
         selected_revision = selected.get("revision")
@@ -346,7 +371,7 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
                 continue
             if start.get("head") != selected_revision or end.get("head") != selected_revision:
                 continue
-            comparison = content_match(by_snapshot[selected_id], receipt)
+            comparison = content_match(by_snapshot[selected_id], _owner_receipt(package, receipt))
             if comparison["complete_scope_match"] is True:
                 method = "complete_scope_endpoint_content"
             elif (selected.get("dirty") is False

@@ -251,6 +251,30 @@ def test_agentctl_job_detail_requires_matching_launch_reference(monkeypatch):
     assert calls[0] == ["agentctl", "job", "get", "12", "--reference", "expected-launch", "--json"]
 
 
+def test_job_content_manifests_are_deduplicated_and_unrelated_details_summarized(tmp_path):
+    manifest = {"schema_version": 1, "sha256": "contents", "coverage": "complete_declared_scope",
+                "scope": "captured inputs", "files": [{"path": "a.py", "sha256": "abc"}], "omissions": []}
+    def detail(head):
+        return {"reference": head, "execution_receipt": {
+            "start": {"head": head, "content_manifest": manifest},
+            "end": {"head": head, "content_manifest": manifest}}}
+
+    jobs = {"details": [detail("selected"), detail("selected"), detail("other")],
+            "detail_coverage": {"selected_count": 3}}
+    compact = chisel_context._compact_job_details(jobs, tmp_path, "selected")
+    assert compact["detail_coverage"]["full_content_details"] == 2
+    assert compact["detail_coverage"]["endpoint_summary_only"] == 1
+    assert compact["detail_coverage"]["unique_content_manifests"] == 1
+    selected = compact["details"][0]["execution_receipt"]["start"]
+    unrelated = compact["details"][2]["execution_receipt"]["start"]
+    assert selected["content_manifest_ref"].startswith("sha256:")
+    assert "content_manifest_ref" not in unrelated
+    assert "content_manifest" not in selected and "content_manifest" not in unrelated
+    from lynchpin.analysis.projects.chisel_reports import _owner_receipt
+    expanded = _owner_receipt(tmp_path, compact["details"][0]["execution_receipt"])
+    assert expanded["start"]["content_manifest"] == manifest
+
+
 def test_github_actions_runs_keep_owner_facts_and_revision_applicability(tmp_path):
     pages = []
 
