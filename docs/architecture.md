@@ -160,6 +160,9 @@ record the receipt in the existing freshness ledger.
 Nightly tail maintenance checks the code snapshot state but leaves Chisel
 portfolio builds to an explicit `just chisel` or code-snapshot materialization;
 a Git ref moving does not schedule a full portfolio rebuild overnight.
+`agentctl job start lynchpin materialize_plan` previews this bounded maintenance
+selection, including check-only products. An explicit all-products plan is
+available through `python -m lynchpin.cli.materialize --all --plan-json`.
 For a dated source with a proven historical product more than 31 days behind,
 each maintenance pass processes one bounded window. A manifest with an
 unfinished window stays eligible on the next pass even if its input fingerprint
