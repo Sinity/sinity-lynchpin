@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-POLICY_VERSION = "chisel-role-policy-5"
+POLICY_VERSION = "chisel-role-policy-6"
 ROLES = frozenset({"implementation", "tests", "tooling", "documentation", "context", "evidence", "unclassified"})
 
 
@@ -301,6 +301,14 @@ def capture_inventory(
                 resolved = (src.parent / target).resolve()
                 if not resolved.is_relative_to(source):
                     records.append(InventoryFile(rel, None, None, "context", "symlink provenance", included_by, tuple(excluded_by), "escaping_symlink", False, target, None))
+                    continue
+                resolved_rel = resolved.relative_to(source).as_posix()
+                if _matches(resolved_rel, excludes):
+                    records.append(InventoryFile(
+                        rel, None, None, role, reason, included_by,
+                        ("symlink_target_excluded",), "excluded_symlink", False,
+                        target, None,
+                    ))
                     continue
                 # Preserve link metadata in inventory; materialize its in-repo
                 # target under the link path only when the resolved target is a file.

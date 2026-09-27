@@ -178,6 +178,41 @@ def test_excluded_file_is_not_read_or_hashed(tmp_path: Path, monkeypatch: pytest
     assert row.size_bytes == len(b"private contents")
 
 
+def test_symlink_to_excluded_target_is_not_copied_but_neutral_key_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "src").mkdir()
+    credentials = repo / "credentials.json"
+    credentials.write_text('{"fixture_secret": "synthetic-only"}\n')
+    (repo / "settings.json").symlink_to("credentials.json")
+    (repo / "src" / "fixture.key").write_text("neutral synthetic fixture\n")
+    plan = SimpleNamespace(name="demo", path=repo, extra_ignore=(), slices=())
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path == credentials:
+            raise AssertionError("excluded symlink target content was read")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+
+    result = capture_inventory(
+        plan, tmp_path / "out", default_ignore=("credentials.json",)
+    )
+
+    rows = {row.path: row for row in result.files}
+    assert not rows["settings.json"].included
+    assert rows["settings.json"].sha256 is None
+    assert rows["settings.json"].source_kind == "excluded_symlink"
+    assert rows["settings.json"].excluded_by == ("symlink_target_excluded",)
+    assert not (result.root / "settings.json").exists()
+    assert rows["src/fixture.key"].included
+    assert (result.root / "src/fixture.key").read_text() == "neutral synthetic fixture\n"
+
+
 def test_ignored_agent_discovery_prunes_cache_and_target_trees(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
