@@ -98,28 +98,28 @@ def test_query_substrate_identifies_read_snapshot_fallback(
 def test_query_substrate_rejects_drop_table() -> None:
     from lynchpin.mcp.tools.substrate import query_substrate
 
-    with pytest.raises(ValueError, match="disallowed"):
+    with pytest.raises(ValueError, match="non-SELECT"):
         query_substrate("DROP TABLE commit_fact")
 
 
 def test_query_substrate_rejects_insert() -> None:
     from lynchpin.mcp.tools.substrate import query_substrate
 
-    with pytest.raises(ValueError, match="disallowed"):
+    with pytest.raises(ValueError, match="non-SELECT"):
         query_substrate("INSERT INTO commit_fact VALUES (1)")
 
 
 def test_query_substrate_rejects_delete() -> None:
     from lynchpin.mcp.tools.substrate import query_substrate
 
-    with pytest.raises(ValueError, match="disallowed"):
+    with pytest.raises(ValueError, match="non-SELECT"):
         query_substrate("DELETE FROM commit_fact WHERE 1=1")
 
 
 def test_query_substrate_rejects_create() -> None:
     from lynchpin.mcp.tools.substrate import query_substrate
 
-    with pytest.raises(ValueError, match="disallowed"):
+    with pytest.raises(ValueError, match="non-SELECT"):
         query_substrate("CREATE TABLE x (id INTEGER)")
 
 
@@ -151,12 +151,54 @@ def test_query_substrate_tolerates_leading_block_comment(
     assert result["row_count"] == 1
 
 
-def test_query_substrate_still_rejects_disallowed_after_comment() -> None:
-    """The comment-skip must not let disallowed statements sneak through."""
+def test_query_substrate_still_rejects_non_select_after_comment() -> None:
+    """Leading comments do not change the parsed kind of the statement."""
     from lynchpin.mcp.tools.substrate import query_substrate
 
-    with pytest.raises(ValueError, match="disallowed"):
+    with pytest.raises(ValueError, match="non-SELECT"):
         query_substrate("-- innocent\nDROP TABLE commit_fact")
+
+
+def test_query_substrate_rejects_multiple_select_statements() -> None:
+    from lynchpin.mcp.tools.substrate import query_substrate
+
+    with pytest.raises(ValueError, match="multiple statements"):
+        query_substrate("SELECT 1; SELECT 2")
+
+
+def test_query_substrate_rejects_chained_set_statement() -> None:
+    from lynchpin.mcp.tools.substrate import query_substrate
+
+    with pytest.raises(ValueError, match="multiple statements"):
+        query_substrate("SELECT 1; SET threads=1")
+
+
+def test_query_substrate_rejects_chained_copy_before_file_write(tmp_path: Path) -> None:
+    from lynchpin.mcp.tools.substrate import query_substrate
+
+    destination = tmp_path / "must-not-exist.csv"
+    with pytest.raises(ValueError, match="multiple statements"):
+        query_substrate(f"SELECT 1; COPY (SELECT 7) TO '{destination}'")
+    assert not destination.exists()
+
+
+def test_query_substrate_rejects_single_copy_statement(tmp_path: Path) -> None:
+    from lynchpin.mcp.tools.substrate import query_substrate
+
+    destination = tmp_path / "must-not-exist.csv"
+    with pytest.raises(ValueError, match="non-SELECT statement"):
+        query_substrate(f"COPY (SELECT 7) TO '{destination}'")
+    assert not destination.exists()
+
+
+def test_query_substrate_allows_keyword_text_in_select(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+    from lynchpin.mcp.tools.substrate import query_substrate
+
+    result = query_substrate("SELECT 'update' AS label")
+    assert result["rows"] == [["update"]]
 
 
 def test_query_substrate_truncates_at_max_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

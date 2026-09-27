@@ -26,23 +26,6 @@ from lynchpin.mcp.tools._utils import latest_materialized_refresh_id
 # JSON serialisation helpers
 # ---------------------------------------------------------------------------
 
-_DISALLOWED_TOKENS = frozenset(
-    {
-        "insert",
-        "update",
-        "delete",
-        "drop",
-        "create",
-        "alter",
-        "attach",
-        "truncate",
-        "vacuum",
-        "pragma",
-        "install",
-        "load",
-    }
-)
-
 _MAX_ROWS_HARD_CAP = 10_000
 
 
@@ -66,35 +49,20 @@ class QueryRefreshMismatch(Exception):
 
 
 def _is_select_only(sql: str) -> bool:
-    """Return True if *sql* starts with SELECT or a CTE (WITH … SELECT).
+    """Return True only for one DuckDB-parsed SELECT statement.
 
-    Also rejects any statement that contains a disallowed keyword token.
-    The token check is case-insensitive and word-boundary-aware (split on
-    whitespace/punctuation) to avoid false positives on column names such as
-    ``updated_at`` or ``created_by``.
+    Prefix and keyword checks cannot distinguish SQL syntax from text inside
+    string literals, and they allow a read query followed by another
+    statement. DuckDB's parser identifies both statement boundaries and the
+    statement kind without executing the query.
     """
-    import re
+    import duckdb
 
-    # Strip leading SQL comments (line `-- ...` and block `/* ... */`) so the
-    # prefix check survives header comments that humans/agents naturally put
-    # at the top of analytical queries.
-    stripped = sql.strip()
-    while stripped.startswith("--") or stripped.startswith("/*"):
-        if stripped.startswith("--"):
-            newline = stripped.find("\n")
-            stripped = stripped[newline + 1 :].lstrip() if newline != -1 else ""
-        else:
-            end = stripped.find("*/")
-            stripped = stripped[end + 2 :].lstrip() if end != -1 else ""
-    upper = stripped.upper()
-
-    # Must start with SELECT or a CTE
-    if not (upper.startswith("SELECT") or upper.startswith("WITH")):
+    try:
+        statements = duckdb.extract_statements(sql)
+    except duckdb.Error:
         return False
-
-    # Token scan: split on non-alphanumeric chars, check each word
-    tokens = {t.lower() for t in re.split(r"\W+", stripped) if t}
-    return not tokens.intersection(_DISALLOWED_TOKENS)
+    return len(statements) == 1 and statements[0].type == duckdb.StatementType.SELECT
 
 
 def _best_commit_ai_join_refresh_id(conn: Any) -> str | None:
@@ -135,11 +103,11 @@ def query_substrate(
     """Execute a read-only SELECT against the lynchpin substrate.
 
     Allowed: SELECT statements and CTEs (WITH … SELECT).
-    Rejected: any DDL/DML keyword (INSERT, UPDATE, DELETE, DROP, CREATE, ALTER,
-    ATTACH, TRUNCATE, VACUUM, PRAGMA, INSTALL, LOAD).
+    Rejected: multiple statements and all statements other than SELECT,
+    including DDL/DML, COPY, SET, and administrative statements.
 
     The connection is opened with ``read_only=True`` so DuckDB enforces the
-    constraint at the engine level in addition to the keyword check.
+    constraint at the engine level in addition to the parser check.
     When ``expected_refresh_id`` is set, the query runs only if that ID matches
     the serving generation selected under the publication lock.
 
@@ -159,7 +127,7 @@ def query_substrate(
     if not _is_select_only(sql):
         raise ValueError(
             "Only SELECT statements are permitted. "
-            "Detected a disallowed keyword or non-SELECT statement."
+            "Detected multiple statements or a non-SELECT statement."
         )
     if max_rows < 1:
         raise ValueError("max_rows must be positive")
