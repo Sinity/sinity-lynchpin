@@ -718,6 +718,7 @@ def _read_analysis_claims(
     min_confidence: float | None,
     limit: int,
     offset: int,
+    expected_publication_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     """Persisted analysis claims with confidence, caveats, and evidence IDs."""
     from datetime import date as _date
@@ -735,6 +736,11 @@ def _read_analysis_claims(
         )
 
     with serving_generation(substrate_path()) as serving:
+        if expected_publication_id is not None and serving.publication_id != expected_publication_id:
+            raise QueryPublicationMismatch(
+                expected_publication_id=expected_publication_id,
+                actual_publication_id=serving.publication_id,
+            )
         conn = serving.connection
         if refresh_id is None:
             refresh_id = best_materialized_refresh_id(
@@ -775,6 +781,7 @@ def analysis_claims_page(
     min_confidence: float | None = None,
     limit: int = 200,
     offset: int = 0,
+    expected_publication_id: str | None = None,
 ) -> dict[str, Any]:
     """Return one stable claim page, with enough metadata to continue it."""
     page_limit = min(max(int(limit), 1), 10_000)
@@ -791,6 +798,7 @@ def analysis_claims_page(
         min_confidence=min_confidence,
         limit=page_limit + 1,
         offset=page_offset,
+        expected_publication_id=expected_publication_id,
     )
     has_more = len(rows) > page_limit
     selected = rows[:page_limit]
@@ -808,6 +816,9 @@ def analysis_claims_page(
 def claim_evidence(
     claim_id: str,
     refresh_id: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    expected_publication_id: str | None = None,
 ) -> dict[str, Any]:
     """Return one claim and integrity of its selected logical generation."""
     from lynchpin.substrate.claims import load_claim_evidence
@@ -818,6 +829,11 @@ def claim_evidence(
         ensure_substrate_materialized_for_read(caller="claim_evidence")
 
     with serving_generation(substrate_path()) as serving:
+        if expected_publication_id is not None and serving.publication_id != expected_publication_id:
+            raise QueryPublicationMismatch(
+                expected_publication_id=expected_publication_id,
+                actual_publication_id=serving.publication_id,
+            )
         conn = serving.connection
         if refresh_id is None:
             refresh_id = best_materialized_refresh_id(
@@ -831,12 +847,19 @@ def claim_evidence(
                 "but no promoted rows exist. Run materialization and inspect "
                 "materialization_status / substrate_readiness_report."
             )
-        row = load_claim_evidence(conn, claim_id=claim_id, refresh_id=refresh_id)
+        row = load_claim_evidence(
+            conn, claim_id=claim_id, refresh_id=refresh_id, limit=limit, offset=offset,
+        )
         integrity = measure_graph_integrity(conn, refresh_id)
     result = _json_safe(row) if row is not None else {
         "summary": {"status": "missing"},
         "claim_id": claim_id,
         "refresh_id": refresh_id,
+        "limit": limit,
+        "offset": offset,
+        "returned_count": 0,
+        "truncated": False,
+        "next_offset": None,
     }
     if row is not None:
         result["refresh_id"] = refresh_id
@@ -1414,6 +1437,7 @@ def analysis_evidence(
     refresh_id: str | None = None,
     limit: int = 200,
     offset: int = 0,
+    expected_publication_id: str | None = None,
 ) -> Any:
     """Analysis claims and evidence.
 
@@ -1432,11 +1456,15 @@ def analysis_evidence(
             min_confidence=min_confidence,
             limit=limit,
             offset=offset,
+            expected_publication_id=expected_publication_id,
         )
     if view == "calibration":
         return analysis_claim_calibration(refresh_id=refresh_id, project=project, claim_type=claim_type, limit=limit)
     if view == "evidence":
         if claim_id is None:
             return {"error": "claim_id is required for view=evidence"}
-        return claim_evidence(claim_id=claim_id, refresh_id=refresh_id)
+        return claim_evidence(
+            claim_id=claim_id, refresh_id=refresh_id, limit=limit, offset=offset,
+            expected_publication_id=expected_publication_id,
+        )
     return {"error": f"unknown view {view!r}. choices: claims, calibration, evidence"}

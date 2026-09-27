@@ -245,6 +245,8 @@ def load_claim_evidence(
     *,
     claim_id: str,
     refresh_id: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
 ) -> dict[str, Any] | None:
     from lynchpin.substrate.graph import _logical_graph_relation
 
@@ -318,8 +320,19 @@ def load_claim_evidence(
     if row is None:
         return None
     claim = _claim_payload(row)
-    relation_ids = claim.get("relation_ids") or []
-    source_ids = claim.get("source_ids") or []
+    if limit < 1 or limit > 10_000:
+        raise ValueError("limit must be between 1 and 10000")
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
+    all_source_ids = sorted(set(claim.get("source_ids") or ()))
+    all_relation_ids = sorted(set(claim.get("relation_ids") or ()))
+    evidence_keys = [("node", item) for item in all_source_ids] + [
+        ("edge", item) for item in all_relation_ids
+    ]
+    candidate_keys = evidence_keys[offset:offset + limit + 1]
+    selected_keys = candidate_keys[:limit]
+    source_ids = [item for kind, item in selected_keys if kind == "node"]
+    relation_ids = [item for kind, item in selected_keys if kind == "edge"]
     nodes = []
     edges = []
     if source_ids:
@@ -332,7 +345,7 @@ def load_claim_evidence(
             key_columns=("id",),
         )
         nodes = conn.execute(
-            f"SELECT id, kind, source, date, project, summary FROM {node_relation} WHERE id IN ({placeholders})",
+            f"SELECT id, kind, source, date, project, summary FROM {node_relation} WHERE id IN ({placeholders}) ORDER BY id",
             [*node_params, *source_ids],
         ).fetchall()
     if relation_ids:
@@ -346,7 +359,7 @@ def load_claim_evidence(
             cutoff_column=None,
         )
         edges = conn.execute(
-            f"SELECT source_id, target_id, relation, evidence, weight FROM {edge_relation} WHERE source_id || '->' || target_id || ':' || relation IN ({placeholders})",
+            f"SELECT source_id, target_id, relation, evidence, weight FROM {edge_relation} WHERE source_id || '->' || target_id || ':' || relation IN ({placeholders}) ORDER BY source_id, target_id, relation",
             [*edge_params, *relation_ids],
         ).fetchall()
     claim["evidence_nodes"] = [
@@ -370,6 +383,13 @@ def load_claim_evidence(
         }
         for row in edges
     ]
+    claim["source_ids"] = source_ids
+    claim["relation_ids"] = relation_ids
+    claim["limit"] = limit
+    claim["offset"] = offset
+    claim["returned_count"] = len(claim["evidence_nodes"]) + len(claim["evidence_edges"])
+    claim["truncated"] = len(candidate_keys) > limit
+    claim["next_offset"] = offset + len(selected_keys) if claim["truncated"] else None
     return claim
 
 

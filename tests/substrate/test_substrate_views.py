@@ -101,6 +101,29 @@ def _insert_build(conn, *, refresh_id: str) -> None:
 
 
 class TestProjectDayCorrelation:
+    def test_page_limit_and_offset_keep_date_project_order(self, tmp_path: Path) -> None:
+        from lynchpin.substrate.connection import apply_schema, connect
+        from lynchpin.substrate.derived import load_project_day_correlations
+
+        db = tmp_path / "sub.duckdb"
+        with connect(db) as conn:
+            apply_schema(conn)
+            _insert_build(conn, refresh_id="r1")
+            for day, project in ((3, "zeta"), (2, "beta"), (2, "alpha")):
+                _insert_node(
+                    conn, refresh_id="r1", node_id=f"{day}:{project}", kind="commit",
+                    source="git", date_val=date(2026, 5, day), project=project,
+                )
+            assert load_project_day_correlations(conn, refresh_id="r1", projects=("missing",), limit=1) == []
+            first = load_project_day_correlations(conn, refresh_id="r1", limit=1)
+            second = load_project_day_correlations(conn, refresh_id="r1", limit=1, offset=1)
+            exact = load_project_day_correlations(conn, refresh_id="r1", limit=3)
+
+        assert [(row.date.day, row.project) for row in first + second] == [
+            (2, "alpha"), (2, "beta"),
+        ]
+        assert len(exact) == 3
+
     def test_counts_by_kind(self, tmp_path: Path) -> None:
         """Promote a graph with mixed kinds; assert counts come back accurate."""
         from lynchpin.substrate.connection import apply_schema, connect

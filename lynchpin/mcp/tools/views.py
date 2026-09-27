@@ -115,6 +115,77 @@ def project_day_correlations(
     ]
 
 
+def project_day_correlations_page(
+    refresh_id: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    projects: list[str] | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    expected_publication_id: str | None = None,
+) -> dict[str, Any]:
+    """Read a bounded project-day page from one serving publication."""
+    from datetime import date as _date
+
+    from lynchpin.mcp.tools.substrate import QueryPublicationMismatch
+    from lynchpin.substrate.connection import serving_generation, substrate_path
+    from lynchpin.substrate.derived import load_project_day_correlations
+
+    if limit < 1 or limit > 10_000:
+        raise ValueError("limit must be between 1 and 10000")
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    projs = tuple(projects) if projects else None
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(
+            caller="project_day_correlations",
+            window=half_open_date_window(start_d, end_d),
+        )
+    with serving_generation(substrate_path()) as serving:
+        if expected_publication_id is not None and serving.publication_id != expected_publication_id:
+            raise QueryPublicationMismatch(
+                expected_publication_id=expected_publication_id,
+                actual_publication_id=serving.publication_id,
+            )
+        conn = serving.connection
+        selected_refresh_id = refresh_id or best_materialized_refresh_id(
+            conn,
+            "project_day_correlation",
+            caller="project_day_correlations",
+            start=start_d,
+            end=end_d,
+            projects=projs,
+        )
+        if selected_refresh_id is None:
+            return {
+                "rows": [], "refresh_id": None, "publication_id": serving.publication_id,
+                "limit": limit, "offset": offset, "returned_count": 0,
+                "truncated": False, "next_offset": None,
+            }
+        rows = load_project_day_correlations(
+            conn, refresh_id=selected_refresh_id, start=start_d, end=end_d,
+            projects=projs, limit=limit + 1, offset=offset,
+        )
+        selected = rows[:limit]
+        integrity = measure_graph_integrity(conn, selected_refresh_id) if selected else None
+    truncated = len(rows) > limit
+    return {
+        "rows": [
+            {**dataclass_to_json_dict(row), "graph_integrity": integrity}
+            for row in selected
+        ],
+        "refresh_id": selected_refresh_id,
+        "publication_id": serving.publication_id,
+        "limit": limit,
+        "offset": offset,
+        "returned_count": len(selected),
+        "truncated": truncated,
+        "next_offset": offset + len(selected) if truncated else None,
+    }
+
+
 def closure_chain_walks(
     refresh_id: str | None = None,
     project: str | None = None,

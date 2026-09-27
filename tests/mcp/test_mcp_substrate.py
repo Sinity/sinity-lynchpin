@@ -712,6 +712,53 @@ def test_analysis_claims_page_reports_and_continues_beyond_limit(
     ]
 
 
+def test_claim_evidence_pages_rows_and_pins_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+
+    from lynchpin.mcp.tools.substrate import QueryPublicationMismatch, claim_evidence
+    from lynchpin.substrate.claims import AnalysisClaimRow, promote_analysis_claims
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    with connect(substrate_path()) as conn:
+        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_id', 'fixture-publication')")
+        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_at', '2026-05-03T00:00:00+00:00')")
+        promote_analysis_claims(conn, refresh_id="rid", claims=[AnalysisClaimRow(
+            claim_id="claim:paged", claim_type="supported_work", project="lynchpin",
+            date=date(2026, 5, 1), support_level="strong", confidence=0.8,
+            score=1.0, summary="fixture", source_ids=("node:b", "node:a"),
+            relation_ids=(), caveats=(), payload={},
+        )])
+        for node_id in ("node:a", "node:b"):
+            conn.execute(
+                "INSERT INTO evidence_node (refresh_id, id, kind, source, date, project, summary, caveats) "
+                "VALUES ('rid', ?, 'commit', 'git', DATE '2026-05-01', 'lynchpin', 'fixture', '[]')",
+                [node_id],
+            )
+
+    empty = claim_evidence("claim:paged", refresh_id="rid", limit=1, offset=2)
+    first = claim_evidence("claim:paged", refresh_id="rid", limit=1)
+    assert empty["returned_count"] == 0
+    assert empty["truncated"] is False
+    assert first["returned_count"] == 1
+    assert first["publication_id"] == "fixture-publication"
+    assert first["truncated"] is True
+    assert first["next_offset"] == 1
+    assert [row["id"] for row in first["evidence_nodes"]] == ["node:a"]
+    second = claim_evidence(
+        "claim:paged", refresh_id=first["refresh_id"], limit=1,
+        offset=first["next_offset"], expected_publication_id=first["publication_id"],
+    )
+    assert [row["id"] for row in second["evidence_nodes"]] == ["node:b"]
+    assert second["truncated"] is False
+    with pytest.raises(QueryPublicationMismatch):
+        claim_evidence(
+            "claim:paged", refresh_id="rid", limit=1,
+            expected_publication_id="different-publication",
+        )
+
+
 def test_analysis_claims_page_rejects_negative_offset() -> None:
     from lynchpin.mcp.tools.substrate import analysis_claims_page
 

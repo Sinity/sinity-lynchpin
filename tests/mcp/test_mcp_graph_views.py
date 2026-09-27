@@ -18,6 +18,40 @@ def test_project_day_correlations_returns_empty_on_empty_substrate(tmp_path: Pat
     assert project_day_correlations() == []
 
 
+def test_project_day_page_bounds_and_continuation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+    from lynchpin.mcp.tools.substrate import QueryPublicationMismatch
+    from lynchpin.mcp.tools.views import project_day_correlations_page
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    with connect(substrate_path()) as conn:
+        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_id', 'fixture-publication')")
+        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_at', '2026-05-03T00:00:00+00:00')")
+        for day in (1, 2):
+            conn.execute(
+                "INSERT INTO evidence_node (refresh_id, id, kind, source, date, project, summary, caveats) "
+                "VALUES ('rid', ?, 'commit', 'git', ?, 'lynchpin', 'fixture', '[]')",
+                [f"node:{day}", date(2026, 5, day)],
+            )
+
+    empty = project_day_correlations_page(refresh_id="rid", projects=["missing"], limit=1)
+    first = project_day_correlations_page(refresh_id="rid", limit=1)
+    second = project_day_correlations_page(
+        refresh_id=first["refresh_id"], limit=1, offset=first["next_offset"],
+        expected_publication_id=first["publication_id"],
+    )
+    exact = project_day_correlations_page(refresh_id="rid", limit=2)
+    assert empty["returned_count"] == 0 and empty["truncated"] is False
+    assert first["returned_count"] == 1 and first["truncated"] is True
+    assert first["publication_id"] == "fixture-publication"
+    assert first["next_offset"] == 1
+    assert [row["date"] for row in first["rows"] + second["rows"]] == ["2026-05-01", "2026-05-02"]
+    assert second["truncated"] is False
+    assert exact["returned_count"] == 2 and exact["truncated"] is False
+    with pytest.raises(QueryPublicationMismatch):
+        project_day_correlations_page(refresh_id="rid", expected_publication_id="wrong")
+
+
 def test_project_day_correlations_returns_dataclass_dict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = setup_substrate(tmp_path, monkeypatch)
     from lynchpin.substrate.connection import bootstrap_candidate_generation

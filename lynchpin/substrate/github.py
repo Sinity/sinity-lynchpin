@@ -273,6 +273,8 @@ def iter_github_issues(
     *,
     project: str | None = None,
     state: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> Iterator[dict[str, Any]]:
     """Yield github_issue rows as dicts for the current 'latest' refresh."""
     sql = "SELECT * FROM github_issue WHERE refresh_id = ?"
@@ -284,6 +286,9 @@ def iter_github_issues(
         sql += " AND state = ?"
         params.append(state)
     sql += " ORDER BY project, number"
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params.extend((limit, offset))
     result = conn.execute(sql, params)
     cols = [d[0] for d in (result.description or [])]
     for row in result.fetchall():
@@ -295,6 +300,8 @@ def iter_github_prs(
     *,
     project: str | None = None,
     state: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> Iterator[dict[str, Any]]:
     """Yield github_pr rows as dicts for the current 'latest' refresh."""
     sql = "SELECT * FROM github_pr WHERE refresh_id = ?"
@@ -306,6 +313,9 @@ def iter_github_prs(
         sql += " AND state = ?"
         params.append(state)
     sql += " ORDER BY project, number"
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params.extend((limit, offset))
     result = conn.execute(sql, params)
     cols = [d[0] for d in (result.description or [])]
     for row in result.fetchall():

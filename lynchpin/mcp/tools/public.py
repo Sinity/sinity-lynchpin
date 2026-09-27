@@ -129,9 +129,11 @@ def _project_day_timeline_meta(
     start: str | None,
     end: str | None,
     project: str | None,
+    expected_publication_id: str | None = None,
 ) -> dict[str, Any]:
     from lynchpin.mcp.tools._utils import best_materialized_refresh_id
-    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.mcp.tools.substrate import QueryPublicationMismatch
+    from lynchpin.substrate.connection import serving_generation, substrate_path
     from lynchpin.substrate.graph import _logical_graph_relation
 
     requested_end = _parse_date(end)
@@ -139,7 +141,13 @@ def _project_day_timeline_meta(
     coverage_params: list[Any] = []
     coverage_clauses: list[str] = []
     selected_refresh_id = refresh_id
-    with connect(substrate_path(), read_only=True) as conn:
+    with serving_generation(substrate_path()) as serving:
+        if expected_publication_id is not None and serving.publication_id != expected_publication_id:
+            raise QueryPublicationMismatch(
+                expected_publication_id=expected_publication_id,
+                actual_publication_id=serving.publication_id,
+            )
+        conn = serving.connection
         if selected_refresh_id is None:
             selected_refresh_id = best_materialized_refresh_id(
                 conn,
@@ -477,6 +485,8 @@ def lynchpin_status(view: str = "runtime", start: str | None = None, end: str | 
     if view == "readiness":
         from lynchpin.mcp.tools.substrate import substrate_readiness_report
 
+        if start is not None or end is not None:
+            return _internal_call("lynchpin.mcp.tools.substrate", "analysis_readiness", start=start, end=end)
         return _ok(substrate_readiness_report(), **_action_meta("lynchpin_status", view, route="lynchpin.mcp.tools.substrate.substrate_readiness_report"))
     if view == "self_check":
         registered = set(_registered_public_tools())
@@ -630,6 +640,7 @@ def lynchpin_evidence(
     limit: int = 100,
     start_id: str | None = None,
     offset: int = 0,
+    expected_publication_id: str | None = None,
 ) -> dict[str, Any]:
     """Evidence router. action: graph, timeline, walk, claims, claim_evidence, coverage, confidence, crossref."""
     if invalid := _mark_route("lynchpin_evidence", action):
@@ -637,26 +648,38 @@ def lynchpin_evidence(
     if action == "graph":
         return _internal_call("lynchpin.mcp.tools.substrate", "evidence_graph", view="summary", refresh_id=refresh_id, start=start, end=end)
     if action == "timeline":
-        return _internal_call(
+        result = _internal_call(
             "lynchpin.mcp.tools.views",
-            "project_day_correlations",
+            "project_day_correlations_page",
             refresh_id=refresh_id,
             start=start,
             end=end,
             projects=[project] if project else None,
-            _meta=lambda rows: _project_day_timeline_meta(
-                refresh_id=refresh_id or (rows[0]["refresh_id"] if rows else None),
-                start=start,
-                end=end,
-                project=project,
-            ),
+            limit=limit,
+            offset=offset,
+            expected_publication_id=expected_publication_id,
         )
+        if result.get("ok"):
+            page = result["data"]
+            result["data"] = page["rows"]
+            try:
+                result["meta"].update(_project_day_timeline_meta(
+                    refresh_id=page["refresh_id"], start=start, end=end, project=project,
+                    expected_publication_id=page["publication_id"],
+                ))
+            except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors.
+                return _error("query_error", f"{type(exc).__name__}: {exc}")
+            result["meta"].update({key: page[key] for key in (
+                "refresh_id", "publication_id", "limit", "offset", "returned_count",
+                "truncated", "next_offset",
+            )})
+        return result
     if action == "walk":
         if not start_id:
             return _error("missing_argument", "start_id is required for evidence walk")
         return _internal_call("lynchpin.mcp.tools.views", "walk_evidence", start_id=start_id, refresh_id=refresh_id, max_nodes=limit)
     if action == "claims":
-        result = _internal_call("lynchpin.mcp.tools.substrate", "analysis_evidence", view="claims", start=start, end=end, project=project, refresh_id=refresh_id, limit=limit, offset=offset)
+        result = _internal_call("lynchpin.mcp.tools.substrate", "analysis_evidence", view="claims", start=start, end=end, project=project, refresh_id=refresh_id, limit=limit, offset=offset, expected_publication_id=expected_publication_id)
         if result.get("ok"):
             page = result["data"]
             result["data"] = page["rows"]
@@ -667,6 +690,8 @@ def lynchpin_evidence(
                 "offset": page["offset"],
                 "has_more": page["has_more"],
                 "next_offset": page["next_offset"],
+                "returned_count": len(page["rows"]),
+                "truncated": page["has_more"],
             })
         return result
     if action == "claim_evidence":
@@ -679,9 +704,14 @@ def lynchpin_evidence(
             claim_id=claim_id,
             refresh_id=refresh_id,
             limit=limit,
+            offset=offset,
+            expected_publication_id=expected_publication_id,
             _meta=lambda evidence: {
                 "refresh_id": evidence.get("refresh_id"),
                 "publication_id": evidence.get("publication_id"),
+                "returned_count": evidence.get("returned_count", 0),
+                "truncated": evidence.get("truncated", False),
+                "next_offset": evidence.get("next_offset"),
             },
         )
     if action == "coverage":
@@ -717,6 +747,8 @@ def lynchpin_project(
     intent: str = "project.orientation",
     budget_bytes: int = 56000,
     refresh_id: str | None = None,
+    offset: int = 0,
+    expected_publication_id: str | None = None,
 ) -> dict[str, Any]:
     """Project router: repository products, campaign_evidence, campaign_progress, campaign_scope_delta, verification_regression, project_trajectory, project_context."""
     if invalid := _mark_route("lynchpin_project", action):
@@ -779,6 +811,8 @@ def lynchpin_project(
     if action == "change_kinds":
         return _internal_call("lynchpin.mcp.tools.change", "commit_analysis", view="attribution" if view == "ai" else view or "conventional", project=target)
     if action == "github":
+        if number is not None and (limit != 100 or offset != 0 or expected_publication_id is not None):
+            return _error("invalid_request", "limit, offset, and expected_publication_id apply to GitHub lists only")
         if number is not None and view == "issue":
             return _internal_call("lynchpin.mcp.tools.github", "get_github_issue", project=target, number=number)
         if number is not None:
@@ -790,6 +824,8 @@ def lynchpin_project(
             project=target,
             state=state,
             limit=limit,
+            offset=offset,
+            expected_publication_id=expected_publication_id,
             _meta={"source_mode": "github_materialized"},
         )
     if action == "snapshots":

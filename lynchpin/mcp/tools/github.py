@@ -25,6 +25,8 @@ def list_github_issues(
     project: str | None = None,
     state: str | None = None,
     limit: int = 100,
+    offset: int = 0,
+    expected_publication_id: str | None = None,
 ) -> dict[str, Any]:
     """List GitHub issues from the substrate, optionally filtered by project and/or state.
 
@@ -38,26 +40,39 @@ def list_github_issues(
     get_github_issue() for full content including comments.
     """
     from lynchpin.mcp.tools._utils import json_safe as _json_safe
-    from lynchpin.substrate.connection import connect
+    from lynchpin.mcp.tools.substrate import QueryPublicationMismatch
+    from lynchpin.substrate.connection import serving_generation, substrate_path
     from lynchpin.substrate.github import iter_github_issues
 
+    if limit < 1 or limit > 10_000 or offset < 0:
+        raise ValueError("limit must be between 1 and 10000 and offset non-negative")
     issues: list[dict[str, Any]] = []
     try:
-        with connect(read_only=True) as conn:
-            for row in iter_github_issues(conn, project=project, state=state):
-                if len(issues) >= max(int(limit), 0):
-                    break
+        with serving_generation(substrate_path()) as serving:
+            if expected_publication_id is not None and serving.publication_id != expected_publication_id:
+                raise QueryPublicationMismatch(
+                    expected_publication_id=expected_publication_id,
+                    actual_publication_id=serving.publication_id,
+                )
+            for row in iter_github_issues(serving.connection, project=project, state=state, limit=limit + 1, offset=offset):
                 issues.append(_json_safe(_compact_issue_or_pr(row)))
+    except QueryPublicationMismatch:
+        raise
     except Exception as exc:
         return {"error": str(exc), "issues": []}
 
     return {
         "project_filter": project,
         "state_filter": state,
-        "total": len(issues),
+        "total": None,
+        "returned_count": min(len(issues), limit),
+        "truncated": len(issues) > limit,
+        "next_offset": offset + limit if len(issues) > limit else None,
+        "offset": offset,
+        "publication_id": serving.publication_id,
         "limit": limit,
         "detail_hint": "Use get_github_issue(project, number) for the full body and comments.",
-        "issues": issues,
+        "issues": issues[:limit],
     }
 
 
@@ -94,6 +109,8 @@ def list_github_prs(
     project: str | None = None,
     state: str | None = None,
     limit: int = 100,
+    offset: int = 0,
+    expected_publication_id: str | None = None,
 ) -> dict[str, Any]:
     """List GitHub PRs from the substrate, optionally filtered by project and/or state.
 
@@ -108,26 +125,39 @@ def list_github_prs(
     get_github_pr().
     """
     from lynchpin.mcp.tools._utils import json_safe as _json_safe
-    from lynchpin.substrate.connection import connect
+    from lynchpin.mcp.tools.substrate import QueryPublicationMismatch
+    from lynchpin.substrate.connection import serving_generation, substrate_path
     from lynchpin.substrate.github import iter_github_prs
 
+    if limit < 1 or limit > 10_000 or offset < 0:
+        raise ValueError("limit must be between 1 and 10000 and offset non-negative")
     prs: list[dict[str, Any]] = []
     try:
-        with connect(read_only=True) as conn:
-            for row in iter_github_prs(conn, project=project, state=state):
-                if len(prs) >= max(int(limit), 0):
-                    break
+        with serving_generation(substrate_path()) as serving:
+            if expected_publication_id is not None and serving.publication_id != expected_publication_id:
+                raise QueryPublicationMismatch(
+                    expected_publication_id=expected_publication_id,
+                    actual_publication_id=serving.publication_id,
+                )
+            for row in iter_github_prs(serving.connection, project=project, state=state, limit=limit + 1, offset=offset):
                 prs.append(_json_safe(_compact_issue_or_pr(row)))
+    except QueryPublicationMismatch:
+        raise
     except Exception as exc:
         return {"error": str(exc), "prs": []}
 
     return {
         "project_filter": project,
         "state_filter": state,
-        "total": len(prs),
+        "total": None,
+        "returned_count": min(len(prs), limit),
+        "truncated": len(prs) > limit,
+        "next_offset": offset + limit if len(prs) > limit else None,
+        "offset": offset,
+        "publication_id": serving.publication_id,
         "limit": limit,
         "detail_hint": "Use get_github_pr(project, number) for the full body, comments, and reviews.",
-        "prs": prs,
+        "prs": prs[:limit],
     }
 
 

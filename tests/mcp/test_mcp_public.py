@@ -347,17 +347,17 @@ def test_invalid_actions_return_structured_error(tmp_path: Path, monkeypatch: py
     assert "status" in result["choices"]
 
 
-def test_lynchpin_status_readiness_does_not_forward_window_kwargs(
+def test_lynchpin_status_readiness_forwards_window_to_analysis_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = []
 
-    def fake_readiness() -> dict[str, object]:
-        calls.append("called")
-        return {"status": "ready"}
+    def fake_readiness(start: str | None = None, end: str | None = None) -> dict[str, object]:
+        calls.append((start, end))
+        return {"requested_window": {"start": start, "end": end}}
 
     monkeypatch.setattr(
-        "lynchpin.mcp.tools.substrate.substrate_readiness_report",
+        "lynchpin.mcp.tools.substrate.analysis_readiness",
         fake_readiness,
     )
 
@@ -366,8 +366,8 @@ def test_lynchpin_status_readiness_does_not_forward_window_kwargs(
     result = lynchpin_status(view="readiness", start="2026-07-01", end="2026-07-02")
 
     assert result["ok"] is True
-    assert result["data"] == {"status": "ready"}
-    assert calls == ["called"]
+    assert result["data"]["requested_window"] == {"start": "2026-07-01", "end": "2026-07-02"}
+    assert calls == [("2026-07-01", "2026-07-02")]
 
 
 def test_lynchpin_status_snapshot_returns_compact_orientation(
@@ -459,8 +459,11 @@ def test_project_and_evidence_routes_label_source_modes(
         lambda *, repo, limit=100: {"repo": repo, "commit_count": 0, "commits": []},
     )
     monkeypatch.setattr(
-        "lynchpin.mcp.tools.views.project_day_correlations",
-        lambda **_kwargs: [],
+        "lynchpin.mcp.tools.views.project_day_correlations_page",
+        lambda **_kwargs: {
+            "rows": [], "refresh_id": "rid", "publication_id": "pub", "limit": 3,
+            "offset": 0, "returned_count": 0, "truncated": False, "next_offset": None,
+        },
     )
     monkeypatch.setattr(
         "lynchpin.mcp.tools.public._project_day_timeline_meta",
@@ -532,12 +535,16 @@ def test_timeline_metadata_observes_the_generation_returned_after_refresh(
 
     def read_rows(**_kwargs):
         state["refresh_id"] = "refreshed"
-        return [{"refresh_id": "refreshed", "date": "2026-09-07"}]
+        return {
+            "rows": [{"refresh_id": "refreshed", "date": "2026-09-07"}],
+            "refresh_id": "refreshed", "publication_id": "pub", "limit": 100,
+            "offset": 0, "returned_count": 1, "truncated": False, "next_offset": None,
+        }
 
     def read_meta(*, refresh_id, **_kwargs):
         return {"refresh_id": refresh_id or state["refresh_id"]}
 
-    monkeypatch.setattr("lynchpin.mcp.tools.views.project_day_correlations", read_rows)
+    monkeypatch.setattr("lynchpin.mcp.tools.views.project_day_correlations_page", read_rows)
     monkeypatch.setattr("lynchpin.mcp.tools.public._project_day_timeline_meta", read_meta)
     from lynchpin.mcp.tools.public import lynchpin_evidence
 
@@ -545,6 +552,74 @@ def test_timeline_metadata_observes_the_generation_returned_after_refresh(
     assert result["ok"] is True
     assert result["meta"]["refresh_id"] == "refreshed"
     assert result["data"][0]["refresh_id"] == result["meta"]["refresh_id"]
+
+
+def test_evidence_routes_forward_page_and_publication_pin(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def timeline_page(**kwargs):
+        calls.append(kwargs)
+        return {
+            "rows": [{"refresh_id": "rid", "date": "2026-05-01"}],
+            "refresh_id": "rid", "publication_id": "pub", "limit": 1,
+            "offset": 1, "returned_count": 1, "truncated": True, "next_offset": 2,
+        }
+
+    def claim_page(**kwargs):
+        calls.append(kwargs)
+        return {
+            "refresh_id": "rid", "publication_id": "pub", "claim_id": "claim:1",
+            "evidence_nodes": [{"id": "node:2"}], "evidence_edges": [],
+            "returned_count": 1, "truncated": False, "next_offset": None,
+        }
+
+    monkeypatch.setattr("lynchpin.mcp.tools.views.project_day_correlations_page", timeline_page)
+    monkeypatch.setattr("lynchpin.mcp.tools.substrate.analysis_evidence", claim_page)
+    monkeypatch.setattr("lynchpin.mcp.tools.public._project_day_timeline_meta", lambda **_kwargs: {})
+    from lynchpin.mcp.tools.public import lynchpin_evidence
+
+    timeline = lynchpin_evidence(
+        action="timeline", refresh_id="rid", limit=1, offset=1,
+        expected_publication_id="pub",
+    )
+    claim = lynchpin_evidence(
+        action="claim_evidence", claim_id="claim:1", refresh_id="rid", limit=1,
+        offset=1, expected_publication_id="pub",
+    )
+    assert timeline["data"] == [{"refresh_id": "rid", "date": "2026-05-01"}]
+    assert timeline["meta"]["returned_count"] == 1
+    assert timeline["meta"]["truncated"] is True
+    assert timeline["meta"]["next_offset"] == 2
+    assert claim["meta"]["returned_count"] == 1
+    assert calls[0]["limit"] == calls[1]["limit"] == 1
+    assert calls[0]["offset"] == calls[1]["offset"] == 1
+    assert calls[0]["expected_publication_id"] == calls[1]["expected_publication_id"] == "pub"
+
+
+def test_project_github_forwards_page_and_publication_pin(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def list_prs(**kwargs):
+        calls.append(kwargs)
+        return {"prs": [], "returned_count": 0, "truncated": False, "total": None}
+
+    monkeypatch.setattr("lynchpin.mcp.tools.github.list_github_prs", list_prs)
+    from lynchpin.mcp.tools.public import lynchpin_project
+
+    result = lynchpin_project(
+        action="github", project="lynchpin", view="prs", limit=1, offset=3,
+        expected_publication_id="pub",
+    )
+    assert result["ok"] is True
+    assert calls == [{
+        "project": "lynchpin", "limit": 1, "offset": 3,
+        "expected_publication_id": "pub",
+    }]
+    detail = lynchpin_project(
+        action="github", project="lynchpin", view="issue", number=1, offset=1,
+    )
+    assert detail["ok"] is False
+    assert detail["error_code"] == "invalid_request"
 
 
 def test_blocked_materialization_surfaces_as_response_caveat(

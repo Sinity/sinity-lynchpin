@@ -44,6 +44,8 @@ def load_project_day_correlations(
     end: date | None = None,
     projects: tuple[str, ...] | None = None,
     min_source_count: int | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[ProjectDayCorrelationRow]:
     """Read project_day_correlation rows. Filters compose with AND.
 
@@ -124,6 +126,15 @@ def load_project_day_correlations(
         {where}
         ORDER BY date, project
     """
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
+    if limit is not None:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        sql += " LIMIT ? OFFSET ?"
+        params.extend((limit, offset))
+    elif offset:
+        raise ValueError("offset requires limit")
     rows = conn.execute(sql, params).fetchall()
 
     results: list[ProjectDayCorrelationRow] = []

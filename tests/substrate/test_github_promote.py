@@ -72,6 +72,9 @@ def test_promote_and_read_issues(tmp_path):
     with connect(db) as conn:
         assert promote_github_issues(conn, rows=issues) == 2
         assert promote_github_issue_comments(conn, rows=comments) == 1
+        assert [row["number"] for row in iter_github_issues(conn, limit=1)] == [1]
+        assert [row["number"] for row in iter_github_issues(conn, limit=1, offset=1)] == [2]
+        assert list(iter_github_issues(conn, limit=1, offset=2)) == []
         # Idempotent — re-promote replaces
         assert promote_github_issues(conn, rows=issues[:1]) == 1
         all_issues = list(iter_github_issues(conn))
