@@ -11,8 +11,8 @@ pytest.importorskip("tree_sitter")
 pytest.importorskip("tree_sitter_python")
 pytest.importorskip("tree_sitter_rust")
 
-from lynchpin.analysis.code_index.symbol_index import (  # noqa: E402
-    build_active_symbol_index,
+from lynchpin.analysis.code_index.symbol_index import build_active_symbol_index  # noqa: E402
+from lynchpin.sources.symbol_extraction import (  # noqa: E402
     _load_parsers,
     _walk_python,
     _walk_rust,

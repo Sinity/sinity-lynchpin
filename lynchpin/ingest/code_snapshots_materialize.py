@@ -65,7 +65,8 @@ def materialize_code_snapshots() -> dict[str, Any]:
     Output goes to the stable path returned by code_snapshots_path() so
     repeated runs overwrite rather than accumulate timestamped directories.
     """
-    from lynchpin.sources.code_snapshots import build_chisel_bundles, code_snapshots_path
+    from lynchpin.analysis.projects.chisel import build_chisel_bundles
+    from lynchpin.sources.code_snapshots import code_snapshots_path
     from lynchpin.substrate.code_snapshots import (
         promote_code_snapshot_runs,
         promote_code_snapshot_slices,

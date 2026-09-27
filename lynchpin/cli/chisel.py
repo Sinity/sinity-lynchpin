@@ -23,7 +23,8 @@ def _pairs(values: list[str], separator: str) -> tuple[tuple[str, str], ...]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from lynchpin.sources.chisel import REPO_PLANS, build_chisel_bundles
+    from lynchpin.analysis.projects.chisel import build_chisel_bundles
+    from lynchpin.sources.chisel import REPO_PLANS
     from lynchpin.sources.chisel_snapshots import resolve_snapshot
 
     argv = list(sys.argv[1:] if argv is None else argv)

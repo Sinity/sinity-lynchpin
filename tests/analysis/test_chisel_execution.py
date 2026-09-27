@@ -102,7 +102,9 @@ def test_cli_returns_failure_when_any_project_is_partial(monkeypatch) -> None:
         },
     )
 
-    assert chisel.run_from_cli([]) == 1
+    from lynchpin.cli.chisel import main
+
+    assert main([]) == 1
 
 
 def test_cli_returns_success_when_all_projects_generated(monkeypatch) -> None:
@@ -117,7 +119,9 @@ def test_cli_returns_success_when_all_projects_generated(monkeypatch) -> None:
         },
     )
 
-    assert chisel.run_from_cli([]) == 0
+    from lynchpin.cli.chisel import main
+
+    assert main([]) == 0
 
 
 def test_projects_typer_command_exits_nonzero_for_partial_project(monkeypatch) -> None:

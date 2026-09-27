@@ -1,12 +1,11 @@
-"""Chisel re-exports — implementation moved to sources layer.
-
-The builder, dataclasses, and configuration live in ``lynchpin.sources.chisel``
-so ingest modules can import them without crossing the analysis/ layer
-boundary.  This module is the project-analysis facade for that implementation.
-"""
+"""Analysis entry point for Chisel builds and source-package adapters."""
 
 from __future__ import annotations
 
+from typing import Any
+
+from lynchpin.analysis.projects.chisel_reports import build_reports
+from lynchpin.sources import chisel as source_chisel
 from lynchpin.sources.chisel import (  # noqa: F401
     DEFAULT_IGNORE,
     DEFAULT_ISSUE_LIMIT,
@@ -17,6 +16,10 @@ from lynchpin.sources.chisel import (  # noqa: F401
     RepoPlan,
     Slice,
     StatsBucket,
-    build_chisel_bundles,
-    run_from_cli,
 )
+
+from lynchpin.cli.chisel import main as run_from_cli  # noqa: F401
+
+
+def build_chisel_bundles(**kwargs: Any) -> dict[str, Any]:
+    return source_chisel.build_chisel_bundles(report_builder=build_reports, **kwargs)

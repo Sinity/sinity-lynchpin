@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .chisel_cache import copy_file
 
@@ -213,7 +213,8 @@ def verify_history_bundle(plan: Any, inventory: Any, out_dir: Path) -> None:
 
 
 def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path,
-                     log: list[str] | None = None) -> list[dict]:
+                     log: list[str] | None = None,
+                     *, report_builder: Callable[..., Any] | None = None) -> list[dict]:
     """Derive navigation from captured bytes and owner-exported records."""
     from . import chisel
     from .chisel_context import build_context
@@ -222,7 +223,9 @@ def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path,
     from .chisel_snapshots import build_overlay_views
     from .chisel_options import active_options
     from .chisel_excerpts import collect_excerpts
-    from lynchpin.analysis.projects.chisel_reports import build_reports
+
+    if report_builder is None and "source" in active_options.datasets:
+        raise ValueError("Chisel source reports require the analysis-layer report builder")
 
     items = [item for key, values in (chisel._github_context_index or {}).items()
              if key[0] == plan.name for item in values]
@@ -241,7 +244,7 @@ def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path,
             revision=inventory.revision, dirty=inventory.dirty, github_items=items,
             github_slug=plan.github_slug)),
         ("context", lambda: collect_excerpts(plan.path, out_dir, active_options)),
-        ("reports", lambda: build_reports(out_dir, project=plan.name,
+        ("reports", lambda: report_builder(out_dir, project=plan.name,
             task_roots=[root for project, root in active_options.task_roots if project == plan.name])),
         ("offline-index", lambda: build_offline_package(out_dir, project=plan.name,
             snapshot_id=inventory.snapshot_id, generated_at=inventory.generated_at)),

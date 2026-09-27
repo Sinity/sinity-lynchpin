@@ -158,7 +158,7 @@ def test_promote_agentctl_observations_is_idempotent(tmp_path):
 
     assert count == 1
     assert observation[0].startswith("sha256:")
-    assert '"contract_schema":3' in observation[1]
+    assert '"contract_schema":4' in observation[1]
     assert observation[2] == '[]'
     assert observation[3:] == (True, True, None)
     assert refs == []

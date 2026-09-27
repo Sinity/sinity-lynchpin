@@ -1429,6 +1429,7 @@ def test_build_chisel_bundles_reports_scope_and_grouped_repo_logs(
         _repomix_bin: str,
         _generated_at: str,
         slice_workers: int,
+        _report_builder=None,
     ) -> dict[str, Any]:
         return {
             "project": plan.name,
@@ -1540,7 +1541,7 @@ def _mock_captured_build_seams(
         return [], 0
 
     monkeypatch.setattr(chisel_package, "captured_sidecars", sidecars)
-    monkeypatch.setattr(chisel_package, "evidence_outputs", lambda *_args: [])
+    monkeypatch.setattr(chisel_package, "evidence_outputs", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(chisel_package, "verify_history_bundle", lambda *_args: None)
     monkeypatch.setattr(chisel_inventory, "verify_capture", lambda *_args: None)
 

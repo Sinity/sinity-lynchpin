@@ -51,7 +51,7 @@ def _stub_chisel(monkeypatch, tmp_path: Path) -> Path:
         }
 
     monkeypatch.setattr(
-        "lynchpin.sources.code_snapshots.build_chisel_bundles", fake_bundles
+        "lynchpin.analysis.projects.chisel.build_chisel_bundles", fake_bundles
     )
     monkeypatch.setattr(
         "lynchpin.sources.code_snapshots.code_snapshots_path", lambda: output_root

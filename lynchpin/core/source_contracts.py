@@ -536,7 +536,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         substrate_tables=("code_snapshot_run", "code_snapshot_slice"),
         mcp_tools=("lynchpin_project", "lynchpin_status", "lynchpin_ops"),
         caveats=(
-            "snapshot freshness tracks registered repo HEADs and transparently rebuilds when a snapshot is requested",
+            "snapshot freshness is checked against local repo HEADs; reads report staleness and Chisel builds run on explicit request",
             "XML slices are large filesystem files; use list_code_snapshot_slices for discovery",
         ),
     ),

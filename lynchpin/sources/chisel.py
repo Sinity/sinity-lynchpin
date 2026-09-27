@@ -36,7 +36,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..core.errors import MaterializationError, SourceUnavailableError
 from . import chisel_options
@@ -5677,6 +5677,7 @@ def _build_one_impl(
     repomix_bin: str,
     generated_at: str,
     slice_workers: int,
+    report_builder: Callable[..., Any] | None = None,
 ) -> dict:
     """Build all slices, current-tree sidecars, and all-refs git history for one repo."""
     log: list[str] = []
@@ -5981,7 +5982,9 @@ def _build_one_impl(
     # Navigation is generated after owner records (including Beads) exist.
     if not errors and "history" in chisel_options.active_options.datasets:
         verify_history_bundle(plan, inventory, out_dir)
-    stage_timings.extend(evidence_outputs(plan, inventory, out_dir, cache_dir, log))
+    stage_timings.extend(evidence_outputs(
+        plan, inventory, out_dir, cache_dir, log, report_builder=report_builder,
+    ))
     verify_snapshot(inventory)
     gitlog_commits = _read_json_file(out_dir / "history/coverage.json").get("commit_count", gitlog_commits)
 
@@ -6113,12 +6116,13 @@ def _build_one(
     repomix_bin: str,
     generated_at: str,
     slice_workers: int,
+    report_builder: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     _build_state_local.log = []
     _build_state_local.stage_timings = []
     try:
-        return _build_one_impl(plan, output_root, repomix_bin, generated_at, slice_workers)
+        return _build_one_impl(plan, output_root, repomix_bin, generated_at, slice_workers, report_builder)
     except Exception as exc:
         log = list(_build_state_local.log)
         log.append(f"  [red]✗[/red] {plan.name}: {exc}")
@@ -6151,6 +6155,7 @@ def build_chisel_bundles(
     output_root: Path | None = None,
     max_workers: int = DEFAULT_MAX_WORKERS,
     options: chisel_options.BuildOptions | None = None,
+    report_builder: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     # GitHub materialization and subprocess cancellation retain process-wide
     # state. Different output roots must not race on those shared resources.
@@ -6163,6 +6168,7 @@ def build_chisel_bundles(
             project_names=project_names,
             output_root=output_root,
             max_workers=max_workers,
+            report_builder=report_builder,
         )
     finally:
         chisel_options.active_options = previous_options
@@ -6174,6 +6180,7 @@ def _publish_chisel_bundles(
     project_names: Sequence[str] | None = None,
     output_root: Path | None = None,
     max_workers: int = DEFAULT_MAX_WORKERS,
+    report_builder: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Publish one complete selected generation, preserving the last good one."""
     from .chisel_package import build_portfolio
@@ -6193,6 +6200,7 @@ def _publish_chisel_bundles(
             output_root=candidate,
             max_workers=max_workers,
             display_root=root,
+            report_builder=report_builder,
         )
         successful = all(
             r.get("status") == "generated" for r in result["projects"].values()
@@ -6233,6 +6241,7 @@ def _build_chisel_candidate(
     output_root: Path | None = None,
     max_workers: int = DEFAULT_MAX_WORKERS,
     display_root: Path | None = None,
+    report_builder: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     from .chisel_context import reset_context_cache
 
@@ -6285,7 +6294,7 @@ def _build_chisel_candidate(
     ex = ThreadPoolExecutor(max_workers=repo_workers)
     futures = {
         ex.submit(
-            _build_one, plan, output_root, repomix_bin, generated_at, slice_workers
+            _build_one, plan, output_root, repomix_bin, generated_at, slice_workers, report_builder
         ): plan.name
         for plan in plans
     }
@@ -6488,9 +6497,3 @@ def _split_names(value: str) -> list[str] | None:
 def _parse_optional_path(value: str) -> Path | None:
     stripped = value.strip()
     return Path(stripped) if stripped else None
-
-
-def run_from_cli(argv: list[str] | None = None) -> int:
-    from lynchpin.cli.chisel import main
-
-    return main(argv)

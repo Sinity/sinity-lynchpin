@@ -205,7 +205,7 @@ def build_structure(
         elif lang == "rust":
             # Reuse the repository's tree-sitter extractor where its grammar is
             # available. Missing grammars are reported as a coverage gap.
-            from lynchpin.analysis.code_index.symbol_index import (
+            from lynchpin.sources.symbol_extraction import (
                 _extract_symbols,
                 _load_parsers,
             )
