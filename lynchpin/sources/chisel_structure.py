@@ -566,6 +566,8 @@ def _python_imports(
             dynamic = True
             names = [(str(node.args[0].value), 0) if node.args and isinstance(node.args[0], ast.Constant)
                      and isinstance(node.args[0].value, str) else (ast.unparse(node), 0)]
+        if not names:
+            continue
         ancestors = []
         parent = parents.get(node)
         while parent is not None:
