@@ -66,6 +66,34 @@ def build_structure(
     included = [row for row in records if row.get("included")]
     role_counts = Counter(str(row.get("role", "unclassified")) for row in included)
     source_rows = [row for row in included if row.get("role") in _SOURCE_ROLES]
+    symbols: list[dict[str, Any]] = []
+    imports: list[dict[str, Any]] = []
+    metrics: list[dict[str, Any]] = []
+    parser_missing: set[str] = set()
+    parser_versions = {"python": sys.version}
+    for distribution in ("tree-sitter", "tree-sitter-rust"):
+        try:
+            parser_versions[distribution] = version(distribution)
+        except PackageNotFoundError:
+            parser_versions[distribution] = "unavailable"
+    product_key = hashlib.sha256(json.dumps([snapshot_id, policy_version, _TOOL_VERSION, parser_versions], sort_keys=True).encode()).hexdigest()
+    product_cache = cache / "products" / product_key if cache else None
+    if product_cache is not None and (product_cache / "hashes.json").is_file():
+        try:
+            hashes = json.loads((product_cache / "hashes.json").read_text())
+            if all(hashlib.sha256((product_cache / name).read_bytes()).hexdigest() == expected for name, expected in hashes.items()):
+                out.mkdir(parents=True, exist_ok=True)
+                for name in hashes:
+                    copy_file(product_cache / name, out / name)
+                coverage = json.loads((out / "coverage.json").read_text())
+                coverage["cache"] = {"hit": True, "key": product_key, "files": len(hashes)}
+                (out / "coverage.json").write_text(json.dumps(coverage, indent=2) + "\n")
+                return coverage
+        except (OSError, ValueError, TypeError):
+            pass
+    # Capture already verified these bytes. A product cache hit is keyed by the
+    # immutable snapshot identity, so rereading every source file here makes
+    # unchanged builds pay the full parser-input I/O cost for no new evidence.
     source_bytes: dict[str, bytes] = {}
     source_hash_errors: list[dict[str, str]] = []
     for row in source_rows:
@@ -88,31 +116,6 @@ def build_structure(
             f"captured source inventory failed hash verification: {details}"
         )
     out.mkdir(parents=True, exist_ok=True)
-
-    symbols: list[dict[str, Any]] = []
-    imports: list[dict[str, Any]] = []
-    metrics: list[dict[str, Any]] = []
-    parser_missing: set[str] = set()
-    parser_versions = {"python": sys.version}
-    for distribution in ("tree-sitter", "tree-sitter-rust"):
-        try:
-            parser_versions[distribution] = version(distribution)
-        except PackageNotFoundError:
-            parser_versions[distribution] = "unavailable"
-    product_key = hashlib.sha256(json.dumps([snapshot_id, policy_version, _TOOL_VERSION, parser_versions], sort_keys=True).encode()).hexdigest()
-    product_cache = cache / "products" / product_key if cache else None
-    if product_cache is not None and (product_cache / "hashes.json").is_file():
-        try:
-            hashes = json.loads((product_cache / "hashes.json").read_text())
-            if all(hashlib.sha256((product_cache / name).read_bytes()).hexdigest() == expected for name, expected in hashes.items()):
-                for name in hashes:
-                    copy_file(product_cache / name, out / name)
-                coverage = json.loads((out / "coverage.json").read_text())
-                coverage["cache"] = {"hit": True, "key": product_key, "files": len(hashes)}
-                (out / "coverage.json").write_text(json.dumps(coverage, indent=2) + "\n")
-                return coverage
-        except (OSError, ValueError, TypeError):
-            pass
     rust_parser = None
     rust_parser_loaded = False
     python_modules = {

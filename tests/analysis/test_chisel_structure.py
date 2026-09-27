@@ -126,6 +126,7 @@ def test_metrics_symbols_and_imports_use_maintained_captured_source(
 
 def test_rust_symbols_and_static_manifest_edges_are_inventory_bound(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     inventory = _inventory(
         tmp_path,
@@ -154,8 +155,18 @@ def test_rust_symbols_and_static_manifest_edges_are_inventory_bound(
         for row in edges
     )
     assert coverage["inventory"]["source_role_files"] == 2
-    # The second build exercises the content/policy keyed extraction cache.
+    # A verified snapshot cache hit must avoid reopening the captured tree.
+    original_read_bytes = Path.read_bytes
+
+    def cache_only_read(path: Path) -> bytes:
+        if path.is_relative_to(inventory.root):
+            raise AssertionError(f"source reread on cache hit: {path}")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", cache_only_read)
     again = build_structure(inventory, output, cache_dir=tmp_path / "cache")
+    monkeypatch.setattr(Path, "read_bytes", original_read_bytes)
+    assert again["cache"]["hit"] is True
     assert again["counts"] == coverage["counts"]
     next_snapshot = replace(
         inventory, project="renamed-project", snapshot_id="snapshot-2"
