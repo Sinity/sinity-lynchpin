@@ -219,6 +219,7 @@ def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path,
     from . import chisel
     from .chisel_context import build_context
     from .chisel_offline import build_offline_package
+    from .chisel_compact import compact_jsonl
     from .chisel_structure import build_structure
     from .chisel_snapshots import build_overlay_views
     from .chisel_options import active_options
@@ -252,6 +253,7 @@ def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path,
         ("context", lambda: collect_excerpts(plan.path, out_dir, active_options)),
         ("reports", lambda: report_builder(out_dir, project=plan.name,
             task_roots=[root for project, root in active_options.task_roots if project == plan.name])),
+        ("compact", lambda: compact_jsonl(out_dir)),
         ("offline-index", lambda: build_offline_package(out_dir, project=plan.name,
             snapshot_id=inventory.snapshot_id, generated_at=inventory.generated_at)),
     ]
@@ -259,6 +261,8 @@ def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path,
     for name, run in steps:
         dataset = {"owner-evidence": "execution", "offline-index": "source", "reports": "source", "overlay-views": "structure"}.get(name, name)
         if name == "owner-evidence" and "trackers" in active_options.datasets:
+            pass
+        elif name == "compact":
             pass
         elif name == "overlay-views" and "metrics" in active_options.datasets:
             pass

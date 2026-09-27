@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import hashlib
+import gzip
 import shutil
 import re
 import sys
@@ -38,10 +39,13 @@ def evidence_rows(package: Path):
         if area.is_dir():
             roots.extend(sorted(area.rglob("*.jsonl")))
             roots.extend(sorted(area.rglob("*.ndjson")))
+            roots.extend(sorted(area.rglob("*.jsonl.gz")))
+            roots.extend(sorted(area.rglob("*.ndjson.gz")))
     for path in roots:
         if path.is_file():
             reference = path.relative_to(package).as_posix()
-            with path.open(encoding="utf-8", errors="replace") as stream:
+            with (gzip.open(path, "rt", encoding="utf-8", errors="replace") if path.suffix == ".gz"
+                  else path.open(encoding="utf-8", errors="replace")) as stream:
                 for line_no, line in enumerate(stream, 1):
                     yield reference, line_no, line.rstrip("\n")
 
@@ -192,13 +196,16 @@ def query_records(package: Path, command: str, value: str | None, limit: int, of
         path = package / dataset
         if snapshot != "primary" and command in {"symbols", "neighbors", "references"}:
             path = package / "snapshots" / snapshot / dataset
-            if not path.exists():
+            if not path.exists() and not path.with_name(path.name + ".gz").exists():
                 raise ValueError(f"selected snapshot {command} are unavailable: {snapshot}")
+        if not path.exists():
+            path = path.with_name(path.name + ".gz")
         if command in {"references", "candidate-evidence"} and not path.exists():
             raise ValueError(f"{command} dataset is unavailable")
         result = []
         if path.exists():
-            with path.open() as stream:
+            with (gzip.open(path, "rt", encoding="utf-8") if path.suffix == ".gz"
+                  else path.open()) as stream:
                 for line in stream:
                     row = json.loads(line)
                     if command in {"references", "candidate-evidence"} and selected_id is not None and row.get("snapshot_id") != selected_id:

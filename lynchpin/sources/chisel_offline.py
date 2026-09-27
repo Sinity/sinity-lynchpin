@@ -13,15 +13,19 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from .chisel_compact import open_text
+
 
 def _jsonl_files(package: Path) -> list[Path]:
     """Return canonical evidence streams, excluding arbitrary source JSONL."""
     candidates = [package / "inventory.jsonl"]
-    for area in ("structure", "history", "trackers", "verification", "metrics"):
+    for area in ("structure", "history", "trackers", "verification", "metrics", "reports", "context"):
         root = package / area
         if root.exists():
             candidates.extend(root.rglob("*.jsonl"))
             candidates.extend(root.rglob("*.ndjson"))
+            candidates.extend(root.rglob("*.jsonl.gz"))
+            candidates.extend(root.rglob("*.ndjson.gz"))
     return sorted(path for path in candidates if path.is_file())
 
 
@@ -72,7 +76,7 @@ def _build_db(
             rel = _safe_relative(path, package)
             dataset = rel
             count = 0
-            with path.open("r", encoding="utf-8", errors="replace") as stream:
+            with open_text(path) as stream:
                 for line_no, line in enumerate(stream, 1):
                     if not line.strip():
                         continue
@@ -227,6 +231,12 @@ def _guide(
         f"- Working tree dirty at capture: `{capture.get('dirty') if capture.get('dirty') is not None else 'unknown'}`\n"
         f"- Capture policy: `{capture.get('policy_version') or 'unavailable'}`"
     )
+    compression_note = (
+        "Derived `.jsonl.gz` streams retain the complete JSONL records; `browse.py` reads "
+        "them with Python's standard library. `dataset-compression.json` records both "
+        "stored and original hashes and byte counts."
+        if (package / "dataset-compression.json").is_file() else ""
+    )
     return f"""# {project} Chisel package
 
 This package contains captured project material and mechanically derived indexes. It does not contain an AI-written project assessment.
@@ -250,7 +260,9 @@ Run `python3 browse.py --package . --help`. The helper uses only Python's standa
 
 {chr(10).join(f'- `{name}/`' if (package/name).is_dir() else f'- `{name}`' for name in layout)}
 
-`source/` is the directly browsable captured source tree when present. XML snapshots and compressed views are alternate representations; they are generated from selected memberships and can omit files outside those memberships. Use `inventory.jsonl` and `capture.json` for per-file role, inclusion/exclusion, digest, and capture-state evidence when supplied. The Git bundle, when present, retains repository-native reachable history. History JSONL is a searchable derivative, not a substitute for the bundle.
+{compression_note}
+
+`source/` is the directly browsable captured source tree when present. Optional XML snapshots are views of selected memberships and can omit files outside those memberships. Use `inventory.jsonl` and `capture.json` for per-file role, inclusion/exclusion, digest, and capture-state evidence when supplied. The Git bundle, when present, retains repository-native reachable history. History JSONL is a searchable derivative, not a substitute for the bundle.
 
 Attachment archives omit optional XML renderings, SQLite indexes, duplicate working-tree tar files, and Beads HTML. Their actual manifests list the captured source, history, and selected datasets. `browse.py search` and `browse.py history` scan source and JSONL directly; SQL requires an explicitly built index. The worktree overlay preserves captured differences separately from committed history.
 
@@ -284,6 +296,8 @@ def build_offline_package(
         "trackers",
         "verification",
         "metrics",
+        "reports",
+        "context",
     )
     availability: dict[str, Any] = {}
     for item in expected:
@@ -292,8 +306,8 @@ def build_offline_package(
             "available": path.exists(),
             "records": sum(
                 1
-                for p in path.rglob("*") if p.suffix in {".jsonl", ".ndjson"} and p.is_file()
-                for _ in p.open(encoding="utf-8", errors="replace")
+                for p in path.rglob("*") if p.is_file() and (p.name.endswith((".jsonl", ".ndjson", ".jsonl.gz", ".ndjson.gz")))
+                for _ in open_text(p)
             )
             if path.is_dir()
             else None,
@@ -310,7 +324,7 @@ def build_offline_package(
     db_info = (_build_db(package, package / "index.sqlite3", availability)
                if (active_options.sqlite if sqlite is None else sqlite) else {"status": "not_requested",
                    "capture": json.loads((package / "capture.json").read_text()) if (package / "capture.json").exists() else {},
-                   "datasets": {p.relative_to(package).as_posix(): sum(1 for _ in p.open()) for p in _jsonl_files(package)}})
+                   "datasets": {p.relative_to(package).as_posix(): sum(1 for _ in open_text(p)) for p in _jsonl_files(package)}})
     helper_source = Path(__file__).with_name("chisel_browse.py")
     shutil.copyfile(helper_source, package / "browse.py")
     (package / "START_HERE.md").write_text(

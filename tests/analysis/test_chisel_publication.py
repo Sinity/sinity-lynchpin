@@ -14,9 +14,11 @@ import pytest
 from lynchpin.sources.chisel_publication import (
     PublicationBusyError,
     PublicationValidationError,
+    _validate_project,
     publish_candidate,
     staged_publication,
 )
+from lynchpin.sources.chisel_compact import compact_jsonl
 
 
 def _project(root: Path, name: str, content: bytes, archive: bytes) -> None:
@@ -121,6 +123,24 @@ def test_manifest_rejects_missing_hash_and_undeclared_nested_files(
             publish_candidate(candidate, output, ["alpha"])
 
     assert (output / "alpha" / "source.xml").read_bytes() == b"good"
+
+
+def test_publication_checks_original_bytes_of_compacted_stream(tmp_path: Path) -> None:
+    _project(tmp_path, "alpha", b"source", b"archive")
+    project = tmp_path / "alpha"
+    (project / "reports").mkdir()
+    (project / "reports" / "references.jsonl").write_text('{"name":"target"}\n')
+    compact_jsonl(project)
+    _write_manifest(project, "alpha")
+    _validate_project(tmp_path, "alpha")
+
+    compression_path = project / "dataset-compression.json"
+    compression = json.loads(compression_path.read_text())
+    compression["streams"][0]["source_sha256"] = "0" * 64
+    compression_path.write_text(json.dumps(compression))
+    _write_manifest(project, "alpha")
+    with pytest.raises(PublicationValidationError, match="compressed stream content mismatch"):
+        _validate_project(tmp_path, "alpha")
 
 
 def test_lock_rejects_concurrent_thread_and_releases_after_candidate_failure(

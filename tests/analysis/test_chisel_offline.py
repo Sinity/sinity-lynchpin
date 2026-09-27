@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from lynchpin.sources.chisel_compact import compact_jsonl
 from lynchpin.sources.chisel_offline import build_offline_package
 
 
@@ -87,6 +88,43 @@ def test_source_helper_rejects_traversal(tmp_path: Path) -> None:
     )
     result = _run(package, "source", "../outside", "--start", "1", "--end", "1")
     assert result.returncode == 2
+
+
+def test_compacted_streams_remain_browsable_without_sqlite(tmp_path: Path) -> None:
+    package = tmp_path / "pkg"
+    for area in ("source", "history", "structure", "reports"):
+        (package / area).mkdir(parents=True)
+    (package / "source" / "main.py").write_text("import helper\n")
+    (package / "source" / "structure.jsonl").write_text("source bytes remain direct\n")
+    (package / "history" / "commits.jsonl").write_text('{"commit":"abc","message":"historyneedle"}\n')
+    (package / "structure" / "dependency_edges.jsonl").write_text('{"from":"main","to":"helper","kind":"python_import"}\n')
+    (package / "reports" / "snapshot-differences.jsonl").write_text('{"path":"main.py","snapshot":"worktree"}\n')
+    (package / "reports" / "coverage.json").write_text(json.dumps({
+        "schema_version": 3,
+        "dataset_coverage": {"structure/dependency_edges.jsonl": {"status": "available", "records": 1}},
+    }))
+    (package / "capture.json").write_text('{"snapshot_id":"primary-id"}')
+    compression = compact_jsonl(package)
+    assert compression["streams"] == 3
+    assert (package / "history/commits.jsonl.gz").is_file()
+    assert not (package / "history/commits.jsonl").exists()
+    assert (package / "source/structure.jsonl").read_text() == "source bytes remain direct\n"
+    coverage = json.loads((package / "reports/coverage.json").read_text())
+    assert coverage["schema_version"] == 4
+    assert "structure/dependency_edges.jsonl.gz" in coverage["dataset_coverage"]
+
+    result = build_offline_package(
+        package, sqlite=False, project="fixture", snapshot_id="primary-id", generated_at="now"
+    )
+    assert result["datasets"]["history/commits.jsonl.gz"] == 1
+    assert not (package / "index.sqlite3").exists()
+    assert _run(package, "history", "--commit", "abc").returncode == 0
+    neighbors = _run(package, "neighbors", "main", "--json")
+    assert neighbors.returncode == 0 and '"to": "helper"' in neighbors.stdout
+    differences = _run(package, "differences", "main.py", "--json")
+    assert differences.returncode == 0 and '"snapshot": "worktree"' in differences.stdout
+    search = _run(package, "search", "historyneedle")
+    assert search.returncode == 0 and "commits.jsonl.gz" in search.stdout
 
 
 def test_evidence_search_source_hash_and_capture_metadata(tmp_path: Path) -> None:

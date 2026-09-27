@@ -13,6 +13,7 @@ import ctypes
 import errno
 import fcntl
 import hashlib
+import gzip
 import json
 import os
 import shutil
@@ -185,6 +186,26 @@ def _validate_project(root: Path, name: str) -> None:
         raise PublicationValidationError(
             f"manifest file inventory mismatch for {name}: undeclared={missing}, missing={absent}"
         )
+    compression_path = project_dir / "dataset-compression.json"
+    if compression_path.is_file():
+        try:
+            compression = json.loads(compression_path.read_text(encoding="utf-8"))
+            if compression.get("schema_version") != 1 or not isinstance(compression.get("streams"), list):
+                raise ValueError("unsupported compression manifest")
+            for row in compression["streams"]:
+                relative = Path(row["path"])
+                if relative not in declared or not relative.name.endswith((".jsonl.gz", ".ndjson.gz")):
+                    raise ValueError(f"undeclared compressed stream: {relative}")
+                digest = hashlib.sha256()
+                size = 0
+                with gzip.open(project_dir / relative, "rb") as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        digest.update(chunk)
+                        size += len(chunk)
+                if digest.hexdigest() != row["source_sha256"] or size != row["source_bytes"]:
+                    raise ValueError(f"compressed stream content mismatch: {relative}")
+        except (OSError, EOFError, ValueError, KeyError, TypeError) as exc:
+            raise PublicationValidationError(f"invalid compressed dataset in {name}: {exc}") from exc
 
 
 def _archive_previous(old_root: Path, candidate_root: Path, names: Sequence[str]) -> None:

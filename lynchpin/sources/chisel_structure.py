@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
 from .chisel_cache import atomic_write_text, copy_file
+from .chisel_compact import open_text, resolved_stream
 
 from .chisel_inventory import CapturedInventory
 
@@ -1196,7 +1197,7 @@ def build_portfolio_links(root: Path, plans: Iterable[Any]) -> dict[str, Any]:
     for plan in selected:
         project = str(plan.name)
         structure = root / project / "structure"
-        edges_path = structure / "dependency_edges.jsonl"
+        edges_path = resolved_stream(structure / "dependency_edges.jsonl")
         if edges_path.is_file():
             for edge in _read_jsonl(edges_path):
                 declaration = edge.get("declaration")
@@ -1395,7 +1396,7 @@ def _github_slug(value: str) -> str | None:
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     try:
-        with path.open(encoding="utf-8") as handle:
+        with open_text(path) as handle:
             for line in handle:
                 if line.strip():
                     row = json.loads(line)

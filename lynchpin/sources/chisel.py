@@ -4420,11 +4420,13 @@ def _generate_snapshot_overview(
     ignored_local_state = ignore_audit.get("ignored_local_state_bytes")
     tracked_hidden = ignore_audit.get("tracked_hidden_bytes")
     xml_snapshot_count = sum(1 for path in out_dir.glob("*.xml") if path.is_file())
-    differences_path = out_dir / "reports/snapshot-differences.jsonl"
-    snapshot_difference_count = (
-        sum(1 for line in differences_path.read_text(encoding="utf-8").splitlines() if line)
-        if differences_path.is_file() else 0
-    )
+    from .chisel_compact import open_text, resolved_stream
+
+    differences_path = resolved_stream(out_dir / "reports/snapshot-differences.jsonl")
+    snapshot_difference_count = 0
+    if differences_path.is_file():
+        with open_text(differences_path) as differences:
+            snapshot_difference_count = sum(1 for line in differences if line.strip())
     artifact_count = len(
         {row["name"] for row in artifacts}.union(pending_artifact_names)
     )
@@ -4465,7 +4467,7 @@ def _generate_snapshot_overview(
         f"{plan.name}-beads.md" if beads.get("available") else None,
         f"{plan.name}-prs-open.xml" if prs_open else None,
         f"{plan.name}-issues-open.xml" if issues_open else None,
-        "reports/snapshot-differences.jsonl",
+        differences_path.relative_to(out_dir).as_posix(),
         f"{plan.name}-growth.md",
         f"{plan.name}-tokei-stats.md",
         f"{plan.name}-agent-audit.md" if agent_audit else None,
@@ -6308,7 +6310,10 @@ def _build_chisel_candidate(
     # ── Summary table ──
     github_counts_unknown = False
     if _console is not None:
-        table = Table(title=f"Chisel — {generated_at}", title_style="bold")
+        table = Table(
+            title=f"Chisel — {generated_at}", title_style="bold",
+            box=None, padding=(0, 1), pad_edge=False,
+        )
         table.add_column("Repo", style="bold", no_wrap=True)
         table.add_column("St", no_wrap=True)
         table.add_column("Snap", justify="right", no_wrap=True)
