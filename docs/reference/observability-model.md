@@ -41,6 +41,10 @@ controlled treatment or a design that explicitly justifies it.
   the result.
 - Separate pre-treatment context from post-treatment outcomes.
 - Record cache/warmup state and reject contaminated benchmark comparisons.
+- Use valid same-run monotonic timestamps for duration estimates. Wall timestamps
+  locate telemetry; a wall-only duration stays inspection evidence. Failed,
+  cancelled, censored, partial, and discarded warmup runs remain visible with
+  exclusion reasons instead of entering successful-duration contrasts.
 - Use process/cgroup windows for attribution rather than assigning all host
   pressure to the most visible foreground command.
 - Report unsupported assumptions and refusal reasons alongside successful

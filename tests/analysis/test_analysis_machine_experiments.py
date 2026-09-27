@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from lynchpin.analysis.machine.experiments import analyze_machine_experiment_claims
+import pytest
+
+from lynchpin.analysis.machine.experiments import (
+    _run_measurement,
+    analyze_machine_experiment_claims,
+)
 from lynchpin.substrate.connection import apply_schema, connect
 
 
@@ -55,7 +60,13 @@ def _controlled_planned(
                 "path": internal_json,
                 "log_format": "internal-json",
                 "capture_stream": "stderr",
-                "argv_template": ["nix", "build", "--log-format", "internal-json", "{derivation_key}"],
+                "argv_template": [
+                    "nix",
+                    "build",
+                    "--log-format",
+                    "internal-json",
+                    "{derivation_key}",
+                ],
             },
             "telemetry": {"window_source": "manifest_timestamps"},
         },
@@ -75,7 +86,10 @@ def _controlled_planned(
             "exclusion_rules": ["missing internal-json"],
             "blocking_keys": ["cache_condition", "derivation"],
             "support_ceiling": "controlled",
-            "causal_model": {"treatment_variable": "turbo", "outcome_variable": "duration_seconds"},
+            "causal_model": {
+                "treatment_variable": "turbo",
+                "outcome_variable": "duration_seconds",
+            },
             "instrumentation_bundle": {"name": "build_phase"},
             "power_note": {"status": "fixture"},
         },
@@ -86,7 +100,116 @@ def _controlled_planned(
     return json.dumps(payload)
 
 
-def test_machine_experiment_claims_refuse_controlled_language_without_randomization(tmp_path):
+def _mark_successful_duration(conn, run_id: str, duration_s: int) -> None:
+    conn.execute(
+        """UPDATE machine_experiment_run SET
+           monotonic_started_ns = 1000000000,
+           monotonic_ended_ns = ?, exit_status = 0,
+           execution_outcome = ? WHERE run_id = ?""",
+        [
+            1_000_000_000 + duration_s * 1_000_000_000,
+            json.dumps(
+                {
+                    "status": "success",
+                    "censored": False,
+                    "warmup_discarded": False,
+                    "partial_output": False,
+                }
+            ),
+            run_id,
+        ],
+    )
+
+
+def test_duration_measurement_prefers_monotonic_and_refuses_failed_outcomes() -> None:
+    started = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+    run = {
+        "started_at": started,
+        "ended_at": started + timedelta(seconds=610),
+        "monotonic_started_ns": 1_000_000_000,
+        "monotonic_ended_ns": 11_000_000_000,
+        "exit_status": 1,
+        "execution_outcome": {
+            "status": "failure",
+            "censored": False,
+            "warmup_discarded": False,
+            "partial_output": False,
+        },
+    }
+
+    measured = _run_measurement(run)
+
+    assert measured.duration_seconds == 10.0
+    assert measured.clock == "monotonic"
+    assert measured.eligible is False
+    assert any("durations disagree" in caveat for caveat in measured.caveats)
+    assert "successful command exit not observed" in measured.exclusion_reasons
+
+
+@pytest.mark.parametrize(
+    "status,flag",
+    [
+        ("cancelled", None),
+        ("timeout", "censored"),
+        ("success", "warmup_discarded"),
+        ("success", "partial_output"),
+    ],
+)
+def test_duration_estimate_excludes_non_successful_or_discarded_runs(
+    status: str, flag: str | None
+) -> None:
+    started = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+    outcome = {
+        "status": status,
+        "censored": False,
+        "warmup_discarded": False,
+        "partial_output": False,
+    }
+    if flag is not None:
+        outcome[flag] = True
+    measured = _run_measurement(
+        {
+            "started_at": started,
+            "ended_at": started + timedelta(seconds=10),
+            "monotonic_started_ns": 1_000_000_000,
+            "monotonic_ended_ns": 11_000_000_000,
+            "exit_status": 0,
+            "execution_outcome": outcome,
+        }
+    )
+
+    assert measured.duration_seconds == 10.0
+    assert measured.eligible is False
+    assert measured.exclusion_reasons
+
+
+def test_duration_measurement_marks_wall_only_evidence_weaker() -> None:
+    started = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+    measured = _run_measurement(
+        {
+            "started_at": started,
+            "ended_at": started + timedelta(seconds=10),
+            "monotonic_started_ns": 7,
+            "monotonic_ended_ns": 2,
+            "exit_status": 0,
+            "execution_outcome": {
+                "status": "success",
+                "censored": False,
+                "warmup_discarded": False,
+                "partial_output": False,
+            },
+        }
+    )
+
+    assert measured.clock == "wall_fallback"
+    assert measured.duration_seconds == 10.0
+    assert measured.eligible is False
+    assert "valid monotonic duration unavailable" in measured.exclusion_reasons
+
+
+def test_machine_experiment_claims_refuse_controlled_language_without_randomization(
+    tmp_path,
+):
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
@@ -124,7 +247,9 @@ def test_machine_experiment_claims_refuse_controlled_language_without_randomizat
             ],
         )
 
-    analysis = analyze_machine_experiment_claims(path=db, refresh_id="r1", include_episodes=False)
+    analysis = analyze_machine_experiment_claims(
+        path=db, refresh_id="r1", include_episodes=False
+    )
 
     assert analysis.run_count == 1
     assert analysis.controlled_claim_count == 0
@@ -139,14 +264,18 @@ def test_machine_experiment_claims_refuse_controlled_language_without_randomizat
     assert any("git checkout was dirty" in caveat for caveat in pack.caveats)
 
 
-def test_machine_experiment_claims_allow_controlled_mode_only_with_manifest_structure(tmp_path):
+def test_machine_experiment_claims_allow_controlled_mode_only_with_manifest_structure(
+    tmp_path,
+):
     db = tmp_path / "sub.duckdb"
     internal_json = tmp_path / "internal.ndjson"
     internal_json.write_text(
-        "\n".join([
-            '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}',
-            '{"action":"stop","id":1,"timestamp":"2026-05-01T12:00:01+00:00"}',
-        ]),
+        "\n".join(
+            [
+                '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}',
+                '{"action":"stop","id":1,"timestamp":"2026-05-01T12:00:01+00:00"}',
+            ]
+        ),
         encoding="utf-8",
     )
     with connect(db) as conn:
@@ -171,16 +300,23 @@ def test_machine_experiment_claims_allow_controlled_mode_only_with_manifest_stru
                 datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
                 datetime(2026, 5, 1, 12, 1, tzinfo=timezone.utc),
                 str(internal_json),
-                _controlled_planned("turbo", run_id="run-treatment", internal_json=str(internal_json)),
+                _controlled_planned(
+                    "turbo", run_id="run-treatment", internal_json=str(internal_json)
+                ),
             ],
         )
         _insert_metric(conn, datetime(2026, 5, 1, 12, 0, 30, tzinfo=timezone.utc))
 
-    analysis = analyze_machine_experiment_claims(path=db, refresh_id="r1", include_episodes=False)
+    analysis = analyze_machine_experiment_claims(
+        path=db, refresh_id="r1", include_episodes=False
+    )
 
     assert analysis.controlled_claim_count == 1
     assert analysis.claim_packs[0].claim_mode == "controlled_benchmark"
-    assert not any("observational manifest only" in caveat for caveat in analysis.claim_packs[0].caveats)
+    assert not any(
+        "observational manifest only" in caveat
+        for caveat in analysis.claim_packs[0].caveats
+    )
     assert analysis.claim_packs[0].run_group_id == "grp-1"
     assert analysis.claim_packs[0].benchmark_readiness["derivation_count"] == 1
     assert analysis.claim_packs[0].internal_json["parsed_count"] == 2
@@ -196,10 +332,12 @@ def test_machine_experiment_claims_demote_manifest_validation_issues(tmp_path):
     db = tmp_path / "sub.duckdb"
     internal_json = tmp_path / "internal.ndjson"
     internal_json.write_text(
-        "\n".join([
-            '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}',
-            '{"action":"stop","id":1,"timestamp":"2026-05-01T12:00:01+00:00"}',
-        ]),
+        "\n".join(
+            [
+                '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}',
+                '{"action":"stop","id":1,"timestamp":"2026-05-01T12:00:01+00:00"}',
+            ]
+        ),
         encoding="utf-8",
     )
     with connect(db) as conn:
@@ -227,21 +365,30 @@ def test_machine_experiment_claims_demote_manifest_validation_issues(tmp_path):
                 datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
                 datetime(2026, 5, 1, 12, 1, tzinfo=timezone.utc),
                 str(internal_json),
-                _controlled_planned("turbo", run_id="run-treatment", internal_json=str(internal_json)),
+                _controlled_planned(
+                    "turbo", run_id="run-treatment", internal_json=str(internal_json)
+                ),
             ],
         )
         _insert_metric(conn, datetime(2026, 5, 1, 12, 0, 30, tzinfo=timezone.utc))
 
-    analysis = analyze_machine_experiment_claims(path=db, refresh_id="r1", include_episodes=False)
+    analysis = analyze_machine_experiment_claims(
+        path=db, refresh_id="r1", include_episodes=False
+    )
 
     pack = analysis.claim_packs[0]
     assert analysis.controlled_claim_count == 0
     assert pack.claim_mode == "manifest_observational"
     assert pack.manifest_validation["valid"] is False
-    assert any("manifest validation issue: missing monotonic timestamp" in caveat for caveat in pack.caveats)
+    assert any(
+        "manifest validation issue: missing monotonic timestamp" in caveat
+        for caveat in pack.caveats
+    )
 
 
-def test_machine_experiment_claims_tolerate_legacy_schema_without_validation_columns(tmp_path):
+def test_machine_experiment_claims_tolerate_legacy_schema_without_validation_columns(
+    tmp_path,
+):
     db = tmp_path / "legacy.duckdb"
     with connect(db) as conn:
         conn.execute(
@@ -313,17 +460,21 @@ def test_machine_experiment_claims_tolerate_legacy_schema_without_validation_col
     assert pack.manifest_validation == {"valid": None, "issues": [], "warnings": []}
     assert analysis.controlled_claim_count == 0
     assert pack.claim_mode == "manifest_observational"
-    assert any("manifest validation status is unknown" in caveat for caveat in pack.caveats)
+    assert any(
+        "manifest validation status is unknown" in caveat for caveat in pack.caveats
+    )
 
 
 def test_machine_experiment_claims_pads_telemetry_for_short_controlled_runs(tmp_path):
     db = tmp_path / "sub.duckdb"
     internal_json = tmp_path / "internal.ndjson"
     internal_json.write_text(
-        "\n".join([
-            '@nix {"action":"start","id":1,"parent":0,"text":"querying info","type":0}',
-            '@nix {"action":"stop","id":1}',
-        ]),
+        "\n".join(
+            [
+                '@nix {"action":"start","id":1,"parent":0,"text":"querying info","type":0}',
+                '@nix {"action":"stop","id":1}',
+            ]
+        ),
         encoding="utf-8",
     )
     with connect(db) as conn:
@@ -348,12 +499,16 @@ def test_machine_experiment_claims_pads_telemetry_for_short_controlled_runs(tmp_
                 datetime(2026, 5, 1, 12, 0, 10, tzinfo=timezone.utc),
                 datetime(2026, 5, 1, 12, 0, 11, tzinfo=timezone.utc),
                 str(internal_json),
-                _controlled_planned("turbo", run_id="run-treatment", internal_json=str(internal_json)),
+                _controlled_planned(
+                    "turbo", run_id="run-treatment", internal_json=str(internal_json)
+                ),
             ],
         )
         _insert_metric(conn, datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc))
 
-    analysis = analyze_machine_experiment_claims(path=db, refresh_id="r1", include_episodes=False)
+    analysis = analyze_machine_experiment_claims(
+        path=db, refresh_id="r1", include_episodes=False
+    )
 
     pack = analysis.claim_packs[0]
     assert pack.claim_mode == "controlled_benchmark"
@@ -366,10 +521,12 @@ def test_machine_experiment_claims_demote_executed_run_group_mismatch(tmp_path):
     db = tmp_path / "sub.duckdb"
     internal_json = tmp_path / "internal.ndjson"
     internal_json.write_text(
-        "\n".join([
-            '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}',
-            '{"action":"stop","id":1,"timestamp":"2026-05-01T12:00:01+00:00"}',
-        ]),
+        "\n".join(
+            [
+                '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}',
+                '{"action":"stop","id":1,"timestamp":"2026-05-01T12:00:01+00:00"}',
+            ]
+        ),
         encoding="utf-8",
     )
     with connect(db) as conn:
@@ -389,12 +546,16 @@ def test_machine_experiment_claims_demote_executed_run_group_mismatch(tmp_path):
             [
                 datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
                 datetime(2026, 5, 1, 12, 1, tzinfo=timezone.utc),
-                _controlled_planned("turbo", run_id="run-treatment", internal_json=str(internal_json)),
+                _controlled_planned(
+                    "turbo", run_id="run-treatment", internal_json=str(internal_json)
+                ),
             ],
         )
         _insert_metric(conn, datetime(2026, 5, 1, 12, 0, 30, tzinfo=timezone.utc))
 
-    analysis = analyze_machine_experiment_claims(path=db, refresh_id="r1", include_episodes=False)
+    analysis = analyze_machine_experiment_claims(
+        path=db, refresh_id="r1", include_episodes=False
+    )
 
     assert analysis.controlled_claim_count == 0
     pack = analysis.claim_packs[0]
@@ -406,10 +567,12 @@ def test_machine_experiment_claims_demote_selected_run_mismatch(tmp_path):
     db = tmp_path / "sub.duckdb"
     internal_json = tmp_path / "internal.ndjson"
     internal_json.write_text(
-        "\n".join([
-            '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}',
-            '{"action":"stop","id":1,"timestamp":"2026-05-01T12:00:01+00:00"}',
-        ]),
+        "\n".join(
+            [
+                '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}',
+                '{"action":"stop","id":1,"timestamp":"2026-05-01T12:00:01+00:00"}',
+            ]
+        ),
         encoding="utf-8",
     )
     with connect(db) as conn:
@@ -429,12 +592,16 @@ def test_machine_experiment_claims_demote_selected_run_mismatch(tmp_path):
             [
                 datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
                 datetime(2026, 5, 1, 12, 1, tzinfo=timezone.utc),
-                _controlled_planned("turbo", run_id="run-treatment", internal_json=str(internal_json)),
+                _controlled_planned(
+                    "turbo", run_id="run-treatment", internal_json=str(internal_json)
+                ),
             ],
         )
         _insert_metric(conn, datetime(2026, 5, 1, 12, 0, 30, tzinfo=timezone.utc))
 
-    analysis = analyze_machine_experiment_claims(path=db, refresh_id="r1", include_episodes=False)
+    analysis = analyze_machine_experiment_claims(
+        path=db, refresh_id="r1", include_episodes=False
+    )
 
     assert analysis.controlled_claim_count == 0
     pack = analysis.claim_packs[0]
@@ -460,25 +627,37 @@ def test_machine_experiment_claims_reject_plain_randomized_flag(tmp_path):
             [
                 datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
                 datetime(2026, 5, 1, 12, 1, tzinfo=timezone.utc),
-                json.dumps({"randomized": True, "control_label": "baseline", "treatment_label": "turbo"}),
+                json.dumps(
+                    {
+                        "randomized": True,
+                        "control_label": "baseline",
+                        "treatment_label": "turbo",
+                    }
+                ),
             ],
         )
 
-    analysis = analyze_machine_experiment_claims(path=db, refresh_id="r1", include_episodes=False)
+    analysis = analyze_machine_experiment_claims(
+        path=db, refresh_id="r1", include_episodes=False
+    )
 
     assert analysis.controlled_claim_count == 0
     assert analysis.claim_packs[0].claim_mode == "manifest_observational"
-    assert any("fixed derivation set" in caveat for caveat in analysis.claim_packs[0].caveats)
+    assert any(
+        "fixed derivation set" in caveat for caveat in analysis.claim_packs[0].caveats
+    )
 
 
 def test_machine_experiment_claims_emit_bootstrap_estimate_for_run_group(tmp_path):
     db = tmp_path / "sub.duckdb"
     internal_json = tmp_path / "internal.ndjson"
     internal_json.write_text(
-        "\n".join([
-            '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}',
-            '{"action":"stop","id":1,"timestamp":"2026-05-01T12:00:01+00:00"}',
-        ]),
+        "\n".join(
+            [
+                '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}',
+                '{"action":"stop","id":1,"timestamp":"2026-05-01T12:00:01+00:00"}',
+            ]
+        ),
         encoding="utf-8",
     )
     with connect(db) as conn:
@@ -504,23 +683,66 @@ def test_machine_experiment_claims_emit_bootstrap_estimate_for_run_group(tmp_pat
             [
                 datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
                 datetime(2026, 5, 1, 12, 2, tzinfo=timezone.utc),
-                _controlled_planned("baseline", run_id="run-control", internal_json=str(internal_json)),
+                _controlled_planned(
+                    "baseline", run_id="run-control", internal_json=str(internal_json)
+                ),
                 datetime(2026, 5, 1, 12, 4, tzinfo=timezone.utc),
                 datetime(2026, 5, 1, 12, 5, tzinfo=timezone.utc),
-                _controlled_planned("turbo", run_id="run-treatment", internal_json=str(internal_json)),
+                _controlled_planned(
+                    "turbo", run_id="run-treatment", internal_json=str(internal_json)
+                ),
             ],
         )
         _insert_metric(conn, datetime(2026, 5, 1, 12, 0, 30, tzinfo=timezone.utc))
         _insert_metric(conn, datetime(2026, 5, 1, 12, 4, 30, tzinfo=timezone.utc))
+        _mark_successful_duration(conn, "run-control", 100)
+        conn.execute(
+            """UPDATE machine_experiment_run SET monotonic_started_ns = 1000000000,
+               monotonic_ended_ns = 2000000000, exit_status = 1,
+               execution_outcome = ? WHERE run_id = 'run-treatment'""",
+            [
+                json.dumps(
+                    {
+                        "status": "failure",
+                        "censored": False,
+                        "warmup_discarded": False,
+                        "partial_output": False,
+                    }
+                )
+            ],
+        )
 
-    analysis = analyze_machine_experiment_claims(path=db, refresh_id="r1", include_episodes=False)
+    failed_analysis = analyze_machine_experiment_claims(
+        path=db, refresh_id="r1", include_episodes=False
+    )
+    failed_treatment = next(
+        pack for pack in failed_analysis.claim_packs if pack.run_id == "run-treatment"
+    )
+    assert failed_treatment.duration_seconds == 1.0
+    assert failed_treatment.claim_mode == "controlled_benchmark"
+    assert failed_treatment.duration_estimand_eligible is False
+    assert failed_analysis.effect_estimates == []
+    assert any(
+        "no eligible treatment duration observations" in caveat
+        for caveat in failed_analysis.caveats
+    )
+
+    with connect(db) as conn:
+        _mark_successful_duration(conn, "run-treatment", 40)
+
+    analysis = analyze_machine_experiment_claims(
+        path=db, refresh_id="r1", include_episodes=False
+    )
 
     assert analysis.controlled_claim_count == 2
     assert analysis.effect_estimates[0]["run_group_id"] == "grp-1"
     assert analysis.effect_estimates[0]["metric"] == "duration_seconds"
     assert analysis.effect_estimates[0]["estimator"] == "unpaired_bootstrap_mean_delta"
     assert analysis.effect_estimates[0]["delta"] == -60.0
-    assert analysis.effect_estimates[0]["p_value_method"] == "exact_label_permutation_two_sided"
+    assert (
+        analysis.effect_estimates[0]["p_value_method"]
+        == "exact_label_permutation_two_sided"
+    )
     assert 0.0 <= analysis.effect_estimates[0]["p_value"] <= 1.0
 
 
@@ -563,8 +785,11 @@ def test_machine_experiment_claims_estimate_from_selected_run_labels(tmp_path):
                 ],
             )
             _insert_metric(conn, run_start.replace(second=30))
+            _mark_successful_duration(conn, run_id, duration_s)
 
-    analysis = analyze_machine_experiment_claims(path=db, refresh_id="r1", include_episodes=False)
+    analysis = analyze_machine_experiment_claims(
+        path=db, refresh_id="r1", include_episodes=False
+    )
 
     assert analysis.controlled_claim_count == 2
     assert [pack.treatment_label for pack in analysis.claim_packs] == [
@@ -576,14 +801,18 @@ def test_machine_experiment_claims_estimate_from_selected_run_labels(tmp_path):
     assert analysis.effect_estimates[0]["delta"] == 30.0
 
 
-def test_machine_experiment_claims_use_stratified_estimator_for_complete_blocks(tmp_path):
+def test_machine_experiment_claims_use_stratified_estimator_for_complete_blocks(
+    tmp_path,
+):
     db = tmp_path / "sub.duckdb"
     internal_json = tmp_path / "internal.ndjson"
     internal_json.write_text(
-        "\n".join([
-            '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}',
-            '{"action":"stop","id":1,"timestamp":"2026-05-01T12:00:01+00:00"}',
-        ]),
+        "\n".join(
+            [
+                '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}',
+                '{"action":"stop","id":1,"timestamp":"2026-05-01T12:00:01+00:00"}',
+            ]
+        ),
         encoding="utf-8",
     )
     started = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
@@ -613,13 +842,18 @@ def test_machine_experiment_claims_use_stratified_estimator_for_complete_blocks(
                     run_id,
                     run_start,
                     run_start + timedelta(seconds=duration_s),
-                    _controlled_planned(label, run_id=run_id, internal_json=str(internal_json)),
+                    _controlled_planned(
+                        label, run_id=run_id, internal_json=str(internal_json)
+                    ),
                     f"/tmp/{run_id}/manifest.json",
                 ],
             )
             _insert_metric(conn, run_start.replace(second=30))
+            _mark_successful_duration(conn, run_id, duration_s)
 
-    analysis = analyze_machine_experiment_claims(path=db, refresh_id="r1", include_episodes=False)
+    analysis = analyze_machine_experiment_claims(
+        path=db, refresh_id="r1", include_episodes=False
+    )
 
     assert analysis.controlled_claim_count == 4
     estimate = analysis.effect_estimates[0]
@@ -638,7 +872,10 @@ def test_machine_experiment_claims_use_stratified_estimator_for_complete_blocks(
 def test_machine_experiment_claims_require_complete_phase_and_telemetry(tmp_path):
     db = tmp_path / "sub.duckdb"
     internal_json = tmp_path / "internal.ndjson"
-    internal_json.write_text('{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}\n', encoding="utf-8")
+    internal_json.write_text(
+        '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}\n',
+        encoding="utf-8",
+    )
     with connect(db) as conn:
         apply_schema(conn)
         conn.execute(
@@ -656,12 +893,16 @@ def test_machine_experiment_claims_require_complete_phase_and_telemetry(tmp_path
             [
                 datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
                 datetime(2026, 5, 1, 12, 1, tzinfo=timezone.utc),
-                _controlled_planned("turbo", run_id="run-treatment", internal_json=str(internal_json)),
+                _controlled_planned(
+                    "turbo", run_id="run-treatment", internal_json=str(internal_json)
+                ),
             ],
         )
         _insert_metric(conn, datetime(2026, 5, 1, 12, 0, 30, tzinfo=timezone.utc))
 
-    analysis = analyze_machine_experiment_claims(path=db, refresh_id="r1", include_episodes=False)
+    analysis = analyze_machine_experiment_claims(
+        path=db, refresh_id="r1", include_episodes=False
+    )
 
     assert analysis.controlled_claim_count == 1
     pack = analysis.claim_packs[0]
@@ -696,7 +937,9 @@ def test_machine_experiment_claims_use_inspection_window_for_zero_duration(tmp_p
             [datetime(2026, 5, 1, 12, 3, tzinfo=timezone.utc)],
         )
 
-    analysis = analyze_machine_experiment_claims(path=db, refresh_id="r1", include_episodes=False)
+    analysis = analyze_machine_experiment_claims(
+        path=db, refresh_id="r1", include_episodes=False
+    )
 
     pack = analysis.claim_packs[0]
     assert pack.duration_seconds is None

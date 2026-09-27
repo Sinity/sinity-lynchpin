@@ -59,6 +59,9 @@ class MachineExperimentClaimPack:
     monotonic_started_ns: int | None
     monotonic_ended_ns: int | None
     duration_seconds: float | None
+    duration_clock: str
+    duration_estimand_eligible: bool
+    duration_exclusion_reasons: tuple[str, ...]
     exit_status: int | None
     execution_outcome: dict[str, Any]
     manifest_validation: dict[str, Any]
@@ -92,6 +95,59 @@ class MachineExperimentClaims:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class _RunMeasurement:
+    duration_seconds: float | None
+    clock: str
+    eligible: bool
+    exclusion_reasons: tuple[str, ...]
+    caveats: tuple[str, ...]
+
+
+def _run_measurement(run: dict[str, Any]) -> _RunMeasurement:
+    """Keep manifest validity separate from successful-duration eligibility."""
+    started = _int_or_none(run.get("monotonic_started_ns"))
+    ended = _int_or_none(run.get("monotonic_ended_ns"))
+    wall_start = run["started_at"]
+    wall_end = run.get("ended_at")
+    wall_duration = (
+        (wall_end - wall_start).total_seconds()
+        if wall_end is not None and wall_end > wall_start
+        else None
+    )
+    caveats: list[str] = []
+    reasons: list[str] = []
+    if started is not None and ended is not None and started >= 0 and ended > started:
+        duration = (ended - started) / 1_000_000_000
+        clock = "monotonic"
+        if wall_duration is not None and abs(wall_duration - duration) > max(
+            1.0, duration * 0.01
+        ):
+            caveats.append(
+                "wall and monotonic run durations disagree; monotonic duration used"
+            )
+    else:
+        duration = wall_duration
+        clock = "wall_fallback" if wall_duration is not None else "unavailable"
+        reasons.append("valid monotonic duration unavailable")
+        if wall_duration is not None:
+            caveats.append(
+                "wall duration is inspection-only because valid monotonic evidence is unavailable"
+            )
+
+    outcome = _json_dict(run.get("execution_outcome"))
+    if run.get("exit_status") != 0:
+        reasons.append("successful command exit not observed")
+    if outcome.get("status") != "success":
+        reasons.append("successful execution outcome not observed")
+    for key in ("censored", "warmup_discarded", "partial_output"):
+        if outcome.get(key) is not False:
+            reasons.append(f"execution_outcome.{key} is not false")
+    if duration is None:
+        reasons.append("positive duration unavailable")
+    return _RunMeasurement(duration, clock, not reasons, tuple(reasons), tuple(caveats))
+
+
 def analyze_machine_experiment_claims(
     *,
     start: date | None = None,
@@ -110,7 +166,7 @@ def analyze_machine_experiment_claims(
         runs = _runs(conn, start=start, end=end, refresh_id=refresh_id)
         episodes = _episodes_for_runs(runs, path=path) if include_episodes else []
         packs = [_claim_pack(conn, run, episodes=episodes) for run in runs]
-        estimates = _effect_estimates(packs)
+        estimates, estimate_caveats = _effect_estimates(packs)
 
     caveats: list[str] = []
     if refresh_id is None:
@@ -118,11 +174,18 @@ def analyze_machine_experiment_claims(
     if not packs:
         caveats.append("no machine experiment manifests matched the analysis window")
     if not any(pack.claim_mode == "controlled_benchmark" for pack in packs):
-        caveats.append("no manifest carries explicit randomization/control metadata; controlled benchmark claims are refused")
+        caveats.append(
+            "no manifest carries explicit randomization/control metadata; controlled benchmark claims are refused"
+        )
+    caveats.extend(estimate_caveats)
     return MachineExperimentClaims(
         run_count=len(packs),
-        controlled_claim_count=sum(1 for pack in packs if pack.claim_mode == "controlled_benchmark"),
-        observational_claim_count=sum(1 for pack in packs if pack.claim_mode != "controlled_benchmark"),
+        controlled_claim_count=sum(
+            1 for pack in packs if pack.claim_mode == "controlled_benchmark"
+        ),
+        observational_claim_count=sum(
+            1 for pack in packs if pack.claim_mode != "controlled_benchmark"
+        ),
         claim_packs=packs,
         effect_estimates=estimates,
         caveats=sorted(dict.fromkeys(caveats)),
@@ -137,14 +200,21 @@ def write_machine_experiment_claims(
     path: Path | None = None,
     refresh_id: str | None = None,
 ) -> MachineExperimentClaims:
-    analysis = analyze_machine_experiment_claims(start=start, end=end, path=path, refresh_id=refresh_id)
+    analysis = analyze_machine_experiment_claims(
+        start=start, end=end, path=path, refresh_id=refresh_id
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"generated_at_utc": datetime.now(timezone.utc).isoformat(), **analysis.to_dict()}
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        **analysis.to_dict(),
+    }
     save_json(out, json.loads(json.dumps(payload, default=str)), sort_keys=True)
     return analysis
 
 
-def _runs(conn: Any, *, start: date | None, end: date | None, refresh_id: str | None) -> list[dict[str, Any]]:
+def _runs(
+    conn: Any, *, start: date | None, end: date | None, refresh_id: str | None
+) -> list[dict[str, Any]]:
     if refresh_id is None:
         return []
     columns = _table_columns(conn, "machine_experiment_run")
@@ -190,21 +260,32 @@ def _select_or_default(columns: set[str], column: str, default_expression: str) 
     return column if column in columns else default_expression
 
 
-def _episodes_for_runs(runs: list[dict[str, Any]], *, path: Path | None) -> list[MachineEpisode]:
+def _episodes_for_runs(
+    runs: list[dict[str, Any]], *, path: Path | None
+) -> list[MachineEpisode]:
     if not runs:
         return []
     starts = [run["started_at"].date() for run in runs]
     ends = [
-        (run.get("ended_at") if run.get("ended_at") is not None else run["started_at"] + timedelta(minutes=5)).date()
+        (
+            run.get("ended_at")
+            if run.get("ended_at") is not None
+            else run["started_at"] + timedelta(minutes=5)
+        ).date()
         for run in runs
     ]
-    return analyze_machine_episodes(start=min(starts), end=max(ends), path=path).episodes
+    return analyze_machine_episodes(
+        start=min(starts), end=max(ends), path=path
+    ).episodes
 
 
-def _claim_pack(conn: Any, run: dict[str, Any], *, episodes: list[MachineEpisode]) -> MachineExperimentClaimPack:
+def _claim_pack(
+    conn: Any, run: dict[str, Any], *, episodes: list[MachineEpisode]
+) -> MachineExperimentClaimPack:
     started_at = run["started_at"]
     ended_at = run.get("ended_at")
-    duration = (ended_at - started_at).total_seconds() if ended_at is not None and ended_at > started_at else None
+    measurement = _run_measurement(run)
+    duration = measurement.duration_seconds
     planned = _json_dict(run.get("planned_treatment"))
     readiness = benchmark_readiness(planned)
     telemetry = _telemetry_window(conn, run)
@@ -212,7 +293,9 @@ def _claim_pack(conn: Any, run: dict[str, Any], *, episodes: list[MachineEpisode
     assignment_issues = selected_run_assignment_issues(
         planned,
         payload_run_id=str(run["run_id"]),
-        payload_run_group_id=str(run["run_group_id"]) if run.get("run_group_id") is not None else None,
+        payload_run_group_id=str(run["run_group_id"])
+        if run.get("run_group_id") is not None
+        else None,
     )
     validation_issues = tuple(_string_list(run.get("validation_issues")))
     claim_mode = _claim_mode(
@@ -234,6 +317,11 @@ def _claim_pack(conn: Any, run: dict[str, Any], *, episodes: list[MachineEpisode
         readiness,
         assignment_issues=assignment_issues,
     )
+    caveats.extend(measurement.caveats)
+    caveats.extend(
+        f"duration estimand exclusion: {reason}"
+        for reason in measurement.exclusion_reasons
+    )
     return MachineExperimentClaimPack(
         run_id=str(run["run_id"]),
         run_group_id=readiness.run_group_id,
@@ -248,6 +336,9 @@ def _claim_pack(conn: Any, run: dict[str, Any], *, episodes: list[MachineEpisode
         monotonic_started_ns=_int_or_none(run.get("monotonic_started_ns")),
         monotonic_ended_ns=_int_or_none(run.get("monotonic_ended_ns")),
         duration_seconds=round(duration, 3) if duration is not None else None,
+        duration_clock=measurement.clock,
+        duration_estimand_eligible=measurement.eligible,
+        duration_exclusion_reasons=measurement.exclusion_reasons,
         exit_status=run.get("exit_status"),
         execution_outcome=_json_dict(run.get("execution_outcome")),
         manifest_validation=_manifest_validation_payload(run),
@@ -312,11 +403,15 @@ def _telemetry_window(conn: Any, run: dict[str, Any]) -> ExperimentTelemetryWind
         p95_load_1m=_round(rows[4]),
         min_mem_avail_mb=None if rows[5] is None else int(rows[5]),
         avg_io_psi_full=_round(rows[6]),
-        gpu_pcie_regimes=tuple(f"gen{int(gen)}x{int(width)}" for gen, width, _ in regimes),
+        gpu_pcie_regimes=tuple(
+            f"gen{int(gen)}x{int(width)}" for gen, width, _ in regimes
+        ),
     )
 
 
-def _episode_overlaps(run: dict[str, Any], *, episodes: list[MachineEpisode]) -> tuple[ExperimentEpisodeOverlap, ...]:
+def _episode_overlaps(
+    run: dict[str, Any], *, episodes: list[MachineEpisode]
+) -> tuple[ExperimentEpisodeOverlap, ...]:
     started_at = run["started_at"]
     ended_at = run.get("ended_at")
     if ended_at is None or ended_at <= started_at:
@@ -328,14 +423,16 @@ def _episode_overlaps(run: dict[str, Any], *, episodes: list[MachineEpisode]) ->
         overlap = _overlap_seconds(started_at, ended_at, episode)
         if overlap <= 0:
             continue
-        rows.append(ExperimentEpisodeOverlap(
-            kind=episode.kind,
-            host=episode.host,
-            overlap_seconds=round(overlap, 3),
-            severity=episode.severity,
-            confidence=episode.confidence,
-            subject=episode.subject,
-        ))
+        rows.append(
+            ExperimentEpisodeOverlap(
+                kind=episode.kind,
+                host=episode.host,
+                overlap_seconds=round(overlap, 3),
+                severity=episode.severity,
+                confidence=episode.confidence,
+                subject=episode.subject,
+            )
+        )
     rows.sort(key=lambda row: (-row.overlap_seconds, -row.severity, row.kind))
     return tuple(rows)
 
@@ -352,22 +449,40 @@ def _run_caveats(
 ) -> list[str]:
     caveats = ["manifest-backed claim pack; raw manifest remains the provenance source"]
     if claim_mode != "controlled_benchmark":
-        caveats.append("observational manifest only; do not use controlled benchmark language")
-    caveats.extend(f"controlled benchmark contract gap: {issue}" for issue in readiness.issues)
-    caveats.extend(f"selected-run assignment gap: {issue}" for issue in assignment_issues)
+        caveats.append(
+            "observational manifest only; do not use controlled benchmark language"
+        )
+    caveats.extend(
+        f"controlled benchmark contract gap: {issue}" for issue in readiness.issues
+    )
+    caveats.extend(
+        f"selected-run assignment gap: {issue}" for issue in assignment_issues
+    )
     if run.get("validation_status") == "unknown":
-        caveats.append("manifest validation status is unknown; substrate row predates validation columns")
-    caveats.extend(f"manifest validation issue: {issue}" for issue in _string_list(run.get("validation_issues")))
-    caveats.extend(f"manifest validation warning: {issue}" for issue in _string_list(run.get("validation_warnings")))
+        caveats.append(
+            "manifest validation status is unknown; substrate row predates validation columns"
+        )
+    caveats.extend(
+        f"manifest validation issue: {issue}"
+        for issue in _string_list(run.get("validation_issues"))
+    )
+    caveats.extend(
+        f"manifest validation warning: {issue}"
+        for issue in _string_list(run.get("validation_warnings"))
+    )
     if duration is None:
-        caveats.append("manifest has no positive duration; telemetry join uses a five-minute inspection window")
+        caveats.append(
+            "manifest has no positive duration; telemetry join uses a five-minute inspection window"
+        )
     if telemetry.sample_count == 0:
         caveats.append("no machine telemetry samples overlap the run window")
     elif duration is not None and duration < 60:
         caveats.append("machine telemetry joined with cadence padding for short run")
     if not _has_complete_internal_json_phase(internal_json):
         caveats.append("internal-json has no complete timed phase")
-    caveats.extend(f"internal-json caveat: {issue}" for issue in internal_json.get("caveats", ()))
+    caveats.extend(
+        f"internal-json caveat: {issue}" for issue in internal_json.get("caveats", ())
+    )
     if run.get("git_dirty") is True:
         caveats.append("git checkout was dirty during run")
     if run.get("exit_status") not in (None, 0):
@@ -414,7 +529,14 @@ def _treatment_label(planned: dict[str, Any]) -> str:
         for key in ("treatment_label", "treatment"):
             if selected.get(key) is not None:
                 return f"{key}={selected[key]}"
-    for key in ("treatment_label", "treatment", "turbo", "trigger", "purpose", "capture_kind"):
+    for key in (
+        "treatment_label",
+        "treatment",
+        "turbo",
+        "trigger",
+        "purpose",
+        "capture_kind",
+    ):
         if planned.get(key) is not None:
             return f"{key}={planned[key]}"
     return "unspecified"
@@ -440,30 +562,49 @@ def _selected_run_field(planned: dict[str, Any], key: str) -> str | None:
     return None
 
 
-def _effect_estimates(packs: list[MachineExperimentClaimPack]) -> list[dict[str, Any]]:
+def _effect_estimates(
+    packs: list[MachineExperimentClaimPack],
+) -> tuple[list[dict[str, Any]], list[str]]:
     by_group: dict[str, list[MachineExperimentClaimPack]] = {}
     for pack in packs:
         if pack.claim_mode != "controlled_benchmark" or pack.run_group_id is None:
             continue
-        if pack.duration_seconds is None:
-            continue
         by_group.setdefault(pack.run_group_id, []).append(pack)
 
     estimates: list[dict[str, Any]] = []
-    for run_group_id, rows in sorted(by_group.items()):
-        readiness = rows[0].benchmark_readiness
+    caveats: list[str] = []
+    for run_group_id, all_rows in sorted(by_group.items()):
+        rows = [
+            row
+            for row in all_rows
+            if row.duration_estimand_eligible and row.duration_seconds is not None
+        ]
+        excluded = len(all_rows) - len(rows)
+        if excluded:
+            caveats.append(
+                f"run group {run_group_id}: excluded {excluded} ineligible duration run(s) from estimate"
+            )
+        readiness = all_rows[0].benchmark_readiness
         control_label = str(readiness.get("control_label") or "control")
         treatment_label = str(readiness.get("treatment_label") or "treatment")
         control = tuple(
             float(row.duration_seconds)
             for row in rows
-            if row.duration_seconds is not None and row.treatment_label.endswith(f"={control_label}")
+            if row.duration_seconds is not None
+            and row.treatment_label.endswith(f"={control_label}")
         )
         treatment = tuple(
             float(row.duration_seconds)
             for row in rows
-            if row.duration_seconds is not None and row.treatment_label.endswith(f"={treatment_label}")
+            if row.duration_seconds is not None
+            and row.treatment_label.endswith(f"={treatment_label}")
         )
+        if not control or not treatment:
+            missing = "control" if not control else "treatment"
+            caveats.append(
+                f"run group {run_group_id}: no eligible {missing} duration observations"
+            )
+            continue
         seed = sum(ord(ch) for ch in run_group_id)
         estimate = _stratified_effect_estimate(
             rows,
@@ -480,8 +621,15 @@ def _effect_estimates(packs: list[MachineExperimentClaimPack]) -> list[dict[str,
         )
         if estimate is None:
             continue
-        estimates.append({"run_group_id": run_group_id, **estimate.to_dict()})
-    return estimates
+        estimates.append(
+            {
+                "run_group_id": run_group_id,
+                "eligible_run_count": len(rows),
+                "excluded_run_count": excluded,
+                **estimate.to_dict(),
+            }
+        )
+    return estimates, caveats
 
 
 def _stratified_effect_estimate(
@@ -500,9 +648,13 @@ def _stratified_effect_estimate(
         if stratum is None:
             continue
         if row.treatment_label.endswith(f"={control_label}"):
-            control_by_stratum.setdefault(stratum, []).append(float(row.duration_seconds))
+            control_by_stratum.setdefault(stratum, []).append(
+                float(row.duration_seconds)
+            )
         elif row.treatment_label.endswith(f"={treatment_label}"):
-            treatment_by_stratum.setdefault(stratum, []).append(float(row.duration_seconds))
+            treatment_by_stratum.setdefault(stratum, []).append(
+                float(row.duration_seconds)
+            )
 
     complete = {
         stratum
@@ -550,7 +702,9 @@ def _string_list(value: Any) -> list[str]:
         decoded = json.loads(str(value))
     except json.JSONDecodeError:
         return [str(value)]
-    return [str(item) for item in decoded] if isinstance(decoded, list) else [str(value)]
+    return (
+        [str(item) for item in decoded] if isinstance(decoded, list) else [str(value)]
+    )
 
 
 def _manifest_validation_payload(run: dict[str, Any]) -> dict[str, Any]:
@@ -558,7 +712,11 @@ def _manifest_validation_payload(run: dict[str, Any]) -> dict[str, Any]:
     if payload:
         return payload
     return {
-        "valid": True if run.get("validation_status") == "valid" else False if run.get("validation_status") == "invalid" else None,
+        "valid": True
+        if run.get("validation_status") == "valid"
+        else False
+        if run.get("validation_status") == "invalid"
+        else None,
         "issues": _string_list(run.get("validation_issues")),
         "warnings": _string_list(run.get("validation_warnings")),
     }
@@ -575,7 +733,9 @@ def _internal_json_path(run: dict[str, Any], readiness: Any) -> str | None:
     return readiness.internal_json_path
 
 
-def _overlap_seconds(started_at: datetime, ended_at: datetime, episode: MachineEpisode) -> float:
+def _overlap_seconds(
+    started_at: datetime, ended_at: datetime, episode: MachineEpisode
+) -> float:
     left = max(started_at, episode.started_at)
     right = min(ended_at, episode.ended_at)
     return max(0.0, (right - left).total_seconds())
