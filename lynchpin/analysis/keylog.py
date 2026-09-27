@@ -685,7 +685,7 @@ def write_keylog_analysis(
                 key = ProductPartitionKey.day("keylog.analysis", day)
                 migrated[key] = store.put(
                     key, (json.dumps(day_payload, ensure_ascii=False, sort_keys=True) + "\n").encode(),
-                    format="ndjson", row_count=1, first_date=day, last_date=day, publish=False,
+                    format="ndjson", row_count=1, first_date=day, last_date=day,
                 )
             if migrated:
                 store.publish(migrated, metadata={"migration": "legacy-monolith", "validated": True})
@@ -751,7 +751,7 @@ def write_keylog_analysis(
             key,
             (json.dumps(day_payload, ensure_ascii=False, sort_keys=True) + "\n").encode(),
             format="ndjson", input_digest=input_signature, row_count=1,
-            first_date=day, last_date=day, publish=False,
+            first_date=day, last_date=day,
         )
     store.publish(selected, metadata={"dataset": "lynchpin.keylog_analysis", "input_signature": input_signature})
     return analysis

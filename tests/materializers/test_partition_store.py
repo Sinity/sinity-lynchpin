@@ -1,3 +1,4 @@
+import hashlib
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -44,6 +45,22 @@ def test_relation_like_input_defaults_to_parquet(tmp_path: Path) -> None:
     assert (tmp_path / "store" / ref.path).read_bytes() == b"PARQUET-FIXTURE"
 
 
+def test_large_path_input_is_copied_and_hashed_without_a_whole_file_read(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "input.ndjson"
+    payload = b"x" * (2 * 1_048_576 + 17)
+    source.write_bytes(payload)
+
+    def whole_file_read(_path: Path) -> bytes:
+        raise AssertionError("artifact staging must use bounded reads")
+
+    with monkeypatch.context() as context:
+        context.setattr(Path, "read_bytes", whole_file_read)
+        ref = ArtifactStore(tmp_path / "store").put(ProductPartitionKey.singleton("events"), source)
+
+    assert ref.digest == hashlib.sha256(payload).hexdigest()
+    assert (tmp_path / "store" / ref.path).read_bytes() == payload
+
+
 def test_interrupted_write_exposes_no_partial_artifact_or_manifest(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path / "store")
 
@@ -63,13 +80,15 @@ def test_interrupted_manifest_publish_keeps_previous_selection_readable(monkeypa
     store = ArtifactStore(tmp_path / "store")
     key = ProductPartitionKey.day("events", "2026-08-25")
     old = store.put(key, b"old", format="ndjson")
+    store.publish({key: old})
 
     def fail_publish(*_args: object, **_kwargs: object) -> None:
         raise OSError("manifest fsync failed")
 
     monkeypatch.setattr(partition_store, "_atomic_json", fail_publish)
     with pytest.raises(OSError, match="manifest fsync failed"):
-        store.put(key, b"new", format="ndjson")
+        new = store.put(key, b"new", format="ndjson")
+        store.publish({key: new})
 
     selected = store.logical_partitions()[key]
     assert selected.path == old.path
@@ -83,6 +102,7 @@ def test_selection_readability_rejects_a_missing_selected_artifact(tmp_path: Pat
         b"selected",
         format="ndjson",
     )
+    store.publish({ref.key: ref})
     assert store.selection_is_readable()
 
     (store.root / ref.path).unlink()
@@ -94,9 +114,9 @@ def test_manifest_serialization_is_deterministic(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path / "store")
     created = datetime(2026, 8, 25, tzinfo=timezone.utc)
     one = store.put(ProductPartitionKey.entity("events", "alice"), b"a", format="ndjson")
-    store.update_manifest(replace(one, created_at=created))
+    store.publish({one.key: replace(one, created_at=created)})
     first_bytes = store.manifest_path.read_bytes()
-    store.update_manifest(replace(one, created_at=created))
+    store.publish({one.key: replace(one, created_at=created)})
     assert store.manifest_path.read_bytes() == first_bytes
 
 
@@ -117,8 +137,7 @@ def test_manifest_records_metadata_and_gc_respects_referenced_generation(tmp_pat
         created_at=old,
     )
     unreferenced = replace(store.put(ProductPartitionKey.day("events", "2026-01-02"), b"unused", format="ndjson"), created_at=old)
-    store.update_manifest(referenced)
-    store.update_manifest(unreferenced)
+    store.publish({referenced.key: referenced, unreferenced.key: unreferenced})
     candidates = store.plan_gc(["gen-a"], now=datetime(2026, 8, 25, tzinfo=timezone.utc), grace_period=timedelta(days=7))
     assert [item.path for item in candidates] == [unreferenced.path]
     assert referenced not in candidates

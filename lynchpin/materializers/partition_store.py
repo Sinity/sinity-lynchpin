@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -153,15 +154,8 @@ class ArtifactStore:
         self, key: ProductPartitionKey, data: bytes | bytearray | str | Path | Iterable[bytes] | Callable[[BinaryIO], None] | Any,
         *, format: str | None = None, input_digest: str | None = None, row_count: int | None = None,
         first_date: date | None = None, last_date: date | None = None, generations: Iterable[str] = (),
-        publish: bool = True,
     ) -> ArtifactRef:
-        """Stage immutable bytes and optionally select them immediately.
-
-        ``publish=False`` is the transaction primitive used by multi-partition
-        products. Callers stage every changed partition first, then call
-        :meth:`publish` once. The default remains immediate publication for the
-        small standalone callers that predate logical manifests.
-        """
+        """Stage immutable bytes; :meth:`publish` selects a complete generation."""
         chosen_format = format or ("parquet" if hasattr(data, "write_parquet") else "bin")
         _safe(chosen_format, "format")
         staging_dir = self.root / ".staging"
@@ -180,7 +174,8 @@ class ArtifactStore:
                     elif isinstance(data, str):
                         output.write(data.encode())
                     elif isinstance(data, Path):
-                        output.write(data.read_bytes())
+                        with data.open("rb") as source:
+                            shutil.copyfileobj(source, output, length=1_048_576)
                     elif callable(data):
                         data(output)
                     else:
@@ -188,7 +183,11 @@ class ArtifactStore:
                             output.write(chunk)
                     output.flush()
                     os.fsync(output.fileno())
-            digest = hashlib.sha256(temp_path.read_bytes()).hexdigest()
+            hasher = hashlib.sha256()
+            with temp_path.open("rb") as staged:
+                for chunk in iter(lambda: staged.read(1_048_576), b""):
+                    hasher.update(chunk)
+            digest = hasher.hexdigest()
             target = self._artifact_path(key, digest, chosen_format)
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
@@ -198,8 +197,6 @@ class ArtifactStore:
                 _fsync_dir(target.parent)
             ref = ArtifactRef(key, digest, str(target.relative_to(self.root)), chosen_format, target.stat().st_size,
                              row_count, first_date, last_date, input_digest, tuple(sorted(set(generations))))
-            if publish:
-                self.publish({key: ref})
             return ref
         except BaseException:
             temp_path.unlink(missing_ok=True)
@@ -286,11 +283,6 @@ class ArtifactStore:
             payload["metadata"] = dict(metadata)
         self.root.mkdir(parents=True, exist_ok=True)
         _atomic_json(self.manifest_path, payload)
-
-    def update_manifest(self, ref: ArtifactRef) -> None:
-        selected = self.logical_partitions()
-        selected[ref.key] = ref
-        self.publish(selected)
 
     @property
     def metadata(self) -> dict[str, Any]:

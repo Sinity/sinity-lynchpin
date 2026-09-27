@@ -294,7 +294,7 @@ def materialize_activity_content(
                 migrated_selected[ProductPartitionKey.day("activity_content.daily", day)] = partition_store.put(
                     ProductPartitionKey.day("activity_content.daily", day),
                     _encode_row(row), format="ndjson", row_count=1,
-                    first_date=day, last_date=day, publish=False,
+                    first_date=day, last_date=day,
                 )
             partition_store.publish(migrated_selected, metadata={"migration": "legacy-monolith", "validated": True})
 
@@ -407,7 +407,7 @@ def materialize_activity_content(
     for partition_key, rows in usage_selected.items():
         usage_refs[partition_key] = usage_partition_store.put(
             partition_key, _encode_rows(rows), format="ndjson", input_digest=input_signature,
-            row_count=len(rows), publish=False,
+            row_count=len(rows),
         )
     usage_partition_store.publish(
         usage_refs,
@@ -429,7 +429,7 @@ def materialize_activity_content(
         partition_key = ProductPartitionKey.day("activity_content.daily", day)
         selected[partition_key] = partition_store.put(
             partition_key, _encode_row(row), format="ndjson", input_digest=input_signature,
-            row_count=1, first_date=day, last_date=day, publish=False,
+            row_count=1, first_date=day, last_date=day,
         )
     partition_store.publish(
         selected,
@@ -539,7 +539,7 @@ def _migrate_usage_store(store: ArtifactStore, output: Path) -> None:
         partition_key = ProductPartitionKey.month("activity_content.title_usage", month)
         selected[partition_key] = store.put(
             partition_key, _encode_rows(month_rows), format="ndjson",
-            row_count=len(month_rows), publish=False,
+            row_count=len(month_rows),
         )
     if selected:
         store.publish(selected, metadata={"migration": "legacy-monolith", "validated": True})

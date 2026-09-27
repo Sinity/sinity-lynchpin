@@ -272,7 +272,7 @@ def _migrate_event_store(store: ArtifactStore, output: Path) -> None:
         data = _encode_rows(rows)
         selected[ProductPartitionKey.day("activitywatch.events", day)] = store.put(
             ProductPartitionKey.day("activitywatch.events", day), data, format="ndjson",
-            row_count=len(rows), first_date=day, last_date=day, publish=False,
+            row_count=len(rows), first_date=day, last_date=day,
         )
     if selected:
         store.publish(selected, metadata={"migration": "legacy-monolith", "validated": True})
@@ -305,7 +305,7 @@ def _publish_event_partitions(
             continue
         selected[key] = store.put(
             key, data, format="ndjson", input_digest=input_digest, row_count=len(rows),
-            first_date=day, last_date=day, publish=False,
+            first_date=day, last_date=day,
         )
     store.publish(selected, metadata={"dataset": "activitywatch.events", "input_signature": input_digest})
 

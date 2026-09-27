@@ -82,7 +82,7 @@ def materialize_title_metadata(
         key = ProductPartitionKey.month("title_metadata.classifications", month)
         selected[key] = store.put(
             key, _encode_rows(rows), format="ndjson", input_digest=input_signature,
-            row_count=len(rows), publish=False,
+            row_count=len(rows),
         )
     store.publish(selected, metadata={"dataset": "lynchpin.title_metadata", "input_signature": input_signature})
 
@@ -139,7 +139,7 @@ def _migrate_title_store(store: ArtifactStore, output: Path, db: Path) -> None:
     selected: dict[ProductPartitionKey, Any] = {}
     for month, rows in by_month.items():
         key = ProductPartitionKey.month("title_metadata.classifications", month)
-        selected[key] = store.put(key, _encode_rows(rows), format="ndjson", row_count=len(rows), publish=False)
+        selected[key] = store.put(key, _encode_rows(rows), format="ndjson", row_count=len(rows))
     if selected:
         store.publish(selected, metadata={"migration": "legacy-monolith", "validated": True})
 
