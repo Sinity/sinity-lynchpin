@@ -28,7 +28,7 @@ from typing import Any, Iterable, Literal
 from threading import Lock
 from time import monotonic
 
-from .core.cache import file_signature, files_signature, manifest_versions_current
+from .core.cache import file_signature, files_signature, input_versions, manifest_versions_current
 from .core.config import LynchpinConfig, get_config
 from .core.errors import MaterializationError
 from .core.parse import iter_dates
@@ -1778,6 +1778,7 @@ def _google_takeout_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     products_schema_current = product_meta.get("schema_version") == GOOGLE_TAKEOUT_PRODUCTS_SCHEMA_VERSION
     gmail_schema_current = gmail_meta.get("schema_version") == GMAIL_EVENTS_SCHEMA_VERSION
     inventory_inputs_current = _manifest_inputs_current(meta, archives)
+    inventory_outputs_current = meta.get("output_versions") == input_versions((archive_rows, members))
     unreadable_archives = meta.get("unreadable_archives")
     products_inputs_current = _manifest_inputs_current(product_meta, archives)
     gmail_inputs_current = _manifest_inputs_current(gmail_meta, archives)
@@ -1825,6 +1826,9 @@ def _google_takeout_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     elif products_manifest_valid and not (inventory_inputs_current and products_inputs_current and gmail_inputs_current):
         status = "partial"
         reason = f"{len(archives)} raw Takeout archives changed since typed product materialization"
+    elif products_manifest_valid and not inventory_outputs_current:
+        status = "partial"
+        reason = "Google Takeout inventory files differ from their published manifest"
     elif products_manifest_valid:
         status = "ready"
         reason = (

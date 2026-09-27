@@ -208,6 +208,7 @@ def materialize_google_takeout_inventory(*, root: Path | None = None) -> dict[st
         _retain_mode(archives_path, staged_archives)
         os.replace(staged_members, members_path)
         os.replace(staged_archives, archives_path)
+        manifest["output_versions"] = input_versions((archives_path, members_path))
         write_manifest(manifest_path, manifest)
     return manifest
 

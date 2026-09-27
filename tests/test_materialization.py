@@ -671,6 +671,7 @@ def test_google_takeout_audit_uses_product_manifest_bounds(monkeypatch, tmp_path
                 "input_files": [str(archive)],
                 "input_file_count": 1,
                 "input_versions": input_versions((archive,)),
+                "output_versions": input_versions((inventory_dir / "archives.ndjson", inventory_dir / "members.ndjson")),
                 "input_latest_mtime": latest,
             }
         ),
@@ -727,6 +728,13 @@ def test_google_takeout_audit_uses_product_manifest_bounds(monkeypatch, tmp_path
     incomplete = materialization._google_takeout_dataset(cfg)
     assert incomplete.status == "partial"
     assert "1 raw Takeout archives could not be inventoried" in incomplete.reason
+
+    payload["unreadable_archives"] = []
+    inventory_manifest.write_text(json.dumps(payload), encoding="utf-8")
+    (inventory_dir / "members.ndjson").write_text("changed\n", encoding="utf-8")
+    interrupted = materialization._google_takeout_dataset(cfg)
+    assert interrupted.status == "partial"
+    assert "files differ from their published manifest" in interrupted.reason
 
 
 def test_google_takeout_audit_marks_old_inventory_schema_partial(monkeypatch, tmp_path) -> None:

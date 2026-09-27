@@ -40,10 +40,12 @@ operator's data layout.
 
 The Google Takeout inventory keeps one canonical `members.ndjson` and
 `archives.ndjson` pair. Its manifest records each archive's filesystem version
-(device, inode, size, mtime, and ctime), output digests, unreadable archives,
-and per-run reuse counts. A rebuild reuses rows only when that version and the
-previous output digests match; changed archives are traversed once. Missing or
-unreadable archives remain visible as incomplete coverage in source readiness.
+(device, inode, size, mtime, and ctime), output digests and versions,
+unreadable archives, and per-run reuse counts. A rebuild reuses rows only when
+that archive version and the previous output digests match; changed archives
+are traversed once. Missing or unreadable archives, and output files that
+differ from the published manifest, remain visible as incomplete coverage in
+source readiness.
 
 IRC uses `lynchpin.sources.irc_raw` over the canonical materialized event
 product, with raw WeeChat logs as its explicit fallback. It exposes
