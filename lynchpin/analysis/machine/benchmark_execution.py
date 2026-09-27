@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -16,6 +16,8 @@ from lynchpin.analysis.machine.benchmark_execution_handoff import (
 )
 from lynchpin.analysis.machine.benchmark_manifest_bundle import (
     MachineBenchmarkManifestBundle,
+    MachineBenchmarkManifestGroup,
+    MachineBenchmarkRunTemplate,
     export_machine_benchmark_manifest_bundle,
     analyze_machine_benchmark_manifest_bundle,
 )
@@ -106,6 +108,7 @@ def run_selected_benchmark_group(
     )
     if group is None:
         raise ValueError(f"benchmark group {item['run_group_id']!r} is absent from manifest bundle")
+    ordered_templates = _ordered_run_templates(group)
 
     target_dir = output_dir or experiment_root()
     selected_bundle = MachineBenchmarkManifestBundle(
@@ -116,7 +119,7 @@ def run_selected_benchmark_group(
         },
         group_count=1,
         run_template_count=group.run_count,
-        groups=[group],
+        groups=[replace(group, run_templates=ordered_templates)],
         caveats=bundle.caveats,
     )
     written = export_machine_benchmark_manifest_bundle(
@@ -125,7 +128,14 @@ def run_selected_benchmark_group(
         overwrite=overwrite,
         write_runner=True,
     )
-    scripts = tuple(sorted(target_dir.glob(f"{group.run_group_id}/runs/*/run.sh")))
+    scripts = tuple(
+        target_dir / group.run_group_id / "runs" / template.run_id / "run.sh"
+        for template in ordered_templates
+    )
+    missing_scripts = tuple(script for script in scripts if not script.is_file())
+    if missing_scripts:
+        missing = ", ".join(str(script) for script in missing_scripts)
+        raise ValueError(f"selected benchmark group is missing planned run script(s): {missing}")
     script_results = tuple(
         _run_or_validate_script(script, execute=execute)
         for script in scripts
@@ -172,6 +182,47 @@ def run_selected_benchmark_group(
             "post-execution materialization refreshes only the machine-analysis chain needed to rescore benchmark evidence",
         ]))),
     )
+
+
+def _ordered_run_templates(
+    group: MachineBenchmarkManifestGroup,
+) -> tuple[MachineBenchmarkRunTemplate, ...]:
+    templates = tuple(group.run_templates)
+    if group.run_count != len(templates):
+        raise ValueError(
+            f"benchmark group {group.run_group_id!r} declares {group.run_count} runs "
+            f"but contains {len(templates)} run templates"
+        )
+    run_ids: set[str] = set()
+    sequence_indices: set[int] = set()
+    for template in templates:
+        run_id = template.run_id
+        if not run_id or run_id in {".", ".."} or Path(run_id).name != run_id:
+            raise ValueError(
+                f"benchmark group {group.run_group_id!r} has invalid run id {run_id!r}"
+            )
+        if run_id in run_ids:
+            raise ValueError(
+                f"benchmark group {group.run_group_id!r} has duplicate run id {run_id!r}"
+            )
+        run_ids.add(run_id)
+        if template.run_group_id != group.run_group_id:
+            raise ValueError(
+                f"run {run_id!r} belongs to group {template.run_group_id!r}, "
+                f"not selected group {group.run_group_id!r}"
+            )
+        sequence_index = template.sequence_index
+        if sequence_index < 1:
+            raise ValueError(
+                f"run {run_id!r} has invalid sequence_index {sequence_index!r}"
+            )
+        if sequence_index in sequence_indices:
+            raise ValueError(
+                f"benchmark group {group.run_group_id!r} has duplicate "
+                f"sequence_index {sequence_index}"
+            )
+        sequence_indices.add(sequence_index)
+    return tuple(sorted(templates, key=lambda template: template.sequence_index))
 
 
 def write_selected_benchmark_execution(

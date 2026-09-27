@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from lynchpin.core.io import save_json
 
@@ -133,6 +136,134 @@ def test_selected_benchmark_group_executes_and_refreshes(monkeypatch, tmp_path):
     assert "machine-experiments" in calls[3]
     assert "--refresh-id" in calls[3]
     assert "machine-readiness" in calls[-1]
+
+
+def test_selected_benchmark_group_executes_declared_sequence_and_ignores_stale_runs(
+    monkeypatch, tmp_path
+):
+    from lynchpin.analysis.machine import benchmark_execution as mod
+
+    candidates, bundle, preflight, support = _write_two_run_queue_inputs(tmp_path)
+    output_dir = tmp_path / "experiments"
+    stale_script = output_dir / "grp1/runs/stale/run.sh"
+    stale_script.parent.mkdir(parents=True)
+    stale_script.write_text("should never run\n", encoding="utf-8")
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(tuple(str(part) for part in command))
+
+        class Completed:
+            returncode = 0
+
+        return Completed()
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    result = mod.run_selected_benchmark_group(
+        run_group_id="grp1",
+        output_dir=output_dir,
+        candidates_path=candidates,
+        manifest_bundle_path=bundle,
+        preflight_path=preflight,
+        support_path=support,
+        execute=True,
+    )
+
+    expected_ids = ("z-first", "a-second")
+    assert tuple(row.run_id for row in result.run_scripts) == expected_ids
+    assert tuple(Path(command[1]).parent.name for command in calls) == expected_ids
+    assert all(row.executed for row in result.run_scripts)
+    assert stale_script.exists()
+
+
+@pytest.mark.parametrize("duplicate", ["run_id", "sequence_index"])
+def test_selected_benchmark_group_rejects_duplicate_identity_before_execution(
+    monkeypatch, tmp_path, duplicate
+):
+    from lynchpin.analysis.machine import benchmark_execution as mod
+
+    candidates, bundle, preflight, support = _write_two_run_queue_inputs(tmp_path)
+    payload = json.loads(bundle.read_text(encoding="utf-8"))
+    rows = payload["groups"][0]["run_templates"]
+    if duplicate == "run_id":
+        rows[1]["run_id"] = rows[0]["run_id"]
+    else:
+        rows[1]["sequence_index"] = rows[0]["sequence_index"]
+    save_json(bundle, payload, sort_keys=True)
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(mod.subprocess, "run", lambda command, **kwargs: calls.append(tuple(command)))
+
+    expected_message = "duplicate run id" if duplicate == "run_id" else "duplicate sequence_index"
+    with pytest.raises(ValueError, match=expected_message):
+        mod.run_selected_benchmark_group(
+            run_group_id="grp1",
+            output_dir=tmp_path / "experiments",
+            candidates_path=candidates,
+            manifest_bundle_path=bundle,
+            preflight_path=preflight,
+            support_path=support,
+            execute=True,
+        )
+
+    assert calls == []
+
+
+def test_selected_benchmark_group_refuses_missing_planned_script_before_execution(
+    monkeypatch, tmp_path
+):
+    from lynchpin.analysis.machine import benchmark_execution as mod
+
+    candidates, bundle, preflight, support = _write_two_run_queue_inputs(tmp_path)
+    export = mod.export_machine_benchmark_manifest_bundle
+    calls: list[tuple[str, ...]] = []
+
+    def export_without_second_script(selected_bundle, output_dir, **kwargs):
+        written = export(selected_bundle, output_dir, **kwargs)
+        (output_dir / "grp1/runs/a-second/run.sh").unlink()
+        return written
+
+    monkeypatch.setattr(mod, "export_machine_benchmark_manifest_bundle", export_without_second_script)
+    monkeypatch.setattr(mod.subprocess, "run", lambda command, **kwargs: calls.append(tuple(command)))
+
+    with pytest.raises(ValueError, match="missing planned run script"):
+        mod.run_selected_benchmark_group(
+            run_group_id="grp1",
+            output_dir=tmp_path / "experiments",
+            candidates_path=candidates,
+            manifest_bundle_path=bundle,
+            preflight_path=preflight,
+            support_path=support,
+            execute=True,
+        )
+
+    assert calls == []
+
+
+def _write_two_run_queue_inputs(tmp_path):
+    candidates = tmp_path / "machine_attribution_candidates.json"
+    bundle = tmp_path / "machine_benchmark_manifest_bundle.json"
+    preflight = tmp_path / "machine_benchmark_preflight.json"
+    support = tmp_path / "machine_support_assessment.json"
+    _write_queue_inputs(candidates, bundle, preflight, support)
+    payload = json.loads(bundle.read_text(encoding="utf-8"))
+    group = payload["groups"][0]
+    template = group["run_templates"][0]
+    first = json.loads(json.dumps(template))
+    first.update(run_id="z-first", sequence_index=1)
+    first["manifest"]["run_id"] = "z-first"
+    first["manifest"]["planned_treatment"]["selected_run"].update(
+        run_id="z-first", sequence_index=1
+    )
+    second = json.loads(json.dumps(template))
+    second.update(run_id="a-second", sequence_index=2)
+    second["manifest"]["run_id"] = "a-second"
+    second["manifest"]["planned_treatment"]["selected_run"].update(
+        run_id="a-second", sequence_index=2
+    )
+    group["run_count"] = 2
+    group["run_templates"] = [first, second]
+    save_json(bundle, payload, sort_keys=True)
+    return candidates, bundle, preflight, support
 
 
 def _write_queue_inputs(candidates, bundle, preflight, support) -> None:
