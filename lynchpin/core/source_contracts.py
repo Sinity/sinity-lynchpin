@@ -129,6 +129,25 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         ),
     ),
     SourceContract(
+        name="polylogue_verification",
+        authority="Polylogue devtools durable verification evidence lane (JSONL)",
+        query_surface="lynchpin.sources.polylogue_verification.read_verification_snapshot",
+        materialization_hint="Polylogue devtools append one receipt per verifier run; Lynchpin reads the lane only",
+        required=False,
+        empty="valid",
+        query_mode="substrate",
+        collection_model="continuous",
+        materialization_mode="live",
+        materialization_target="substrate:work_observation",
+        substrate_tables=("work_observation",),
+        mcp_tools=("lynchpin_machine",),
+        caveats=(
+            "one row per verifier run, last lane row per run_id wins; resource columns stay null on this route",
+            "the lane carries no host identity; logs, argv and test output stay in Polylogue",
+            "a selected green proves the recorded selection only, not the whole suite",
+        ),
+    ),
+    SourceContract(
         name="activitywatch",
         authority="ActivityWatch live SQLite plus exported backup DBs",
         query_surface="lynchpin.sources.activitywatch",
@@ -798,6 +817,16 @@ _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "caveats": (
             "native job-list responses are lifecycle observations, not a full event history or snapshot",
             "the route does not publish artifact refs or semantic joins; raw logs and result artifacts remain external",
+        ),
+    },
+    "polylogue_verification": {
+        "collection_model": "continuous",
+        "substrate_tables": ("work_observation",),
+        "mcp_tools": ("lynchpin_machine",),
+        "caveats": (
+            "one row per verifier run, last lane row per run_id wins; resource columns stay null on this route",
+            "the lane carries no host identity; logs, argv and test output stay in Polylogue",
+            "a selected green proves the recorded selection only, not the whole suite",
         ),
     },
     "spotify_daily": {

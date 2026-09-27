@@ -31,11 +31,18 @@ def promote_work_sources(
             AgentctlObservationError,
             read_observation_snapshot,
         )
+        from lynchpin.sources.polylogue_verification import (
+            PolylogueVerificationContractError,
+            PolylogueVerificationError,
+            iter_observations as iter_polylogue_verification,
+            read_verification_snapshot,
+        )
         from lynchpin.sources.xtask_history import iter_all_invocations, xtask_history_path
         from lynchpin.sources.xtask_history import iter_all_stage_timings, iter_all_test_results
         from lynchpin.substrate.work_observations import (
             promote_agentctl_observations,
             promote_agentctl_receipt_refs,
+            promote_polylogue_verification_observations,
             promote_work_observation_stages,
             promote_work_observation_test_results,
             promote_work_observations,
@@ -54,15 +61,28 @@ def promote_work_sources(
             agentctl_unavailable_reason = str(error)
         else:
             agentctl_unavailable_reason = None
-        if not has_xtask and agentctl_snapshot is None:
+        polylogue_unavailable_reason: str | None
+        polylogue_contract_violated = False
+        try:
+            polylogue_snapshot = read_verification_snapshot()
+        except PolylogueVerificationError as error:
+            polylogue_snapshot = None
+            polylogue_unavailable_reason = str(error)
+            # A lane that exists but breaks its contract is a defect to surface,
+            # not an absent optional source.
+            polylogue_contract_violated = isinstance(error, PolylogueVerificationContractError)
+        else:
+            polylogue_unavailable_reason = None
+        if not has_xtask and agentctl_snapshot is None and polylogue_snapshot is None:
             record_source_status(
                 conn,
                 refresh_id=refresh_id,
                 source=SOURCE_WORK_OBSERVATIONS,
-                status="unavailable",
+                status="degraded" if polylogue_contract_violated else "unavailable",
                 reason=(
-                    "no xtask history database or "
-                    f"AgentCTL observations found ({agentctl_unavailable_reason})"
+                    "no xtask history database, AgentCTL observations "
+                    f"({agentctl_unavailable_reason}) or Polylogue verification "
+                    f"lane ({polylogue_unavailable_reason}) found"
                 ),
                 row_count=0,
                 window_start=window_start,
@@ -81,8 +101,8 @@ def promote_work_sources(
             if agentctl_snapshot is not None
             else ()
         )
-        # xtask invocations and Polylogue devtool observations share the
-        # work_observation table under one refresh_id. promote_rows deletes by
+        # xtask invocations, AgentCTL jobs and Polylogue verification runs share
+        # the work_observation table under one refresh_id. promote_rows deletes by
         # refresh_id alone (not by source), so two source-scoped delete+insert
         # calls would have the second clobber the first. Delete once here, then
         # append both sources so they coexist (and idempotence holds even when
@@ -105,9 +125,16 @@ def promote_work_sources(
             refresh_id=refresh_id,
             rows=agentctl_rows,
         ) if agentctl_snapshot is not None else 0
+        counts["polylogue_verification_observations"] = promote_polylogue_verification_observations(
+            conn,
+            refresh_id=refresh_id,
+            rows=iter_polylogue_verification(start=start_dt, end=end_dt, snapshot=polylogue_snapshot),
+            delete_existing=False,
+        ) if polylogue_snapshot is not None else 0
         counts["work_observations"] = (
             counts["xtask_work_observations"]
             + counts["agentctl_work_observations"]
+            + counts["polylogue_verification_observations"]
         )
         stages = iter_all_stage_timings(start=start_dt, end=end_dt) if has_xtask else ()
         counts["work_observation_stages"] = promote_work_observation_stages(
@@ -126,12 +153,15 @@ def promote_work_sources(
             source_bits.append("xtask")
         if agentctl_snapshot is not None:
             source_bits.append("agentctl")
+        if polylogue_snapshot is not None:
+            source_bits.append("polylogue_verification")
         breakdown = (
             f"xtask_invocations={counts['xtask_work_observations']}, "
             f"xtask_stages={counts['work_observation_stages']}, "
             f"xtask_tests={counts['work_observation_test_results']}, "
             f"agentctl={counts['agentctl_work_observations']}, "
-            f"agentctl_receipt_refs={counts['agentctl_receipt_refs']}"
+            f"agentctl_receipt_refs={counts['agentctl_receipt_refs']}, "
+            f"polylogue_verification={counts['polylogue_verification_observations']}"
         )
         # Surface the silent-starvation case: xtask DBs were present and their
         # stage/test ledgers promoted rows, yet zero invocations landed. That
@@ -151,7 +181,10 @@ def promote_work_sources(
                 window_end,
                 breakdown,
             )
-        if not counts["work_observations"]:
+        if polylogue_contract_violated:
+            status = "degraded"
+            reason = breakdown
+        elif not counts["work_observations"]:
             status = "empty"
             reason = f"no work observations in window from {', '.join(source_bits)} ({breakdown})"
         elif xtask_invocations_missing:
@@ -162,6 +195,8 @@ def promote_work_sources(
             reason = breakdown
         if agentctl_snapshot is None and has_xtask:
             reason = f"{reason}; AgentCTL observations unavailable: {agentctl_unavailable_reason}"
+        if polylogue_snapshot is None:
+            reason = f"{reason}; Polylogue verification lane unavailable: {polylogue_unavailable_reason}"
         record_source_status(
             conn,
             refresh_id=refresh_id,

@@ -54,6 +54,7 @@ def isolate_operator_data(
         "LYNCHPIN_SINNIX_RUNTIME_INVENTORY_JSON": root / "runtime-inventory.json",
         "LYNCHPIN_XTASK_HISTORY_DB": root / "xtask-history.db",
         "XDG_DATA_HOME": root / "xdg-data",
+        "POLYLOGUE_VERIFICATION_EVIDENCE_PATH": root / "polylogue-verification/evidence.jsonl",
     }
     for name, path in isolated_paths.items():
         monkeypatch.setenv(name, str(path))

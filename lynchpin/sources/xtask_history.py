@@ -25,6 +25,9 @@ from lynchpin.core.config import get_config
 #: database restarted rowids at 1, handing the new lane the dead one's source
 #: ids. `xtask history unify` absorbs any straggler ledger at the source.
 
+_SETTLED_STATUSES = frozenset({"success", "failed", "cancelled"})
+
+
 @dataclass(frozen=True)
 class XtaskInvocation:
     source_id: str
@@ -78,6 +81,16 @@ class XtaskInvocation:
     workspace_name: str | None = None
     #: Branch checked out in that workspace, or None on a detached HEAD.
     git_branch: str | None = None
+
+    @property
+    def operation(self) -> str | None:
+        """The xtask verb (``check``, ``test nextest ci``), the tier of the run."""
+        return " ".join(self.command) or None
+
+    @property
+    def outcome_known(self) -> bool | None:
+        """True once the invocation settled; a running row has no outcome yet."""
+        return True if self.status in _SETTLED_STATUSES else None
 
 
 @dataclass(frozen=True)

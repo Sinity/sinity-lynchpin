@@ -171,11 +171,6 @@ Generated products belong under the configured derived root or ignored
 `.lynchpin/` state. Do not commit generated personal analyses, local caches,
 substrate databases, operation receipts, or scratch packets.
 
-Polylogue's `.cache/verify` run data is disposable internal state, not an
-inter-project contract. Consume Polylogue verification or test-run evidence
-only through a declared stable export surface; otherwise mark the Lynchpin
-source unavailable rather than scraping receipts.
-
 ## Documentation
 
 | Topic | Canonical document |

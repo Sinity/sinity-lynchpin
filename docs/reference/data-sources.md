@@ -20,7 +20,7 @@ availability, coverage, provenance, iterators, and source-local summaries.
 | Family | Representative modules | Evidence exposed |
 | --- | --- | --- |
 | Workstation activity | `activitywatch`, `terminal`, `clipboard`, `keylog`, `arbtt` | Focus spans, commands, sessions, recordings, input/activity events. |
-| Code and delivery | `git`, `github`, `github_context`, `code_snapshots`, `xtask_history` | Commits, files, reviews, issues/PRs, snapshots, build/test history. |
+| Code and delivery | `git`, `github`, `github_context`, `code_snapshots`, `xtask_history`, `polylogue_verification` | Commits, files, reviews, issues/PRs, snapshots, build/test history. |
 | AI work | `polylogue`, `polylogue_timeline` | Session profiles, work events, costs, provider activity, timelines. |
 | Machine state | `machine`, `machine_experiments`, `service_health`, `sinnix_generations` | Metrics, pressure, services, experiments, backups, generations. |
 | Web and reading | `web`, `takeout_chrome`, `bookmarks`, `raindrop_live` | Visits, domains, bookmarks, content metadata, daily activity. |
@@ -181,6 +181,8 @@ lynchpin-substack materialize
   is verified and the migration is complete.
 
 ## AgentCTL job observations
+
+Verification runs from each repository's own verifier land in the same `work_observation` model, one source per producer: `xtask_history` reads Sinex's xtask ledger and `polylogue_verification` reads Polylogue's durable verification lane (the JSONL its devtools append one receipt to per run, resolved exactly as the writer resolves it). Both fill the same columns: `source_id` is the run, `project` the repository, `git_commit` the head, `operation` the tier (`check`, `focused-test`, `quick`, ...), `status` the shared outcome vocabulary (`success`, `failed`, `running`, `cancelled`, plus `interrupted`), `outcome_known` true only for settled runs, and the timings. Polylogue's selection and step summary sit in `args`; Sinex's stages and per-test results in their own tables. The Polylogue lane is read whole with the last row per run winning; a malformed complete row marks the work source degraded rather than being skipped. Neither producer's rows carry a branch in this table yet, and the Polylogue lane carries no host.
 
 AgentCTL is an owner-native, continuous work-observation source. Lynchpin reads only the native JSON rows from `agentctl job list --json --all`. The materialization audit reports this as a live read-only route, never as a Lynchpin materializer or a filesystem product. Each promoted row has the durable job ID, public project, the declared operation name, lifecycle phase, process timestamps when published, a hash over the sanitized public record, and route provenance. The operation is what makes per-operation duration and regression questions answerable inside the substrate instead of only through an external join on the job ID; `label` is exactly `project:operation` and is deliberately not carried as a second representation. When `started_at` is absent, `enqueued_at` is retained as the observation timestamp with an explicit caveat; it does not establish process start. The route does not publish artifact refs, host identity, resource metrics, or snapshot identity. A substrate refresh remains the generation boundary.
 

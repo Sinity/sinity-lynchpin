@@ -141,6 +141,23 @@ def promote_agentctl_observations(
     )
 
 
+def promote_polylogue_verification_observations(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    rows: Iterable[Any],
+    delete_existing: bool = True,
+) -> int:
+    return _promote_work_observation_rows(
+        conn,
+        refresh_id=refresh_id,
+        rows=rows,
+        source="polylogue_verification",
+        work_kind="polylogue_verification_run",
+        delete_existing=delete_existing,
+    )
+
+
 def promote_agentctl_receipt_refs(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -350,6 +367,7 @@ __all__ = [
     "load_work_observations",
     "promote_agentctl_observations",
     "promote_agentctl_receipt_refs",
+    "promote_polylogue_verification_observations",
     "promote_work_observation_stages",
     "promote_work_observation_test_results",
     "promote_work_observations",

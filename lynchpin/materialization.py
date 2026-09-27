@@ -414,6 +414,7 @@ def _dataset_builders() -> dict[str, Any]:
         "polylogue": _polylogue_dataset,
         "codex": _codex_dataset,
         "agentctl": _agentctl_dataset,
+        "polylogue_verification": _polylogue_verification_dataset,
         "activitywatch": _activitywatch_dataset,
         "activitywatch_event_index": _activitywatch_event_index_dataset,
         "activitywatch_derived": _activitywatch_derived_dataset,
@@ -3416,6 +3417,51 @@ def _agentctl_dataset(_cfg: LynchpinConfig) -> MaterializedDataset:
         query_surface=contract.query_surface,
         materialized_paths=(),
         raw_roots=(),
+        row_count=len(observations) if status != "missing" else None,
+        first_date=min(observed_dates, default=None),
+        last_date=max(observed_dates, default=None),
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
+    )
+
+
+def _polylogue_verification_dataset(_cfg: LynchpinConfig) -> MaterializedDataset:
+    """Report Polylogue's durable verification lane without materializing it.
+
+    Polylogue devtools own the lane and append to it live; Lynchpin reads it
+    during substrate promotion, so this is a status check, not a materializer.
+    """
+    from .sources.polylogue_verification import (
+        PolylogueVerificationContractError,
+        PolylogueVerificationUnavailable,
+        read_verification_snapshot,
+        verification_lane_path,
+    )
+
+    contract = source_contract("polylogue_verification")
+    lane = verification_lane_path()
+    try:
+        snapshot = read_verification_snapshot(lane)
+    except PolylogueVerificationUnavailable as error:
+        status: Status = "missing"
+        observations = ()
+        reason = f"Polylogue verification lane is unavailable: {error}"
+    except PolylogueVerificationContractError as error:
+        status = "degraded"
+        observations = ()
+        reason = f"Polylogue verification lane violates its receipt contract: {error}"
+    else:
+        observations = snapshot.observations
+        status = "ready" if observations else "empty"
+        reason = f"Polylogue verification lane holds {len(observations)} runs"
+    observed_dates = tuple(row.started_at.date() for row in observations)
+    return MaterializedDataset(
+        name=contract.name,
+        status=status,
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(),
+        raw_roots=(lane.parent,),
         row_count=len(observations) if status != "missing" else None,
         first_date=min(observed_dates, default=None),
         last_date=max(observed_dates, default=None),
