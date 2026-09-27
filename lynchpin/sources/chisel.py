@@ -719,7 +719,7 @@ _plan(
     Slice(
         "scripts-and-dots",
         "Scripts, dotfiles, agent control plane, CI",
-        ("scripts/**", "dots/**", ".github/**", "README.md", "CLAUDE.md"),
+        ("scripts/**", "dots/**", ".github/**", "README.md", "AGENTS.md", "CLAUDE.md"),
     ),
     Slice(
         "packages-and-tooling",
@@ -764,7 +764,7 @@ _plan(
         StatsBucket(
             "docs",
             "Repository documentation and incident notes",
-            ("docs/**", "README.md", "CLAUDE.md"),
+            ("docs/**", "README.md", "AGENTS.md", "CLAUDE.md"),
         ),
         StatsBucket(
             "agent-context",
@@ -864,7 +864,7 @@ _plan(
             "justfile",
         ),
     ),
-    Slice("docs", "Documentation", ("docs/**", "CLAUDE.md", "CHANGELOG.md")),
+    Slice("docs", "Documentation", ("docs/**", "AGENTS.md", "CLAUDE.md", "CHANGELOG.md")),
     Slice("tests-and-qa", "Tests and QA campaigns", ("tests/**", "qa/**")),
     stats_buckets=(
         StatsBucket(
@@ -1033,6 +1033,7 @@ _plan(
             "lynchpin/personal_evidence/**",
             "config/**",
             "README.md",
+            "AGENTS.md",
             "CLAUDE.md",
             "pyproject.toml",
         ),
@@ -1095,7 +1096,7 @@ _plan(
             ("lynchpin/cli/**", "tool/**", "justfile"),
         ),
         StatsBucket("tests", "Test suite", ("tests/**",)),
-        StatsBucket("docs", "Documentation", ("docs/**", "README.md", "CLAUDE.md")),
+        StatsBucket("docs", "Documentation", ("docs/**", "README.md", "AGENTS.md", "CLAUDE.md")),
         StatsBucket(
             "config",
             "Project configuration and generated static surfaces",

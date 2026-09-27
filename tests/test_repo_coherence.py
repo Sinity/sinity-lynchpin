@@ -8,7 +8,7 @@ ACTIVE_TEXT_ROOTS = (
 )
 ACTIVE_TEXT_FILES = (
     ROOT / "README.md",
-    ROOT / "CLAUDE.md",
+    ROOT / "AGENTS.md",
     ROOT / "pyproject.toml",
     ROOT / "justfile",
 )
