@@ -419,7 +419,7 @@ class TestHealthWearablesTools:
         assert result[0]["steps"] == 8000
         assert result[0]["heart_rate_resting"] == 58.0
 
-    def test_health_daily_summary_source_unavailable_returns_empty(
+    def test_health_daily_summary_preserves_source_unavailable_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from lynchpin.core.errors import SourceUnavailableError
@@ -432,8 +432,73 @@ class TestHealthWearablesTools:
 
         from lynchpin.mcp.tools.health import health_daily_summary
 
-        result = health_daily_summary(start="2026-05-01", end="2026-05-31")
-        assert result == []
+        with pytest.raises(SourceUnavailableError, match="no data"):
+            health_daily_summary(start="2026-05-01", end="2026-05-31")
+
+    @pytest.mark.parametrize(
+        ("view", "reader"),
+        [
+            ("daily", "daily_health_summary"),
+            ("stress", "daily_stress"),
+            ("heart_rate", "daily_heart_rate"),
+            ("hrv", "hrv_measurements"),
+        ],
+    )
+    def test_public_health_routes_report_source_unavailable(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        view: str,
+        reader: str,
+    ) -> None:
+        from lynchpin.core.errors import SourceUnavailableError
+        import lynchpin.sources.health as _health_src
+
+        def _raise(*, start, end):
+            raise SourceUnavailableError(
+                "health", path="health-export", reason="export is missing"
+            )
+
+        monkeypatch.setattr(_health_src, reader, _raise)
+
+        from lynchpin.mcp.tools.public import lynchpin_personal
+
+        result = lynchpin_personal(
+            action="health", view=view, start="2026-05-01", end="2026-05-31"
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "source_unavailable"
+        assert result["source"] == "health"
+        assert result["path"] == "health-export"
+        assert result["reason"] == "export is missing"
+
+    @pytest.mark.parametrize(
+        ("view", "reader"),
+        [
+            ("daily", "daily_health_summary"),
+            ("stress", "daily_stress"),
+            ("heart_rate", "daily_heart_rate"),
+            ("hrv", "hrv_measurements"),
+        ],
+    )
+    def test_public_health_routes_preserve_available_empty_results(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        view: str,
+        reader: str,
+    ) -> None:
+        import lynchpin.sources.health as _health_src
+
+        monkeypatch.setattr(_health_src, reader, lambda *, start, end: [])
+
+        from lynchpin.mcp.tools.public import lynchpin_personal
+
+        result = lynchpin_personal(
+            action="health", view=view, start="2026-05-01", end="2026-05-31"
+        )
+
+        assert result["ok"] is True
+        assert result["data"] == []
 
     def test_health_stress_detail_returns_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from datetime import date as _date

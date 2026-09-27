@@ -349,6 +349,16 @@ def _internal_call(module_name: str, function_name: str, **kwargs: Any) -> dict[
             meta["materialization_caveats"] = caveats
         return _ok(result, **meta)
     except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors.
+        from lynchpin.core.errors import SourceUnavailableError
+
+        if isinstance(exc, SourceUnavailableError):
+            result = _error("source_unavailable", str(exc), hint=f"route: {route}")
+            result.update(
+                source=exc.source,
+                path=exc.path,
+                reason=exc.reason,
+            )
+            return result
         return _error("tool_error", f"{type(exc).__name__}: {exc}", hint=f"route: {route}")
     finally:
         _MATERIALIZATION_CAVEATS.reset(caveats_token)

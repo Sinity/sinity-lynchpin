@@ -815,15 +815,11 @@ def health_daily_summary(
     """
     from datetime import date as _date
     from dataclasses import asdict
-    from lynchpin.core.errors import SourceUnavailableError
     from lynchpin.sources.health import daily_health_summary
 
-    try:
-        rows = list(daily_health_summary(
-            start=_date.fromisoformat(start), end=_date.fromisoformat(end)
-        ))
-    except SourceUnavailableError:
-        return []
+    rows = list(daily_health_summary(
+        start=_date.fromisoformat(start), end=_date.fromisoformat(end)
+    ))
     return [_json_safe(asdict(r)) for r in rows]
 
 
@@ -841,15 +837,11 @@ def health_stress_detail(
     """
     from datetime import date as _date
     from dataclasses import asdict
-    from lynchpin.core.errors import SourceUnavailableError
     from lynchpin.sources.health import daily_stress
 
-    try:
-        rows = list(daily_stress(
-            start=_date.fromisoformat(start), end=_date.fromisoformat(end)
-        ))
-    except SourceUnavailableError:
-        return []
+    rows = list(daily_stress(
+        start=_date.fromisoformat(start), end=_date.fromisoformat(end)
+    ))
     return [_json_safe(asdict(r)) for r in rows]
 
 
@@ -867,15 +859,11 @@ def health_heart_rate_detail(
     """
     from datetime import date as _date
     from dataclasses import asdict
-    from lynchpin.core.errors import SourceUnavailableError
     from lynchpin.sources.health import daily_heart_rate
 
-    try:
-        rows = list(daily_heart_rate(
-            start=_date.fromisoformat(start), end=_date.fromisoformat(end)
-        ))
-    except SourceUnavailableError:
-        return []
+    rows = list(daily_heart_rate(
+        start=_date.fromisoformat(start), end=_date.fromisoformat(end)
+    ))
     return [_json_safe(asdict(r)) for r in rows]
 
 
@@ -897,18 +885,14 @@ def health_hrv_trend(
     """
     from datetime import date as _date
     from dataclasses import asdict
-    from lynchpin.core.errors import SourceUnavailableError
     from lynchpin.sources.health import hrv_measurements
 
     valid_metrics = {"rmssd", "sdnn"}
     primary_field = f"{metric.lower()}_avg" if metric.lower() in valid_metrics else "rmssd_avg"
 
-    try:
-        rows = list(hrv_measurements(
-            start=_date.fromisoformat(start), end=_date.fromisoformat(end)
-        ))
-    except SourceUnavailableError:
-        return []
+    rows = list(hrv_measurements(
+        start=_date.fromisoformat(start), end=_date.fromisoformat(end)
+    ))
 
     result = []
     for r in rows:
