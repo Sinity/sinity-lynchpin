@@ -35,9 +35,9 @@ def build_context(
 ) -> dict[str, Any]:
     """Write raw and readable tracker/verification evidence under ``trackers``.
 
-    ``revision`` is the captured source revision. Evidence is marked applicable
-    only when it names this exact revision and does not describe a dirty tree.
-    Missing owner fields remain null and are explained in the generated guide.
+    ``revision`` is the captured source revision. A dirty captured tree needs
+    content comparison downstream before applicability can be decided. Missing
+    owner fields remain null and are explained in the generated guide.
     """
     # Owner identity is read only from captured source; repo is used solely as
     # the working directory for GitHub's read-only Actions API client.
@@ -338,10 +338,10 @@ def _verification_payload(
                     "receipt": claim.get("receipt"),
                     "tested_revision": tested_sha,
                     "dirty": owner_dirty,
-                    "applicable_to_package": dirty is False
-                    and tested_sha == revision
-                    and receipt_observed
-                    and observation.get("eligible") is True,
+                    "applicable_to_package": (
+                        tested_sha == revision and receipt_observed
+                        and observation.get("eligible") is True
+                    ) if dirty is False else None if tested_sha == revision else False,
                 }
             )
         records.append(
@@ -360,7 +360,7 @@ def _verification_payload(
         + [
             "Configured test, benchmark, coverage, or CI jobs are not executions; only owner-published receipt observations can support a result.",
             "No stable owner export is available for benchmark measurements or coverage reports; these are unavailable, not zero. GitHub Actions run facts are captured separately and do not expose individual job/test results or runner environments here.",
-            "Applicability requires an exact tested revision, an eligible owner receipt, and an explicitly clean captured package tree.",
+            "Dirty captured trees require complete-scope content comparison with eligible execution endpoints; a commit match alone does not decide applicability or acceptance.",
         ]
     )
     if owner_descriptor.get("coverage_caveat"):

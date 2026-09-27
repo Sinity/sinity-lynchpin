@@ -35,6 +35,9 @@ def test_classification_keeps_scratch_code_out_of_metrics() -> None:
     assert classify_role("modules/example.nix")[0] == "tooling"
     assert classify_role("scripts/build.sh")[0] == "tooling"
     assert classify_role(".tokeignore")[0] == "tooling"
+    assert classify_role("devtools/verify.py", project="polylogue")[0] == "tooling"
+    assert classify_role("devtools/run_tests.py", project="polylogue")[0] == "tooling"
+    assert classify_role("devtools/test_route.py", project="polylogue")[0] == "tests"
 
 
 def test_inventory_captures_membership_and_unassigned_context(tmp_path: Path) -> None:

@@ -120,6 +120,29 @@ def test_missing_tokei_is_explicit_and_not_zero(monkeypatch, tmp_path: Path) -> 
     assert {row["role"]: row for row in summary["roles"]}["implementation"]["loc_measured"] is False
 
 
+def test_partial_tooling_measurement_keeps_subtotal_in_csv(monkeypatch, tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    for name in ("verify.py", "unrecognized.py"):
+        (root / name).write_text("print(1)\n")
+    inventory = Inventory(root, tuple(_file(root, name, "tooling") for name in ("verify.py", "unrecognized.py")))
+
+    def partial_tokei(command, **_kwargs):
+        payload = {"Python": {"reports": [{"name": str(root / "verify.py"),
+            "stats": {"code": 1, "comments": 0, "blanks": 0}}]}}
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr("lynchpin.sources.chisel_metrics.shutil.which", lambda _: "/bin/tokei")
+    monkeypatch.setattr("lynchpin.sources.chisel_metrics.subprocess.run", partial_tokei)
+    package = tmp_path / "package"
+    summary = build_metrics(inventory, package)
+    role = next(row for row in summary["roles"] if row["role"] == "tooling")
+    assert role["code"] is None and role["measured_code"] == 1
+    assert role["measured_files"] == 1 and role["unknown_files"] == 1
+    csv_role = next(row for row in csv.DictReader((package / "metrics/roles.csv").open()) if row["role"] == "tooling")
+    assert csv_role["code"] == "" and csv_role["measured_code"] == "1"
+
+
 def test_loc_ignore_rules_apply_in_order_to_captured_files(monkeypatch, tmp_path: Path) -> None:
     root = tmp_path / "source"
     (root / "src").mkdir(parents=True)

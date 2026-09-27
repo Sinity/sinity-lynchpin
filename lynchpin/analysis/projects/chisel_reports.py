@@ -58,6 +58,7 @@ def task_graph(tasks: list[dict[str, Any]], roots: list[str]) -> dict[str, Any]:
                     disagreements.append({"task": task.get("id"), "metadata_phase": metadata["phase"],
                         "field": field, "excerpt": match.group(0), "status": "possible_disagreement; interpretation requires review"})
     return {"roots": roots, "coverage": "partial" if missing else "exported_graph",
+            "rooted_analysis_status": "unconfigured" if not roots else "partial" if missing else "computed",
             "missing_nodes": missing, "cycles": cycles,
             "unfinished_leaves": [k for k in unfinished if not edges.get(k)],
             "shortest_blocking_paths": {k: paths[k] for k in unfinished},
@@ -292,23 +293,51 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
         record.update({key: classified.get(key) for key in ("purpose", "material", "component")})
     verification = rows(package / "verification/records.jsonl")
     catalogue = json.loads((package / "snapshots.json").read_text()) if (package / "snapshots.json").exists() else {"snapshots": [{"snapshot_id": snapshot, "revision": capture.get("revision"), "dirty": capture.get("dirty")}]}
-    candidates = [{"snapshot_id": selected.get("snapshot_id"), "snapshot_revision": selected.get("revision"),
-        "snapshot_dirty": selected.get("dirty"), "evidence_id": r.get("evidence_id"),
-        "revision_match": selected.get("revision") == r.get("candidate_revision") if r.get("candidate_revision") else None,
-        "integration": (r.get("source_record") or {}).get("publication"),
-        "focused_tests": r.get("verification", []), "qualification": None,
-        "acceptance": None, "deployment": None,
-        "lifecycle_observation": r if r.get("kind") == "agentctl_job_observation" else None,
-        "interpretation": "Lifecycle success and revision match do not establish acceptance; focused-test applicability is bound to the recorded package snapshot."}
-        for selected in catalogue["snapshots"] for r in verification]
     by_snapshot = {snapshot: list(base.values())}
     for path in (package / "snapshots").glob("*/manifest.json"):
         manifest = json.loads(path.read_text())
         by_snapshot[manifest["snapshot_id"]] = manifest["files"]
-    for candidate in candidates:
-        candidate["content_comparisons"] = [content_match(by_snapshot.get(candidate["snapshot_id"], []),
-            (check.get("owner_observation") or {}).get("execution_receipt"))
-            for check in candidate["focused_tests"]]
+    candidates = []
+    native_records = [r for r in verification if r.get("kind") == "native_evidence"]
+    for selected in catalogue["snapshots"]:
+        selected_id = selected.get("snapshot_id")
+        selected_revision = selected.get("revision")
+        if not selected_id or not selected_revision or selected_id not in by_snapshot:
+            continue
+        for record in native_records:
+            if not record.get("evidence_id") or record.get("candidate_revision") != selected_revision:
+                continue
+            checks = record.get("verification") or []
+            comparisons = [content_match(by_snapshot.get(selected_id, []),
+                (check.get("owner_observation") or {}).get("execution_receipt"))
+                for check in checks]
+            bound_methods = []
+            for check, comparison in zip(checks, comparisons):
+                observed = check.get("owner_observation") or {}
+                receipt = observed.get("execution_receipt") or {}
+                if observed.get("eligible") is not True or check.get("tested_revision") != selected_revision:
+                    continue
+                if comparison["complete_scope_match"] is True:
+                    bound_methods.append("complete_scope_endpoint_content")
+                elif selected.get("dirty") is False and all(
+                    isinstance(receipt.get(endpoint), dict)
+                    and receipt[endpoint].get("head") == selected_revision
+                    and receipt[endpoint].get("dirty") is False
+                    for endpoint in ("start", "end")
+                ):
+                    bound_methods.append("clean_execution_endpoints")
+            if not bound_methods:
+                continue
+            candidates.append({"snapshot_id": selected_id,
+                "snapshot_revision": selected_revision,
+                "snapshot_dirty": selected.get("dirty"),
+                "evidence_id": record["evidence_id"],
+                "association": bound_methods[0],
+                "revision_match": True,
+                "integration": (record.get("source_record") or {}).get("publication"),
+                "focused_tests": checks, "content_comparisons": comparisons,
+                "qualification": None, "acceptance": None, "deployment": None,
+                "interpretation": "Eligible execution endpoints associate this evidence with the snapshot; endpoints alone do not establish immutable execution or acceptance."})
     activation_path = package / "verification/activation.json"
     if activation_path.exists():
         activation = json.loads(activation_path.read_text())
@@ -324,8 +353,12 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
                           ("preserved-work-integration", integration)):
         (out / f"{name}.jsonl").write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in records))
     (out / "task-dependencies.json").write_text(json.dumps({"snapshot_id": snapshot, **graph}, indent=2) + "\n")
-    coverage = {"schema_version": 1, "snapshot_id": snapshot,
+    coverage = {"schema_version": 2, "snapshot_id": snapshot,
         "task_roots": task_roots, "campaign_scope": "explicit roots only",
+        "candidate_evidence": {"bound_rows": len(candidates), "native_records": len(native_records),
+            "unbound_native_records": len(native_records) - len({r["evidence_id"] for r in candidates}),
+            "lifecycle_observations_kept_separate": sum(r.get("kind") == "agentctl_job_observation" for r in verification),
+            "status": "no_bound_evidence" if not candidates else "bounded_associations"},
         "gaps": ["Rust, SQL and Nix pattern matches retain textual-candidate status.",
                  "Symbol references are conservative same-file candidates.",
                  "Text patch equivalence does not establish semantic equivalence or supersession.",

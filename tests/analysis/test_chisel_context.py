@@ -179,7 +179,7 @@ def test_context_preserves_missing_dates_and_marks_stale_dirty_evidence(
     ]
     checks = evidence_rows[0]["verification"]
     assert checks[0]["applicable_to_package"] is False
-    assert checks[1]["applicable_to_package"] is False
+    assert checks[1]["applicable_to_package"] is None
     assert payload["captured_package_dirty"] is True
     assert payload["benchmark_exports"] == "unavailable"
     assert evidence_rows[1]["kind"] == "agentctl_job_observation"

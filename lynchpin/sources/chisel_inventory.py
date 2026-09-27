@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-POLICY_VERSION = "chisel-role-policy-4"
+POLICY_VERSION = "chisel-role-policy-5"
 ROLES = frozenset({"implementation", "tests", "tooling", "documentation", "context", "evidence", "unclassified"})
 
 
@@ -101,6 +101,10 @@ def classify_role(path: str, *, project: str = "") -> tuple[str, str]:
         return "evidence", "generated dependency lock or checksum metadata"
     if any(x in parts for x in ("fixtures", "golden", "captures", "testdata", "test-data", "vendor", "generated")):
         return "evidence", "fixture, generated, vendor, or captured evidence"
+    if project == "polylogue" and parts[0] == "devtools" and name.endswith(".py"):
+        if name.startswith("test_") or "tests" in parts:
+            return "tests", "Polylogue devtools test source"
+        return "tooling", "Polylogue devtools verification or development command"
     if name.startswith(("test_",)) or name.endswith(("_test.py", "_tests.py", "_test.rs", "_tests.rs")) or "tests" in parts or "test" in parts:
         return "tests", "test source by conventional path or filename"
     if name in {"readme", "readme.md", "readme.rst", "changelog.md", "contributing.md", "license", "license.md"}:

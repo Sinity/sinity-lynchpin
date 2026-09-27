@@ -4474,6 +4474,10 @@ def _generate_snapshot_overview(
     stats = _read_json_file(out_dir / f"{plan.name}-tokei-stats.json")
     agent_audit = _read_json_file(out_dir / f"{plan.name}-agent-audit.json")
     ignore_audit = _read_json_file(out_dir / f"{plan.name}-ignore-audit.json")
+    github_coverage = _read_json_file(out_dir / "trackers/github-coverage.json")
+    materialization = github_coverage.get("materialization") or _github_context_manifest or {}
+    github_refresh_status = materialization.get("refresh_status")
+    current_github_unknown = github_refresh_status in {"local_only", "unavailable", "stale_fallback"}
 
     large_artifacts = [
         row
@@ -4524,7 +4528,9 @@ def _generate_snapshot_overview(
         f"{plan.name}-tokei-stats.md",
         f"{plan.name}-agent-audit.md" if agent_audit else None,
     ]
-    open_first = [item for item in open_first if item]
+    open_first = [item for item in open_first if item and (
+        item == f"{plan.name}-overview.md" or (out_dir / item).is_file() or item in pending_artifact_names
+    )]
 
     overview = {
         "project": plan.name,
@@ -4539,6 +4545,9 @@ def _generate_snapshot_overview(
             "issues_closed": issues_closed,
             "prs_open": prs_open,
             "prs_merged": prs_merged,
+            "github_current_count_coverage": "unavailable" if current_github_unknown else "captured_export",
+            "issues_open_current": None if current_github_unknown else issues_open,
+            "prs_open_current": None if current_github_unknown else prs_open,
             "gitlog_commits": gitlog_commits,
             "beads_available": bool(beads.get("available")),
             "beads_issues": beads_issues,
@@ -4596,8 +4605,8 @@ def _generate_snapshot_overview(
         f"| Configured slices | {len(plan.slices)} |",
         f"| XML snapshots | {xml_snapshot_count} |",
         f"| Artifacts | {artifact_count} |",
-        f"| Open issues | {issues_open} |",
-        f"| Open PRs | {prs_open} |",
+        f"| Open issues | {'current unavailable; local snapshot ' + str(issues_open) if current_github_unknown else issues_open} |",
+        f"| Open PRs | {'current unavailable; local snapshot ' + str(prs_open) if current_github_unknown else prs_open} |",
         f"| Merged PRs | {prs_merged} |",
         f"| Beads issues | {beads_issues} |",
         f"| Beads ready | {beads_ready} |",

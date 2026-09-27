@@ -12,7 +12,7 @@ import hashlib
 import json
 import shutil
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -197,6 +197,7 @@ def build_metrics(inventory: Any, package_dir: Path) -> dict[str, Any]:
     roles = []
     for role in ALL_ROLES:
         value = totals[role]
+        population = Counter(row["measurement_status"] for row in rows if row["role"] == role)
         role_missing = any(
             row["role"] == role and row["path"] in missing_results for row in rows
         )
@@ -213,11 +214,19 @@ def build_metrics(inventory: Any, package_dir: Path) -> dict[str, Any]:
                     ),
                 },
                 "loc_measured": loc_measured,
+                "measured_files": population["measured"],
+                "excluded_files": population["excluded"],
+                "inapplicable_files": population["inapplicable"],
+                "unknown_files": population["unknown"],
+                "measured_code": value["code"] if role in CODE_ROLES else None,
+                "measured_comments": value["comments"] if role in CODE_ROLES else None,
+                "measured_blanks": value["blanks"] if role in CODE_ROLES else None,
+                "measured_lines": value["lines"] if role in CODE_ROLES else None,
             }
         )
     code_sum = sum(totals[role]["code"] for role in CODE_ROLES)
     summary = {
-        "schema_version": 2,
+        "schema_version": 3,
         "snapshot_id": _get(inventory, "snapshot_id"),
         "measured_maintained_code_lines": code_sum,
         "populations": {status: sum(row["measurement_status"] == status for row in rows) for status in ("measured", "excluded", "inapplicable", "unknown")},
@@ -249,7 +258,7 @@ def build_metrics(inventory: Any, package_dir: Path) -> dict[str, Any]:
         for row in rows:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
     with (metrics_dir / "roles.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["role", "files", "bytes", "code", "comments", "blanks", "lines", "loc_measured"])
+        writer = csv.DictWriter(handle, fieldnames=["role", "files", "bytes", "code", "comments", "blanks", "lines", "loc_measured", "measured_files", "excluded_files", "inapplicable_files", "unknown_files", "measured_code", "measured_comments", "measured_blanks", "measured_lines"])
         writer.writeheader()
         writer.writerows(roles)
     (metrics_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -273,8 +282,8 @@ def build_metrics(inventory: Any, package_dir: Path) -> dict[str, Any]:
         "coverage_gaps": summary["coverage_gaps"],
     }
     (package_dir / f"{project}-tokei-stats.json").write_text(json.dumps(legacy, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    md = [f"# {project} role-aware source metrics", "", f"Generated: {generated_at}", "", "LOC includes only implementation, tests, and tooling files measured from the captured inventory. Documentation and project context bytes are reported separately; their prose and code fences do not enter maintained LOC.", "", "| Role | Files | Bytes | Code | Comments | Blanks |", "| --- | ---: | ---: | ---: | ---: | ---: |"]
-    md.extend(f"| {r['role']} | {r['files']} | {r['bytes']} | {r['code'] if r['loc_measured'] else 'unavailable'} | {r['comments'] if r['loc_measured'] else 'unavailable'} | {r['blanks'] if r['loc_measured'] else 'unavailable'} |" for r in roles)
+    md = [f"# {project} role-aware source metrics", "", f"Generated: {generated_at}", "", "LOC includes only implementation, tests, and tooling files measured from the captured inventory. Documentation and project context bytes are reported separately; their prose and code fences do not enter maintained LOC.", "", "| Role | Files | Bytes | Measured code | Complete code | Measured / unknown / excluded |", "| --- | ---: | ---: | ---: | ---: | ---: |"]
+    md.extend(f"| {r['role']} | {r['files']} | {r['bytes']} | {r['measured_code'] if r['measured_code'] is not None else 'n/a'} | {r['code'] if r['loc_measured'] else 'unknown' if r['role'] in CODE_ROLES else 'n/a'} | {r['measured_files']} / {r['unknown_files']} / {r['excluded_files']} |" for r in roles)
     if summary["coverage_gaps"]:
         md.extend(("", "## Coverage gaps", "", *[f"- {gap}" for gap in summary["coverage_gaps"]]))
     (package_dir / f"{project}-tokei-stats.md").write_text("\n".join(md) + "\n", encoding="utf-8")

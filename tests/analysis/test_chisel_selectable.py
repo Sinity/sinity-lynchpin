@@ -51,7 +51,9 @@ def test_partial_task_graph_does_not_claim_complete_count():
     result = task_graph(tasks, ["root"])
     assert result["campaign_count"] is None
     assert result["missing_nodes"] == ["missing"]
-    assert task_graph(tasks, [])["campaign_count"] is None
+    unconfigured = task_graph(tasks, [])
+    assert unconfigured["campaign_count"] is None
+    assert unconfigured["rooted_analysis_status"] == "unconfigured"
 
 
 def test_split_parts_reconstruct_and_verify_raw_xml(tmp_path):
@@ -140,3 +142,75 @@ runpy.run_path(sys.argv[0], run_name='__main__')
 '''
     result = subprocess.run(['python', '-I', '-c', code, str(reader), str(tmp_path)], capture_output=True, text=True, check=True)
     assert json.loads(result.stdout)['rows'][0]['name'] == 'primary'
+
+
+def test_reader_filters_snapshot_before_pagination_and_refuses_missing_views(tmp_path):
+    from lynchpin.sources.chisel_browse import query_records
+
+    (tmp_path / "snapshots.json").write_text(json.dumps({"snapshots": [
+        {"name": "primary", "snapshot_id": "primary-id"},
+        {"name": "worktree", "snapshot_id": "worktree-id"},
+    ]}))
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    records = [
+        {"snapshot_id": "primary-id", "evidence_id": None},
+        {"snapshot_id": "primary-id", "evidence_id": "primary-1"},
+        {"snapshot_id": "primary-id", "evidence_id": "primary-2"},
+        {"snapshot_id": "worktree-id", "evidence_id": "worktree-1"},
+        {"snapshot_id": "worktree-id", "evidence_id": "worktree-2"},
+    ]
+    (reports / "candidate-evidence.jsonl").write_text("".join(json.dumps(row) + "\n" for row in records))
+    (reports / "references.jsonl").write_text(json.dumps({"snapshot_id": "primary-id", "name": "only_primary"}) + "\n")
+
+    first = query_records(tmp_path, "candidate-evidence", None, 1, 0, "worktree")
+    second = query_records(tmp_path, "candidate-evidence", None, 1, 1, "worktree")
+    past_end = query_records(tmp_path, "candidate-evidence", None, 1, 2, "primary")
+    assert [first["rows"][0]["evidence_id"], second["rows"][0]["evidence_id"]] == ["worktree-1", "worktree-2"]
+    assert first["total"] == 2 and second["next_offset"] is None
+    assert past_end["rows"] == [] and past_end["total"] == 2
+    assert query_records(tmp_path, "references", None, 10, 0, "primary")["total"] == 1
+
+    import pytest
+    with pytest.raises(ValueError, match="selected snapshot references are unavailable"):
+        query_records(tmp_path, "references", None, 10, 0, "worktree")
+    with pytest.raises(ValueError, match="unknown snapshot"):
+        query_records(tmp_path, "candidate-evidence", None, 10, 0, "unknown")
+
+
+def test_candidate_report_keeps_unbound_lifecycle_records_out_of_snapshot_rows(tmp_path):
+    from lynchpin.analysis.projects.chisel_reports import build_reports
+
+    (tmp_path / "capture.json").write_text(json.dumps({"snapshot_id": "primary-id", "revision": "commit"}))
+    (tmp_path / "snapshots.json").write_text(json.dumps({"snapshots": [
+        {"name": "primary", "snapshot_id": "primary-id", "revision": "commit", "dirty": False},
+        {"name": "worktree", "snapshot_id": "worktree-id", "revision": "commit", "dirty": True},
+    ]}))
+    (tmp_path / "source").mkdir()
+    overlay = tmp_path / "snapshots/worktree"
+    overlay.mkdir(parents=True)
+    (overlay / "manifest.json").write_text(json.dumps({"snapshot_id": "worktree-id", "files": [], "changed": [], "deleted": []}))
+    verification = tmp_path / "verification"
+    verification.mkdir()
+    bound_check = {"tested_revision": "commit", "owner_observation": {
+        "eligible": True, "execution_receipt": {
+            "start": {"head": "commit", "dirty": False},
+            "end": {"head": "commit", "dirty": False},
+        },
+    }}
+    records = [
+        {"kind": "agentctl_job_observation", "source_id": "job:1", "status": "succeeded"},
+        {"kind": "native_evidence", "evidence_id": "bound", "candidate_revision": "commit",
+         "candidate_dirty": False, "verification": [bound_check]},
+        {"kind": "native_evidence", "evidence_id": "unknown-dirty", "candidate_revision": "commit",
+         "candidate_dirty": None, "verification": []},
+    ]
+    (verification / "records.jsonl").write_text("".join(json.dumps(row) + "\n" for row in records))
+
+    build_reports(tmp_path, project="fixture", task_roots=[])
+
+    candidates = [json.loads(line) for line in (tmp_path / "reports/candidate-evidence.jsonl").read_text().splitlines()]
+    assert [(row["snapshot_id"], row["evidence_id"]) for row in candidates] == [("primary-id", "bound")]
+    coverage = json.loads((tmp_path / "reports/coverage.json").read_text())["candidate_evidence"]
+    assert coverage["unbound_native_records"] == 1
+    assert coverage["lifecycle_observations_kept_separate"] == 1

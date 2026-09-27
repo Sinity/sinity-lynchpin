@@ -71,6 +71,28 @@ def test_snapshot_counts_actual_xml_and_explicit_pending_artifacts(
     assert overview["counts"]["artifacts"] == 7
 
 
+def test_overview_marks_local_github_counts_and_links_only_existing_artifacts(tmp_path: Path) -> None:
+    plan = _plan(tmp_path / "repo")
+    out = tmp_path / "out"
+    (out / "trackers").mkdir(parents=True)
+    (out / "trackers/github-coverage.json").write_text(json.dumps({
+        "materialization": {"refresh_status": "local_only", "remote_freshness": "unknown"}
+    }))
+
+    chisel._generate_snapshot_overview(
+        plan, out, "2026-09-27T000000Z", {"branch": "master", "commit": "abc", "dirty": False},
+        issues_open=0, issues_closed=1, prs_open=0, prs_merged=2, gitlog_commits=3,
+        xml_errors=[], beads={"available": True, "counts": {"issues": 1}},
+        pending_artifact_names=("example-manifest.json",),
+    )
+
+    overview = json.loads((out / "example-overview.json").read_text())
+    assert overview["counts"]["prs_open_current"] is None
+    assert "example-beads.md" not in overview["open_first"]
+    assert "example-issues-open.xml" not in overview["open_first"]
+    assert "current unavailable; local snapshot 0" in (out / "example-overview.md").read_text()
+
+
 def test_snapshot_audit_marks_xml_errors_as_attention(tmp_path: Path) -> None:
     plan = _plan(tmp_path / "repo")
     out = tmp_path / "out"

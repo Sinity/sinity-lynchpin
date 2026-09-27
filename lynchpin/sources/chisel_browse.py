@@ -138,6 +138,24 @@ def source(package: Path, path: str, start: int, end: int, snapshot: str = "prim
     return 0
 
 
+def snapshot_identity(package: Path, name: str) -> str | None:
+    if name in {"", ".", ".."} or "/" in name or "\\" in name:
+        raise ValueError("invalid snapshot name")
+    catalogue = package / "snapshots.json"
+    if catalogue.is_file():
+        for row in json.loads(catalogue.read_text()).get("snapshots", []):
+            if row.get("name") == name:
+                identity = row.get("snapshot_id")
+                if not identity:
+                    raise ValueError(f"selected snapshot is unavailable: {name}")
+                return identity
+        raise ValueError(f"unknown snapshot: {name}")
+    if name != "primary":
+        raise ValueError(f"unknown snapshot: {name}")
+    # Older packages have no selectable catalogue or row-level snapshot IDs.
+    return None
+
+
 def query_records(package: Path, command: str, value: str | None, limit: int, offset: int, snapshot: str = "primary") -> dict:
     if limit < 1 or limit > 1000 or offset < 0:
         raise ValueError("limit must be 1..1000; offset must be nonnegative")
@@ -145,6 +163,8 @@ def query_records(package: Path, command: str, value: str | None, limit: int, of
         path = package / "snapshots.json"
         result = json.loads(path.read_text())["snapshots"] if path.exists() else [json.loads((package / "capture.json").read_text())]
     elif command == "blockers":
+        if snapshot != "primary":
+            raise ValueError("task blockers use an owner snapshot, not a source snapshot")
         graph = json.loads((package / "reports/task-dependencies.json").read_text())
         edges = graph["edges"]
         pending = [value]
@@ -160,30 +180,47 @@ def query_records(package: Path, command: str, value: str | None, limit: int, of
                     result.append(edge)
                     pending.append(edge["blocker"])
     else:
+        selected_id = snapshot_identity(package, snapshot)
+        if command == "tasks" and snapshot != "primary":
+            raise ValueError("tasks use an owner snapshot, not a source snapshot")
         dataset = {"tasks": "trackers/beads-export.jsonl", "symbols": "structure/symbols.jsonl",
                    "references": "reports/references.jsonl", "neighbors": "structure/dependency_edges.jsonl",
                    "candidate-evidence": "reports/candidate-evidence.jsonl",
                    "differences": "reports/snapshot-differences.jsonl"}[command]
         path = package / dataset
-        if snapshot != "primary":
-            if "/" in snapshot or ".." in snapshot or "\\" in snapshot:
-                raise ValueError("invalid snapshot name")
-            if command in {"symbols", "neighbors"}:
-                path = package / "snapshots" / snapshot / dataset
-                if not path.exists():
-                    raise ValueError("selected snapshot structure is unavailable")
+        if snapshot != "primary" and command in {"symbols", "neighbors", "references"}:
+            path = package / "snapshots" / snapshot / dataset
+            if not path.exists():
+                raise ValueError(f"selected snapshot {command} are unavailable: {snapshot}")
+        if command in {"references", "candidate-evidence"} and not path.exists():
+            raise ValueError(f"{command} dataset is unavailable")
         result = []
         if path.exists():
-            for line in path.read_text().splitlines():
-                row = json.loads(line)
-                fields = {"tasks": [row.get("id")], "symbols": [row.get("name"), row.get("qualified_name")],
-                          "references": [row.get("name")], "neighbors": [row.get("from"), row.get("to")],
-                          "candidate-evidence": [row.get("evidence_id")],
-                          "differences": [row.get("path"), row.get("snapshot")]}[command]
-                if value is None or value in fields:
-                    result.append(row)
-    return {"rows": result[offset:offset + limit], "total": len(result),
-            "next_offset": offset + limit if offset + limit < len(result) else None}
+            with path.open() as stream:
+                for line in stream:
+                    row = json.loads(line)
+                    if command in {"references", "candidate-evidence"} and selected_id is not None and row.get("snapshot_id") != selected_id:
+                        continue
+                    if command == "candidate-evidence" and not row.get("evidence_id"):
+                        continue
+                    if command == "differences" and snapshot != "primary" and row.get("snapshot") != snapshot:
+                        continue
+                    fields = {"tasks": [row.get("id")], "symbols": [row.get("name"), row.get("qualified_name")],
+                              "references": [row.get("name")], "neighbors": [row.get("from"), row.get("to")],
+                              "candidate-evidence": [row.get("evidence_id")],
+                              "differences": [row.get("path"), row.get("snapshot")]}[command]
+                    if value is None or value in fields:
+                        result.append(row)
+    response = {"rows": result[offset:offset + limit], "total": len(result),
+                "next_offset": offset + limit if offset + limit < len(result) else None}
+    if command == "candidate-evidence":
+        coverage = package / "reports/coverage.json"
+        declared = json.loads(coverage.read_text()).get("candidate_evidence") if coverage.is_file() else None
+        response["evidence_coverage"] = declared or {
+            "status": "legacy_report_binding_unavailable",
+            "interpretation": "Rows without evidence IDs are omitted; older packages do not declare candidate binding coverage.",
+        }
+    return response
 
 
 def text_query(package: Path, command: str, query: str, *, path: str | None,

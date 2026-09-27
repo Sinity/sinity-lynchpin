@@ -1319,7 +1319,7 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(
     assert payload["counts"]["beads_blocked"] == 1
     assert payload["attention"]["agent_review_entries"] == 1
     assert payload["attention"]["beads_blocked"] == 1
-    assert "example-beads.md" in payload["open_first"]
+    assert "example-beads.md" not in payload["open_first"]
     assert payload["attention"]["large_artifacts"][0]["name"] == "example-core.xml"
     assert "`example-prs-open.xml`" in markdown
     assert "| Beads blocked | 1 |" in markdown
