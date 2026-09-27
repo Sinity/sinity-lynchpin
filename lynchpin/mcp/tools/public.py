@@ -84,6 +84,22 @@ def _mark_route(tool_name: str, action: str) -> dict[str, Any] | None:
     invalid = _require_action(tool_name, action)
     if invalid is not None:
         return invalid
+    frame = inspect.currentframe()
+    caller = frame.f_back if frame is not None else None
+    del frame
+    if caller is not None and tool_name != "lynchpin_query":
+        spec = public_action_spec(tool_name, action)
+        signature = inspect.signature(globals()[tool_name])
+        allowed = set(spec.parameters if spec else ()) | {"action"}
+        if tool_name == "lynchpin_status":
+            allowed.add("view")
+        unsupported = sorted(
+            name for name, value in caller.f_locals.items()
+            if name in signature.parameters and name not in allowed and value is not None
+            and value != signature.parameters[name].default
+        )
+        if unsupported:
+            return _error("invalid_argument", f"unsupported arguments for {tool_name}.{action}: {', '.join(unsupported)}", choices=sorted(allowed))
     _CURRENT_ROUTE.set((tool_name, action))
     return None
 
@@ -329,9 +345,6 @@ def _record_operation_receipt(
 
 def _call(fn: Any, **kwargs: Any) -> Any:
     clean = {key: value for key, value in kwargs.items() if value is not None}
-    signature = inspect.signature(fn)
-    if not any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
-        clean = {key: value for key, value in clean.items() if key in signature.parameters}
     return fn(**clean)
 
 
@@ -420,10 +433,16 @@ def _quote_ident(value: str) -> str:
 
 
 def _query_dsl(spec: dict[str, Any]) -> dict[str, Any]:
+    allowed = set(public_action_spec("lynchpin_query", "dsl").parameters or ()) | {"mode"}
+    unknown = sorted(set(spec) - allowed)
+    if unknown:
+        return _error("invalid_argument", f"unsupported DSL fields: {', '.join(unknown)}", choices=sorted(allowed))
     table = str(spec.get("table") or _ENTITY_TABLES.get(str(spec.get("entity") or "")) or "")
     if not table:
         return _error("missing_table", "spec requires table or known entity", choices=sorted(_ENTITY_TABLES))
-    selected = spec.get("select") or ["*"]
+    selected = spec.get("select", ["*"])
+    if selected != "*" and (not isinstance(selected, list) or not selected or not all(isinstance(col, str) for col in selected)):
+        return _error("invalid_select", "select must be '*' or a non-empty list of column names")
     if selected == ["*"] or selected == "*":
         select_sql = "*"
     else:
@@ -431,39 +450,59 @@ def _query_dsl(spec: dict[str, Any]) -> dict[str, Any]:
     sql = f"SELECT {select_sql} FROM {_quote_ident(table)}"
     params: list[Any] = []
     clauses: list[str] = []
-    where = spec.get("where") or {}
+    where = spec.get("where", {})
     if not isinstance(where, dict):
         return _error("invalid_where", "where must be an object of column names to exact values")
     for key, value in where.items():
-        clauses.append(f"{_quote_ident(str(key))} = ?")
-        params.append(value)
-    time_spec = spec.get("time") or {}
-    if isinstance(time_spec, dict):
-        column = str(time_spec.get("column") or "date")
-        if time_spec.get("start") is not None:
-            clauses.append(f"{_quote_ident(column)} >= ?")
-            params.append(time_spec["start"])
-        if time_spec.get("end") is not None:
-            clauses.append(f"{_quote_ident(column)} <= ?")
-            params.append(time_spec["end"])
+        if value is None:
+            clauses.append(f"{_quote_ident(str(key))} IS NULL")
+        else:
+            clauses.append(f"{_quote_ident(str(key))} = ?")
+            params.append(value)
+    time_spec = spec.get("time", {})
+    if not isinstance(time_spec, dict) or set(time_spec) - {"column", "start", "end"}:
+        return _error("invalid_time", "time must contain only column, start, and end")
+    column = str(time_spec.get("column") or "date")
+    if time_spec.get("start") is not None:
+        clauses.append(f"{_quote_ident(column)} >= ?")
+        params.append(time_spec["start"])
+    if time_spec.get("end") is not None:
+        clauses.append(f"{_quote_ident(column)} <= ?")
+        params.append(time_spec["end"])
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
     order_by = spec.get("order_by")
-    if order_by:
+    if order_by is not None:
         if isinstance(order_by, str):
             sql += f" ORDER BY {_quote_ident(order_by)}"
         elif isinstance(order_by, list):
+            if not order_by or not all(isinstance(col, str) for col in order_by):
+                return _error("invalid_order_by", "order_by must be a column name or non-empty list of column names")
             sql += " ORDER BY " + ", ".join(_quote_ident(str(col)) for col in order_by)
-    limit = max(1, min(int(spec.get("limit") or 1000), 10_000))
-    # Read one extra row so the shared substrate query can distinguish an
-    # exact-limit result from a truncated one.
-    sql += f" LIMIT {limit + 1}"
+        else:
+            return _error("invalid_order_by", "order_by must be a column name or non-empty list of column names")
+    limit = spec.get("limit", 1000)
+    max_rows = spec.get("max_rows", 1000)
+    offset = spec.get("offset", 0)
+    if any(type(value) is not int for value in (limit, max_rows, offset)) or limit < 1 or max_rows < 1 or offset < 0:
+        return _error("invalid_paging", "limit and max_rows must be positive integers; offset must be non-negative")
+    if offset and not order_by:
+        return _error("invalid_paging", "order_by is required for continuation")
+    if offset and not spec.get("expected_publication_id"):
+        return _error("invalid_paging", "expected_publication_id is required for continuation")
+    page_size = min(max_rows, 10_000, max(limit - offset, 1))
+    # The semantic limit remains separate from the bounded transport page.
+    sql += f" LIMIT {min(page_size + 1, max(limit - offset + 1, 0))} OFFSET {offset}"
     result = _query_sql(
         sql,
         params,
-        max_rows=limit,
+        max_rows=page_size,
         expected_refresh_id=spec.get("expected_refresh_id"),
         expected_publication_id=spec.get("expected_publication_id"),
+    )
+    result["next_offset"] = (
+        offset + result["row_count"]
+        if result["truncated"] and offset + result["row_count"] < limit else None
     )
     if spec.get("explain"):
         result["sql"] = sql
@@ -564,9 +603,16 @@ def lynchpin_catalog(
 @app.tool(annotations=_tool_annotations("lynchpin_query"))
 def lynchpin_query(spec: dict[str, Any]) -> dict[str, Any]:
     """Read-only DSL/SQL query with optional promotion and publication pins."""
+    if not isinstance(spec, dict):
+        return _error("invalid_argument", "query spec must be an object")
     mode = str(spec.get("mode") or "dsl")
     if invalid := _mark_route("lynchpin_query", mode):
         return invalid
+    if mode == "sql":
+        allowed = set(public_action_spec("lynchpin_query", "sql").parameters or ()) | {"mode"}
+        unknown = sorted(set(spec) - allowed)
+        if unknown:
+            return _error("invalid_argument", f"unsupported SQL fields: {', '.join(unknown)}", choices=sorted(allowed))
     expected_refresh_id = spec.get("expected_refresh_id")
     if expected_refresh_id is not None and (
         not isinstance(expected_refresh_id, str) or not expected_refresh_id
@@ -859,6 +905,8 @@ def lynchpin_personal(
         return _internal_call("lynchpin.mcp.tools.wearables", "wearable_records", view="phone", start=start, end=end, source=source, limit=limit)
     if action == "health":
         health_view = view or "daily"
+        if health_view not in {"phone_health", "xiaomi", "coverage"} and (source is not None or limit != 100):
+            return _error("invalid_argument", "source and limit apply only to phone_health, xiaomi, and coverage views")
         if health_view == "daily" and (start is None or end is None):
             return _error("missing_argument", "start and end are required for daily health")
         if health_view == "trend" and (start is not None or end is not None):
@@ -877,6 +925,8 @@ def lynchpin_personal(
     if action == "web":
         if view == "takeout":
             return _internal_call("lynchpin.mcp.tools.personal", "google_takeout", view="events", start=start, end=end, query=query, limit=limit)
+        if query or limit != 100:
+            return _error("invalid_argument", "query and limit apply only to the takeout view")
         return _internal_call("lynchpin.mcp.tools.personal", "web", view=view or "daily", start=start, end=end)
     if action == "bookmarks":
         return _internal_call("lynchpin.mcp.tools.personal", "bookmarks", view=view or "search", query=query, start=start, end=end, limit=limit)
@@ -915,6 +965,8 @@ def lynchpin_machine(
     """Machine router. action: status, metrics, pressure, services, workloads, observations, benchmarks, diagnostics, windows."""
     if invalid := _mark_route("lynchpin_machine", action):
         return invalid
+    if invalid := _require_view("lynchpin_machine", action, view):
+        return invalid
     if action == "status":
         if view == "materialization":
             return _internal_call("lynchpin.mcp.tools.machine_status", "machine_materialization_health")
@@ -923,9 +975,16 @@ def lynchpin_machine(
         return _internal_call("lynchpin.mcp.tools.machine_status", "machine_metrics", by=view or "daily", start=start, end=end, host=host)
     if action == "pressure":
         if view == "narrative":
+            if start is not None or host is not None or limit != 100:
+                return _error("invalid_argument", "narrative accepts only end")
             return _internal_call("lynchpin.mcp.tools.machine_status", "machine_explain", end=end)
         fn = "machine_pressure_explain" if view == "explain" else "machine_pressure_report"
-        return _internal_call("lynchpin.mcp.tools.machine_status", fn, start=start, end=end, host=host, limit=limit)
+        if fn == "machine_pressure_report" and limit != 100:
+            return _error("invalid_argument", "limit applies only to the explain view")
+        kwargs = {"start": start, "end": end, "host": host}
+        if fn == "machine_pressure_explain":
+            kwargs["limit"] = limit
+        return _internal_call("lynchpin.mcp.tools.machine_status", fn, **kwargs)
     if action == "services":
         return _internal_call("lynchpin.mcp.tools.machine_status", "machine_service", view=view or "state_summary", start=start, end=end, host=host, limit=limit)
     if action == "workloads":

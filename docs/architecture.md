@@ -79,7 +79,12 @@ when the pinned generation does not contain the requested claim. Explicit
 refresh IDs are authoritative and never fall back to another generation.
 
 The query surface supports stable readers, a structured JSON query DSL, and
-SELECT-only SQL with row caps. Mutation is not exposed through query tools.
+SELECT-only SQL with bounded response pages. In the DSL, `limit` is the total
+requested result scope and `max_rows` is the page size (at most 10,000 rows).
+Continue with the returned `next_offset`, the same `order_by`, and the serving
+`publication_id` as `expected_publication_id`; a changed publication is rejected.
+Unknown query fields and public action filters are rejected. Mutation is not
+exposed through query tools.
 
 ### 5. Evidence graph
 

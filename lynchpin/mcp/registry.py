@@ -93,7 +93,7 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
             ActionSpec(
                 "dsl",
                 "Structured table/entity query with filters, ordering, limits, and optional promotion or exact publication pinning.",
-                parameters=("entity", "table", "select", "where", "time", "order_by", "limit", "explain", "expected_refresh_id", "expected_publication_id"),
+                parameters=("entity", "table", "select", "where", "time", "order_by", "limit", "max_rows", "offset", "explain", "expected_refresh_id", "expected_publication_id"),
                 response_kind="query_result",
                 examples=({"entity": "commits", "select": ["sha", "repo"], "where": {"repo": "lynchpin"}, "limit": 20},),
             ),

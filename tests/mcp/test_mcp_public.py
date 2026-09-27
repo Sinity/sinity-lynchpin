@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -31,6 +33,17 @@ def test_lynchpin_query_rejects_mutating_sql(tmp_path: Path, monkeypatch: pytest
 
     assert result["ok"] is False
     assert result["error_code"] == "query_error"
+
+
+def test_lynchpin_query_sql_accepts_keyword_literal_and_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+    from lynchpin.mcp.tools.public import lynchpin_query
+
+    result = lynchpin_query({"mode": "sql", "sql": "SELECT 'update' AS word -- delete\n"})
+    assert result["ok"] is True
+    assert result["data"]["rows"] == [["update"]]
 
 
 def test_lynchpin_query_dsl_selects_entity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,6 +89,71 @@ def test_lynchpin_query_dsl_reports_truncation_at_requested_limit(
     assert result["data"]["rows"] == [[1], [2]]
     assert result["data"]["row_count"] == 2
     assert result["data"]["truncated"] is True
+    assert result["data"]["next_offset"] is None
+
+
+def test_lynchpin_query_dsl_continues_beyond_old_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = setup_substrate(tmp_path, monkeypatch)
+    import duckdb
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE query_fixture AS SELECT n FROM range(12005) AS t(n)")
+        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_id', 'query-publication')")
+        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_at', '2026-01-01T00:00:00+00:00')")
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.substrate.ensure_substrate_materialized_for_read",
+        lambda **_kwargs: {"status": "ready"},
+    )
+    from lynchpin.mcp.tools.public import lynchpin_query
+
+    query = {"table": "query_fixture", "select": ["n"], "order_by": "n", "limit": 20000, "max_rows": 4000}
+    seen: list[int] = []
+    offset = 0
+    while True:
+        result = lynchpin_query({**query, "offset": offset, **({"expected_publication_id": "query-publication"} if offset else {})})
+        assert result["ok"] is True, result
+        data = result["data"]
+        seen.extend(row[0] for row in data["rows"])
+        if data["next_offset"] is None:
+            break
+        offset = data["next_offset"]
+    assert seen == list(range(12005))
+
+
+def test_lynchpin_query_dsl_null_and_invalid_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = setup_substrate(tmp_path, monkeypatch)
+    import duckdb
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE query_fixture (value INTEGER)")
+        conn.execute("INSERT INTO query_fixture VALUES (NULL), (1)")
+    from lynchpin.mcp.tools.public import lynchpin_query
+
+    matched = lynchpin_query({"table": "query_fixture", "select": ["value"], "where": {"value": None}})
+    assert matched["ok"] is True
+    assert matched["data"]["rows"] == [[None]]
+    rejected = lynchpin_query({"table": "query_fixture", "where": {"value": None}, "offest": 1})
+    assert rejected["error_code"] == "invalid_argument"
+    assert lynchpin_query({"table": "query_fixture", "time": []})["error_code"] == "invalid_time"
+    assert lynchpin_query({"table": "query_fixture", "order_by": []})["error_code"] == "invalid_order_by"
+
+
+def test_mcp_client_route_rejects_ignored_query_and_personal_filters() -> None:
+    from lynchpin.mcp.server import app
+    from lynchpin.mcp.tools import public as _public  # noqa: F401 - registers public tools
+
+    async def call(name: str, arguments: dict[str, object]) -> dict[str, object]:
+        content = await app.call_tool(name, arguments)
+        return json.loads(content[0].text)
+
+    invalid_query = asyncio.run(call("lynchpin_query", {"spec": {"table": "commit_fact", "offest": 3}}))
+    assert invalid_query["error_code"] == "invalid_argument"
+    invalid_filter = asyncio.run(call("lynchpin_personal", {"action": "communications", "source": "gmail"}))
+    assert invalid_filter["error_code"] == "invalid_argument"
 
 
 @pytest.mark.parametrize(
@@ -281,7 +359,8 @@ def test_catalog_view_reaches_its_executable_route(
 
     monkeypatch.setattr(f"lynchpin.mcp.tools.{module}.{function}", leaf)
     route = public.lynchpin_project if tool == "project" else public.lynchpin_personal
-    result = route(action=action, view=view, start="2026-01-01", end="2026-01-02")
+    dates = {"start": "2026-01-01", "end": "2026-01-02"} if "start" in spec.parameters else {}
+    result = route(action=action, view=view, **dates)
 
     assert result["ok"] is True
     assert result["data"] == {"reached": function}
@@ -438,7 +517,7 @@ def test_lynchpin_status_snapshot_returns_compact_orientation(
     }
 
 
-def test_lynchpin_machine_pressure_drops_unsupported_public_kwargs(
+def test_lynchpin_machine_pressure_rejects_unsupported_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = []
@@ -462,9 +541,28 @@ def test_lynchpin_machine_pressure_drops_unsupported_public_kwargs(
         limit=5,
     )
 
-    assert result["ok"] is True
-    assert result["data"] == {"summary": {"status": "ok"}}
-    assert calls == [{"start": "2026-07-01", "end": "2026-07-02", "host": "sinnix-prime"}]
+    assert result["ok"] is False
+    assert result["error_code"] == "invalid_argument"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected_code"),
+    [
+        ({"action": "communications", "source": "gmail"}, "invalid_argument"),
+        ({"action": "communications", "query": "update"}, "invalid_argument"),
+        ({"action": "web", "view": "daily", "query": "update"}, "invalid_argument"),
+        ({"action": "web", "view": "daily", "limit": 5}, "invalid_argument"),
+        ({"action": "reports", "start": "2026-01-01"}, "invalid_argument"),
+        ({"action": "health", "view": "typo"}, "invalid_view"),
+    ],
+)
+def test_personal_router_rejects_ignored_filters(kwargs: dict[str, object], expected_code: str) -> None:
+    from lynchpin.mcp.tools.public import lynchpin_personal
+
+    result = lynchpin_personal(**kwargs)
+    assert result["ok"] is False
+    assert result["error_code"] == expected_code
 
 
 def test_project_and_evidence_routes_label_source_modes(

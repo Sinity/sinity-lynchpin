@@ -203,6 +203,19 @@ def test_query_substrate_allows_keyword_text_in_select(
     assert result["rows"] == [["update"]]
 
 
+def test_query_substrate_disables_external_file_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+    source = tmp_path / "external.csv"
+    source.write_text("value\nsecret\n")
+    from lynchpin.mcp.tools.substrate import query_substrate
+    import duckdb
+
+    with pytest.raises(duckdb.PermissionException, match="disabled through configuration"):
+        query_substrate("SELECT * FROM read_csv(?)", parameters=[str(source)])
+
+
 def test_query_substrate_truncates_at_max_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     setup_substrate(tmp_path, monkeypatch)
 

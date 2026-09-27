@@ -156,6 +156,9 @@ def query_substrate(
     path = substrate_path()
     with serving_generation(path) as serving:
         conn = serving.connection
+        conn.execute("SET enable_external_access = false")
+        conn.execute("SET autoinstall_known_extensions = false")
+        conn.execute("SET autoload_known_extensions = false")
         refresh_id = latest_materialized_refresh_id(conn, caller="query_substrate")
         serving_kind = "canonical" if serving.database_path == path else "read_snapshot"
         if expected_refresh_id is not None and expected_refresh_id != refresh_id:
