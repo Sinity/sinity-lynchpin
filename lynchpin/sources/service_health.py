@@ -14,19 +14,20 @@ Inputs: ``MachineServiceState`` rows from
 ``lynchpin.sources.machine.service_states``.
 
 Output: ``ServiceDowntime`` intervals where a unit was not in the
-``active`` ``running`` configuration. Adjacent same-state rows merge.
+``active`` ``running`` configuration. Adjacent intervals of the same kind merge.
 
 Conservative semantics:
-- If a unit has NO observations in a window, we emit a single
-  ``ServiceDowntime`` of kind ``unobserved`` covering that window.
-  Caller decides whether to treat that as downtime or as missing telemetry.
+    - State is carried for at most ``MAX_OBSERVATION_GAP`` after each sample;
+      longer gaps and unbounded window edges are ``unobserved``.
+    - Only a predecessor can establish the state at ``window_start``. Rows at
+      or after ``window_end`` do not contribute intervals.
 - A unit observed only once at ``active running`` doesn't prove uptime
   across the entire surrounding window; the next observation matters.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable, Iterator, Sequence
 
 from .machine_models import MachineServiceState
@@ -46,6 +47,10 @@ CAPTURE_SERVICE_UNITS: tuple[str, ...] = (
     "activitywatch-watcher-awatcher.service",
     "polylogued.service",
 )
+
+# Sinnix's service-state collector normally samples every 10 seconds. Allow
+# three missed samples before treating the remaining time as unobserved.
+MAX_OBSERVATION_GAP = timedelta(seconds=30)
 
 
 @dataclass(frozen=True)
@@ -80,12 +85,12 @@ def downtime_intervals(
     they are filtered to ``units`` here. Order need not be sorted on input.
     Each unit's observations are sorted by ``observed_at`` before scanning.
 
-    Algorithm: per unit, sweep observations in time order. Track the
-    current state. Open an inactive interval when a non-active-running
-    observation arrives; close when the next active+running observation
-    arrives OR window_end is reached. If a unit has NO observations,
-    emit a single ``unobserved`` interval covering [window_start, window_end].
+    The machine collector normally samples every 10 seconds, so three missed
+    samples is the maximum state hold. This bounds both uptime claims and
+    downtime claims instead of extrapolating indefinitely from a stale row.
     """
+    if window_end <= window_start:
+        return
     unit_set = set(units)
     by_unit: dict[str, list[MachineServiceState]] = {}
     for state in states:
@@ -113,45 +118,59 @@ def _sweep_unit(
     window_start: datetime,
     window_end: datetime,
 ) -> Iterator[ServiceDowntime]:
-    open_start: datetime | None = None
-    open_states: list[str] = []
-
     def _state_label(row: MachineServiceState) -> str:
         return f"{row.active_state or '?'}/{row.sub_state or '?'}"
+    prior = [row for row in rows if row.observed_at < window_start]
+    in_window = [
+        row for row in rows
+        if window_start <= row.observed_at < window_end
+    ]
+    current = prior[-1] if prior else None
+    cursor = window_start
+    intervals: list[ServiceDowntime] = []
 
-    # If the first observation is after window_start AND it's inactive,
-    # the unobserved prefix gets credited as unobserved (we don't know what
-    # came before, but the unit transitioned somewhere in there).
-    first = rows[0]
-    if first.observed_at > window_start and not _is_running(first):
-        yield ServiceDowntime(
-            unit=unit, start=window_start, end=first.observed_at,
-            kind="unobserved", observed_states=("unknown",),
-        )
-
-    for row in rows:
-        if not _is_running(row):
-            if open_start is None:
-                open_start = max(row.observed_at, window_start)
-            label = _state_label(row)
-            if label not in open_states:
-                open_states.append(label)
+    def append(
+        start: datetime,
+        end: datetime,
+        kind: str,
+        states: tuple[str, ...],
+    ) -> None:
+        if end <= start or kind == "active":
+            return
+        if intervals and intervals[-1].end == start and intervals[-1].kind == kind:
+            previous = intervals[-1]
+            combined = tuple(dict.fromkeys(previous.observed_states + states))
+            intervals[-1] = ServiceDowntime(unit, previous.start, end, kind, combined)
         else:
-            if open_start is not None:
-                yield ServiceDowntime(
-                    unit=unit, start=open_start,
-                    end=min(row.observed_at, window_end),
-                    kind="inactive",
-                    observed_states=tuple(open_states),
-                )
-                open_start = None
-                open_states = []
+            intervals.append(ServiceDowntime(unit, start, end, kind, states))
 
-    if open_start is not None:
-        yield ServiceDowntime(
-            unit=unit, start=open_start, end=window_end,
-            kind="inactive", observed_states=tuple(open_states),
-        )
+    # A predecessor may establish the state at the left edge only while it is
+    # within the sampling hold. Otherwise the prefix is explicitly unknown.
+    if current is None or window_start - current.observed_at > MAX_OBSERVATION_GAP:
+        current = None
+
+    for row in in_window:
+        if row.observed_at > cursor:
+            if current is None:
+                append(cursor, row.observed_at, "unobserved", ("unknown",))
+            else:
+                held_until = min(row.observed_at, current.observed_at + MAX_OBSERVATION_GAP)
+                kind = "active" if _is_running(current) else "inactive"
+                append(cursor, held_until, kind, (_state_label(current),))
+                append(held_until, row.observed_at, "unobserved", ("unknown",))
+        current = row
+        cursor = row.observed_at
+
+    if cursor < window_end:
+        if current is None:
+            append(cursor, window_end, "unobserved", ("unknown",))
+        else:
+            held_until = min(window_end, current.observed_at + MAX_OBSERVATION_GAP)
+            kind = "active" if _is_running(current) else "inactive"
+            append(cursor, held_until, kind, (_state_label(current),))
+            append(held_until, window_end, "unobserved", ("unknown",))
+
+    yield from intervals
 
 
 def service_uptime_summary(

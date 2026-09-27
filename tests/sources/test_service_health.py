@@ -39,7 +39,7 @@ def test_continuous_uptime_yields_no_downtime() -> None:
     """All observations are active+running → uptime_fraction = 1.0,
     no downtime intervals emitted."""
     unit = "activitywatch.service"
-    states = [S(unit, t) for t in (0, 60, 120, 180, 3600)]
+    states = [S(unit, t) for t in range(0, 3601, 30)]
     intervals = list(downtime_intervals(
         states, window_start=W_START, window_end=W_END,
         units=(unit,),
@@ -51,24 +51,91 @@ def test_continuous_uptime_yields_no_downtime() -> None:
     assert summary[unit]["uptime_fraction"] == 1.0
 
 
+def test_midday_observation_only_proves_bounded_sample_window() -> None:
+    unit = "activitywatch.service"
+    day_start = datetime(2026, 5, 25, tzinfo=UTC)
+    day_end = day_start + timedelta(days=1)
+    observed = MachineServiceState(
+        observed_at=day_start + timedelta(hours=12), host="host", boot_id=None,
+        unit=unit, scope="system", active_state="active", sub_state="running",
+    )
+
+    intervals = list(downtime_intervals(
+        [observed], window_start=day_start, window_end=day_end, units=(unit,),
+    ))
+    summary = service_uptime_summary(
+        [observed], window_start=day_start, window_end=day_end, units=(unit,),
+    )
+
+    assert [(i.start, i.end, i.kind) for i in intervals] == [
+        (day_start, observed.observed_at, "unobserved"),
+        (observed.observed_at + timedelta(seconds=30), day_end, "unobserved"),
+    ]
+    assert 0 < summary[unit]["uptime_fraction"] < 1
+
+
+def test_midnight_boundary_includes_start_and_excludes_next_day() -> None:
+    unit = "activitywatch.service"
+    day_start = datetime(2026, 5, 25, tzinfo=UTC)
+    day_end = day_start + timedelta(days=1)
+    rows = [
+        MachineServiceState(
+            observed_at=timestamp, host="host", boot_id=None, unit=unit,
+            scope="system", active_state=active, sub_state=sub,
+        )
+        for timestamp, active, sub in (
+            (day_start - timedelta(seconds=10), "active", "running"),
+            (day_start, "active", "running"),
+            (day_end, "failed", "failed"),
+        )
+    ]
+
+    intervals = list(downtime_intervals(
+        rows, window_start=day_start, window_end=day_end, units=(unit,),
+    ))
+
+    assert [(interval.start, interval.end, interval.kind) for interval in intervals] == [
+        (day_start + timedelta(seconds=30), day_end, "unobserved"),
+    ]
+
+
+def test_intraday_window_uses_predecessor_and_clips_surrounding_rows() -> None:
+    unit = "activitywatch.service"
+    start = W_START + timedelta(minutes=10)
+    end = W_START + timedelta(minutes=20)
+    rows = [
+        S(unit, 590),                         # bounded predecessor at start
+        S(unit, 620, active="failed", sub="failed"),  # 20s into window
+        S(unit, 650),                         # recovery 50s in
+        S(unit, 1200, active="failed", sub="failed"),  # exactly at end
+    ]
+
+    intervals = list(downtime_intervals(
+        rows, window_start=start, window_end=end, units=(unit,),
+    ))
+
+    assert all(start <= interval.start < interval.end <= end for interval in intervals)
+    assert [(i.start, i.end, i.kind) for i in intervals] == [
+        (start + timedelta(seconds=20), start + timedelta(seconds=50), "inactive"),
+        (start + timedelta(seconds=80), end, "unobserved"),
+    ]
+
+
 def test_failed_state_opens_downtime_interval() -> None:
     """A 'failed' or 'inactive' observation opens an interval; the next
     active+running observation closes it."""
     unit = "activitywatch.service"
-    states = [
-        S(unit, 0),                                  # active running
-        S(unit, 600, active="failed", sub="failed"),  # 10min in: failed
-        S(unit, 1200, active="failed", sub="failed"),
-        S(unit, 1800),                                # 30min in: back up
-        S(unit, 3600),
-    ]
+    states = [S(unit, t) for t in range(0, 600, 30)] + [
+        S(unit, t, active="failed", sub="failed")
+        for t in range(600, 1801, 30)
+    ] + [S(unit, t) for t in range(1830, 3601, 30)]
     intervals = list(downtime_intervals(
         states, window_start=W_START, window_end=W_END, units=(unit,),
     ))
     assert len(intervals) == 1
     assert intervals[0].kind == "inactive"
-    # 600s → 1800s = 20 minutes of downtime
-    assert (intervals[0].end - intervals[0].start).total_seconds() == 1200
+    assert intervals[0].start == W_START + timedelta(seconds=600)
+    assert intervals[0].end == W_START + timedelta(seconds=1830)
 
 
 def test_no_observations_yields_unobserved_interval() -> None:
@@ -84,31 +151,27 @@ def test_no_observations_yields_unobserved_interval() -> None:
     assert intervals[0].end == W_END
 
 
-def test_failure_until_window_end_held_open() -> None:
-    """If the unit fails mid-window and never recovers, the downtime
-    interval extends to window_end."""
+def test_long_failure_without_samples_becomes_unobserved() -> None:
+    """A state is held for at most the declared sampling-gap threshold."""
     unit = "activitywatch.service"
-    states = [
-        S(unit, 0),
+    states = [S(unit, t) for t in range(0, 600, 30)] + [
         S(unit, 600, active="failed", sub="failed"),  # fails at 600s, never recovers
     ]
     intervals = list(downtime_intervals(
         states, window_start=W_START, window_end=W_END, units=(unit,),
     ))
-    assert len(intervals) == 1
-    assert intervals[0].end == W_END
+    assert [(i.kind, i.start, i.end) for i in intervals] == [
+        ("inactive", W_START + timedelta(seconds=600), W_START + timedelta(seconds=630)),
+        ("unobserved", W_START + timedelta(seconds=630), W_END),
+    ]
 
 
 def test_distinct_units_tracked_separately() -> None:
     """Failure of one unit must not affect another."""
     aw, pl = "activitywatch.service", "polylogued.service"
-    states = [
-        S(aw, 0),
+    states = [S(aw, t) for t in range(0, 1800, 30)] + [
         S(aw, 1800, active="failed", sub="failed"),
-        S(pl, 0),
-        S(pl, 1800),
-        S(pl, 3600),
-    ]
+    ] + [S(pl, t) for t in range(0, 3601, 30)]
     intervals = list(downtime_intervals(
         states, window_start=W_START, window_end=W_END, units=(aw, pl),
     ))

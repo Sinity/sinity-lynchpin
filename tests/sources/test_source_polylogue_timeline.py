@@ -84,3 +84,33 @@ def test_session_composition_reports_unavailable_when_facade_fails(monkeypatch):
 
     assert row.status == "unavailable"
     assert "facade empty" in (row.reason or "")
+
+
+def test_service_spans_clip_date_wide_rows_to_session_window(monkeypatch):
+    import lynchpin.sources.machine as machine
+    import lynchpin.sources.polylogue_timeline as timeline
+    from lynchpin.sources.machine_models import MachineServiceState
+
+    start = datetime(2026, 6, 6, 10, 0, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=2)
+    unit = "polylogued.service"
+    rows = [
+        MachineServiceState(start - timedelta(seconds=10), "host", None, unit,
+                            "system", "active", "running"),
+        MachineServiceState(start + timedelta(seconds=20), "host", None, unit,
+                            "system", "failed", "failed"),
+        MachineServiceState(end + timedelta(seconds=10), "host", None, unit,
+                            "system", "active", "running"),
+    ]
+    monkeypatch.setattr(machine, "service_states", lambda **_: iter(rows))
+
+    spans = [
+        span for span in timeline._service_spans(_profile(), start, end)
+        if span.summary == unit
+    ]
+
+    assert all(start <= span.start < span.end <= end for span in spans)
+    assert [(span.kind, span.start, span.end) for span in spans] == [
+        ("inactive", start + timedelta(seconds=20), start + timedelta(seconds=50)),
+        ("unobserved", start + timedelta(seconds=50), end),
+    ]
