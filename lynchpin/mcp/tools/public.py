@@ -38,14 +38,24 @@ def _ok(data: Any, **meta: Any) -> dict[str, Any]:
     return {"ok": True, "data": json_safe(data), "meta": json_safe(meta)}
 
 
-def _error(code: str, message: str, *, choices: list[str] | tuple[str, ...] = (), hint: str | None = None) -> dict[str, Any]:
-    return {
+def _error(
+    code: str,
+    message: str,
+    *,
+    choices: list[str] | tuple[str, ...] = (),
+    hint: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    error = {
         "ok": False,
         "error_code": code,
         "message": message,
         "choices": list(choices),
         "hint": hint,
     }
+    if details is not None:
+        error["details"] = json_safe(details)
+    return error
 
 
 def _invalid_action(tool_name: str, action: str) -> dict[str, Any]:
@@ -344,10 +354,20 @@ def _internal_call(module_name: str, function_name: str, **kwargs: Any) -> dict[
         _MATERIALIZATION_CAVEATS.reset(caveats_token)
 
 
-def _query_sql(sql: str, parameters: list[Any] | None = None, max_rows: int = 1000) -> dict[str, Any]:
+def _query_sql(
+    sql: str,
+    parameters: list[Any] | None = None,
+    max_rows: int = 1000,
+    expected_refresh_id: str | None = None,
+) -> dict[str, Any]:
     from lynchpin.mcp.tools.substrate import query_substrate
 
-    return query_substrate(sql=sql, parameters=parameters, max_rows=max_rows)
+    return query_substrate(
+        sql=sql,
+        parameters=parameters,
+        max_rows=max_rows,
+        expected_refresh_id=expected_refresh_id,
+    )
 
 
 _ENTITY_TABLES = {
@@ -405,9 +425,16 @@ def _query_dsl(spec: dict[str, Any]) -> dict[str, Any]:
             sql += f" ORDER BY {_quote_ident(order_by)}"
         elif isinstance(order_by, list):
             sql += " ORDER BY " + ", ".join(_quote_ident(str(col)) for col in order_by)
-    limit = int(spec.get("limit") or 1000)
-    sql += f" LIMIT {max(1, min(limit, 10_000))}"
-    result = _query_sql(sql, params, max_rows=limit)
+    limit = max(1, min(int(spec.get("limit") or 1000), 10_000))
+    # Read one extra row so the shared substrate query can distinguish an
+    # exact-limit result from a truncated one.
+    sql += f" LIMIT {limit + 1}"
+    result = _query_sql(
+        sql,
+        params,
+        max_rows=limit,
+        expected_refresh_id=spec.get("expected_refresh_id"),
+    )
     if spec.get("explain"):
         result["sql"] = sql
         result["parameters"] = params
@@ -504,26 +531,55 @@ def lynchpin_catalog(
 
 @app.tool(annotations=_tool_annotations("lynchpin_query"))
 def lynchpin_query(spec: dict[str, Any]) -> dict[str, Any]:
-    """Read-only query surface. spec mode: dsl (default) or sql."""
+    """Read-only DSL/SQL query; optionally pin reads with expected_refresh_id."""
     mode = str(spec.get("mode") or "dsl")
     if invalid := _mark_route("lynchpin_query", mode):
         return invalid
+    expected_refresh_id = spec.get("expected_refresh_id")
+    if expected_refresh_id is not None and (
+        not isinstance(expected_refresh_id, str) or not expected_refresh_id
+    ):
+        return _error("invalid_expected_refresh_id", "expected_refresh_id must be a non-empty string")
+    from lynchpin.mcp.tools.substrate import QueryRefreshMismatch
+
+    caveats_token = _MATERIALIZATION_CAVEATS.set([])
     try:
         if mode == "sql":
-            return _ok(
-                _query_sql(
-                    sql=str(spec.get("sql") or ""),
-                    parameters=spec.get("parameters"),
-                    max_rows=int(spec.get("max_rows") or spec.get("limit") or 1000),
-                ),
-                **_action_meta("lynchpin_query", mode, route="lynchpin.mcp.tools.substrate.query_substrate", mode="sql"),
+            data = _query_sql(
+                sql=str(spec.get("sql") or ""),
+                parameters=spec.get("parameters"),
+                max_rows=int(spec.get("max_rows") or spec.get("limit") or 1000),
+                expected_refresh_id=expected_refresh_id,
             )
-        if mode == "dsl":
+            route = "lynchpin.mcp.tools.substrate.query_substrate"
+        elif mode == "dsl":
             result = _query_dsl(spec)
-            return result if result.get("ok") is False else _ok(result, **_action_meta("lynchpin_query", mode, route="lynchpin.mcp.tools.public._query_dsl", mode="dsl"))
+            if result.get("ok") is False:
+                return result
+            data = result
+            route = "lynchpin.mcp.tools.public._query_dsl"
+        else:
+            return _error("invalid_mode", f"unknown query mode {mode!r}", choices=("dsl", "sql"))
+
+        meta = _action_meta("lynchpin_query", mode, route=route, mode=mode)
+        caveats = _MATERIALIZATION_CAVEATS.get()
+        if caveats:
+            meta["materialization_caveats"] = caveats
+        return _ok(data, **meta)
+    except QueryRefreshMismatch as exc:
+        return _error(
+            "refresh_mismatch",
+            str(exc),
+            details={
+                "expected_refresh_id": exc.expected_refresh_id,
+                "actual_refresh_id": exc.actual_refresh_id,
+                "serving_kind": exc.serving_kind,
+            },
+        )
     except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors.
         return _error("query_error", f"{type(exc).__name__}: {exc}")
-    return _error("invalid_mode", f"unknown query mode {mode!r}", choices=("dsl", "sql"))
+    finally:
+        _MATERIALIZATION_CAVEATS.reset(caveats_token)
 
 
 @app.tool(annotations=_tool_annotations("lynchpin_evidence"))

@@ -18,6 +18,81 @@ def test_query_substrate_select_passes(tmp_path: Path, monkeypatch: pytest.Monke
     assert result["row_count"] == 1
     assert result["rows"][0][0] == 0
     assert result["truncated"] is False
+    assert result["serving"] == {"kind": "canonical", "refresh_id": None}
+
+
+def test_query_substrate_reports_served_generation_when_convergence_is_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = setup_substrate(tmp_path, monkeypatch)
+    import duckdb
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO substrate_promotion_run "
+            "(refresh_id, status, started_at, finished_at) VALUES "
+            "('served-generation', 'ok', TIMESTAMPTZ '2026-01-01 00:00:00+00', "
+            "TIMESTAMPTZ '2026-01-01 00:01:00+00'), "
+            "('failed-attempt', 'failed', TIMESTAMPTZ '2026-02-01 00:00:00+00', "
+            "TIMESTAMPTZ '2026-02-01 00:01:00+00')"
+        )
+
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.substrate.ensure_substrate_materialized_for_read",
+        lambda **_kwargs: {"status": "blocked", "reason": "fixture failure"},
+    )
+
+    from lynchpin.mcp.tools.substrate import query_substrate
+
+    result = query_substrate(
+        "SELECT refresh_id FROM substrate_promotion_run "
+        "WHERE status = 'ok' ORDER BY finished_at DESC LIMIT 1"
+    )
+
+    assert result["rows"] == [["served-generation"]]
+    assert result["serving"] == {"kind": "canonical", "refresh_id": "served-generation"}
+
+
+def test_query_substrate_identifies_read_snapshot_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = setup_substrate(tmp_path, monkeypatch)
+    import duckdb
+
+    from lynchpin.substrate.connection import update_read_snapshot
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO substrate_promotion_run "
+            "(refresh_id, status, started_at, finished_at) VALUES "
+            "('snapshot-generation', 'ok', TIMESTAMPTZ '2026-01-01 00:00:00+00', "
+            "TIMESTAMPTZ '2026-01-01 00:01:00+00')"
+        )
+    update_read_snapshot(db_path)
+
+    import lynchpin.substrate.connection as duck_conn
+
+    real_generation_refresh_id = duck_conn.generation_refresh_id
+
+    def unavailable_canonical(path: Path) -> str | None:
+        if path == db_path:
+            return None
+        if path == duck_conn.substrate_read_snapshot_path():
+            return "snapshot-generation"
+        return real_generation_refresh_id(path)
+
+    monkeypatch.setattr(duck_conn, "generation_refresh_id", unavailable_canonical)
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.substrate.ensure_substrate_materialized_for_read",
+        lambda **_kwargs: {"status": "blocked", "reason": "fixture failure"},
+    )
+
+    from lynchpin.mcp.tools.substrate import query_substrate
+
+    result = query_substrate("SELECT 'readable' AS value")
+
+    assert result["rows"] == [["readable"]]
+    assert result["serving"] == {"kind": "read_snapshot", "refresh_id": "snapshot-generation"}
 
 
 def test_query_substrate_rejects_drop_table() -> None:
@@ -103,6 +178,13 @@ def test_query_substrate_no_truncation_when_within_limit(tmp_path: Path, monkeyp
     result = query_substrate("SELECT generate_series AS n FROM generate_series(1, 10)")
     assert result["truncated"] is False
     assert result["row_count"] == 10
+
+
+def test_query_substrate_rejects_non_positive_max_rows() -> None:
+    from lynchpin.mcp.tools.substrate import query_substrate
+
+    with pytest.raises(ValueError, match="max_rows must be positive"):
+        query_substrate("SELECT 1 AS value", max_rows=0)
 
 
 def test_query_substrate_datetime_serialised(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

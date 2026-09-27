@@ -56,6 +56,109 @@ def test_lynchpin_query_dsl_selects_entity(tmp_path: Path, monkeypatch: pytest.M
     assert result["data"]["row_count"] == 0
 
 
+def test_lynchpin_query_dsl_reports_truncation_at_requested_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = setup_substrate(tmp_path, monkeypatch)
+    import duckdb
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE query_fixture (value INTEGER)")
+        conn.execute("INSERT INTO query_fixture VALUES (1), (2), (3)")
+
+    from lynchpin.mcp.tools.public import lynchpin_query
+
+    result = lynchpin_query(
+        {"table": "query_fixture", "select": ["value"], "order_by": "value", "limit": 2}
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["rows"] == [[1], [2]]
+    assert result["data"]["row_count"] == 2
+    assert result["data"]["truncated"] is True
+
+
+@pytest.mark.parametrize(
+    ("mode", "query"),
+    [
+        ("sql", {"sql": "SELECT 1 AS value"}),
+        ("dsl", {"table": "commit_fact", "select": ["sha"], "limit": 2}),
+    ],
+)
+def test_lynchpin_query_surfaces_blocked_materialization_caveat(
+    mode: str,
+    query: dict[str, object],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+
+    def record_blocked(**_kwargs: object) -> dict[str, object]:
+        from lynchpin.mcp.tools._utils import _record_materialization_caveat
+
+        _record_materialization_caveat(
+            {"caller": "query_substrate", "status": "blocked", "reason": "fixture"}
+        )
+        return {"status": "blocked", "reason": "fixture"}
+
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.substrate.ensure_substrate_materialized_for_read",
+        record_blocked,
+    )
+
+    from lynchpin.mcp.tools.public import lynchpin_query
+
+    result = lynchpin_query({"mode": mode, **query})
+
+    assert result["ok"] is True
+    assert result["meta"]["materialization_caveats"] == [
+        {"caller": "query_substrate", "status": "blocked", "reason": "fixture"}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mode", "query"),
+    [
+        ("sql", {"sql": "SELECT 1 AS value"}),
+        ("dsl", {"table": "commit_fact", "select": ["sha"], "limit": 2}),
+    ],
+)
+def test_lynchpin_query_rejects_mismatched_expected_refresh(
+    mode: str,
+    query: dict[str, object],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = setup_substrate(tmp_path, monkeypatch)
+    import duckdb
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO substrate_promotion_run "
+            "(refresh_id, status, started_at, finished_at) VALUES "
+            "('served-generation', 'ok', TIMESTAMPTZ '2026-01-01 00:00:00+00', "
+            "TIMESTAMPTZ '2026-01-01 00:01:00+00')"
+        )
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.substrate.ensure_substrate_materialized_for_read",
+        lambda **_kwargs: {"status": "ready"},
+    )
+
+    from lynchpin.mcp.tools.public import lynchpin_query
+
+    result = lynchpin_query(
+        {"mode": mode, **query, "expected_refresh_id": "different-generation"}
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "refresh_mismatch"
+    assert result["details"] == {
+        "expected_refresh_id": "different-generation",
+        "actual_refresh_id": "served-generation",
+        "serving_kind": "canonical",
+    }
+
+
 def test_lynchpin_project_routes_repo_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     setup_substrate(tmp_path, monkeypatch)
 

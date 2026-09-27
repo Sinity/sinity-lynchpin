@@ -46,6 +46,25 @@ _DISALLOWED_TOKENS = frozenset(
 _MAX_ROWS_HARD_CAP = 10_000
 
 
+class QueryRefreshMismatch(Exception):
+    """Raised when a query requires a different serving generation."""
+
+    def __init__(
+        self,
+        *,
+        expected_refresh_id: str,
+        actual_refresh_id: str | None,
+        serving_kind: str,
+    ) -> None:
+        self.expected_refresh_id = expected_refresh_id
+        self.actual_refresh_id = actual_refresh_id
+        self.serving_kind = serving_kind
+        super().__init__(
+            "serving refresh does not match the requested refresh: "
+            f"expected {expected_refresh_id!r}, got {actual_refresh_id!r}"
+        )
+
+
 def _is_select_only(sql: str) -> bool:
     """Return True if *sql* starts with SELECT or a CTE (WITH … SELECT).
 
@@ -111,6 +130,7 @@ def query_substrate(
     sql: str,
     parameters: list[Any] | None = None,
     max_rows: int = 1000,
+    expected_refresh_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute a read-only SELECT against the lynchpin substrate.
 
@@ -120,6 +140,8 @@ def query_substrate(
 
     The connection is opened with ``read_only=True`` so DuckDB enforces the
     constraint at the engine level in addition to the keyword check.
+    When ``expected_refresh_id`` is set, the query runs only if that ID matches
+    the serving generation selected under the publication lock.
 
     Returns:
         {
@@ -127,6 +149,7 @@ def query_substrate(
             "rows": [[val, ...], ...],
             "row_count": N,
             "truncated": bool,
+            "serving": {"kind": "canonical | read_snapshot", "refresh_id": str | None},
         }
 
     max_rows is capped at 10 000.
@@ -138,6 +161,8 @@ def query_substrate(
             "Only SELECT statements are permitted. "
             "Detected a disallowed keyword or non-SELECT statement."
         )
+    if max_rows < 1:
+        raise ValueError("max_rows must be positive")
 
     effective_max = min(max_rows, _MAX_ROWS_HARD_CAP)
     params = list(parameters) if parameters else []
@@ -148,6 +173,14 @@ def query_substrate(
     path = substrate_path()
     with serving_generation(path) as serving:
         conn = serving.connection
+        refresh_id = latest_materialized_refresh_id(conn, caller="query_substrate")
+        serving_kind = "canonical" if serving.database_path == path else "read_snapshot"
+        if expected_refresh_id is not None and expected_refresh_id != refresh_id:
+            raise QueryRefreshMismatch(
+                expected_refresh_id=expected_refresh_id,
+                actual_refresh_id=refresh_id,
+                serving_kind=serving_kind,
+            )
         result = conn.execute(sql, params)
         columns = [desc[0] for desc in result.description]
         # Fetch one extra row to detect truncation without a separate COUNT query
@@ -161,6 +194,7 @@ def query_substrate(
         "rows": [_json_safe(list(row)) for row in rows],
         "row_count": len(rows),
         "truncated": truncated,
+        "serving": {"kind": serving_kind, "refresh_id": refresh_id},
     }
 
 
