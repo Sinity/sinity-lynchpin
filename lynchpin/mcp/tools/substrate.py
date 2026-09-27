@@ -15,6 +15,7 @@ from lynchpin.substrate.integrity import (
     unavailable_graph_integrity,
 )
 from lynchpin.mcp.tools._utils import (
+    _record_materialization_caveat,
     ensure_substrate_materialized_for_read,
     half_open_date_window,
     pinned_materialization_for_read,
@@ -133,6 +134,8 @@ def query_substrate(
             "truncated": bool,
             "serving": {"kind": "canonical | read_snapshot", "refresh_id": str | None,
                         "publication_id": str | None},
+            "freshness": {"status": str, "reason": str,
+                          "source_high_water": dict, "coverage": dict},
         }
 
     max_rows is capped at 10 000.
@@ -150,7 +153,12 @@ def query_substrate(
     effective_max = min(max_rows, _MAX_ROWS_HARD_CAP)
     params = list(parameters) if parameters else []
 
-    ensure_substrate_materialized_for_read(caller="query_substrate")
+    inspected = ensure_substrate_materialized_for_read(caller="query_substrate")
+    freshness = {
+        key: inspected[key]
+        for key in ("status", "reason", "source_high_water", "coverage")
+        if key in inspected
+    }
     from lynchpin.substrate.connection import serving_generation
 
     path = substrate_path()
@@ -161,6 +169,20 @@ def query_substrate(
         conn.execute("SET autoload_known_extensions = false")
         refresh_id = latest_materialized_refresh_id(conn, caller="query_substrate")
         serving_kind = "canonical" if serving.database_path == path else "read_snapshot"
+        inspected_refresh_id = freshness.get("source_high_water", {}).get("serving_refresh_id")
+        if freshness.get("status") == "ready" and inspected_refresh_id != refresh_id:
+            freshness = {
+                **freshness,
+                "status": "blocked",
+                "reason": "serving refresh changed after freshness inspection",
+            }
+            _record_materialization_caveat({
+                "caller": "query_substrate",
+                "status": "blocked",
+                "reason": freshness["reason"],
+                "inspected_refresh_id": inspected_refresh_id,
+                "served_refresh_id": refresh_id,
+            })
         if expected_refresh_id is not None and expected_refresh_id != refresh_id:
             raise QueryRefreshMismatch(
                 expected_refresh_id=expected_refresh_id,
@@ -187,6 +209,7 @@ def query_substrate(
         "truncated": truncated,
         "serving": {"kind": serving_kind, "refresh_id": refresh_id,
                     "publication_id": serving.publication_id},
+        "freshness": freshness,
     }
 
 

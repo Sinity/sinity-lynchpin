@@ -125,6 +125,8 @@ def ensure_substrate_materialized_for_read(
                 "window": [d.isoformat() for d in window] if window else None,
                 "status": result.status,
                 "reason": result.reason,
+                "source_high_water": result.source_high_water,
+                "coverage": result.coverage,
             }
         )
     payload = result.to_json()

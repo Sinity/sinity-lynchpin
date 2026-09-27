@@ -332,6 +332,81 @@ def test_graph_read_uses_broad_predecessor_with_bounded_tail(monkeypatch) -> Non
     assert requested[1] - plan.tail_start <= timedelta(days=materialization.READ_CONVERGENCE_MAX_DAYS)
 
 
+def test_long_history_graph_catches_up_in_bounded_monotonic_chunks(monkeypatch) -> None:
+    start = date(2011, 1, 30)
+    initial_end = date(2026, 7, 1)
+    requested = (start, date(2026, 9, 1))
+    conn = _graph_fixture_connection(
+        start=start, end=initial_end, input_fingerprint="current"
+    )
+    _patch_serving_generation(monkeypatch, conn)
+    monkeypatch.setattr(materialization, "_substrate_fingerprint", lambda *_args: "current")
+    try:
+        first = materialization.plan_read_convergence(window=requested)
+        assert first.action == "converge"
+        assert first.tail_start == date(2026, 6, 24)
+        assert first.effective_window == (start, date(2026, 7, 25))
+        conn.execute(
+            "INSERT INTO evidence_graph_build "
+            "(refresh_id, start_date, end_date, projects, materialized_at, "
+            "generated_at, input_fingerprint) "
+            "VALUES ('chunk', ?, ?, [], TIMESTAMP '2026-09-02', "
+            "TIMESTAMP '2026-09-02', 'current')",
+            [start, first.effective_window[1]],
+        )
+        conn.execute("INSERT INTO substrate_promotion_run VALUES ('chunk', 'ok')")
+        conn.execute(
+            "INSERT INTO substrate_source_status VALUES "
+            "('chunk', 'evidence_graph', 'ok', TIMESTAMP '2026-09-02')"
+        )
+        second = materialization.plan_read_convergence(window=requested)
+    finally:
+        conn.close()
+    assert second.action == "converge"
+    assert second.tail_start > first.tail_start
+    assert second.effective_window[1] > first.effective_window[1]
+    assert second.effective_window[1] <= requested[1]
+
+
+def test_windowless_query_inspection_reports_stale_serving_input(monkeypatch) -> None:
+    conn = _graph_fixture_connection(
+        start=date(2026, 8, 1), end=date(2026, 9, 1), input_fingerprint="old"
+    )
+    _patch_serving_generation(monkeypatch, conn)
+    monkeypatch.setattr("lynchpin.substrate.connection.generation_refresh_id", lambda _path: "base")
+    monkeypatch.setattr(materialization, "_substrate_fingerprint", lambda *_args: "new")
+    try:
+        plan = materialization.plan_read_convergence(window=None)
+        monkeypatch.setattr(materialization, "_substrate_fingerprint", lambda *_args: "old")
+        current_plan = materialization.plan_read_convergence(window=None)
+    finally:
+        conn.close()
+    assert plan.action == "blocked"
+    assert plan.serving_refresh_id == "base"
+    assert plan.serving_window == (date(2026, 8, 1), date(2026, 9, 1))
+    assert plan.source_fingerprint == "new"
+    assert current_plan.action == "inspect"
+    assert current_plan.serving_refresh_id == "base"
+
+
+def test_partial_graph_catchup_reports_coverage_bound(monkeypatch, tmp_path: Path) -> None:
+    requested = (date(2020, 1, 1), date(2026, 9, 1))
+    plan = materialization.ReadConvergencePlan(
+        "evidence_graph_substrate", requested,
+        (requested[0], date(2026, 7, 25)), "converge", "bounded tail", "current",
+        predecessor_refresh_id="base", tail_start=date(2026, 6, 24),
+    )
+    monkeypatch.setattr(materialization, "plan_read_convergence", lambda **_kwargs: plan)
+    monkeypatch.setattr(materialization, "_execute_substrate_convergence", lambda _plan: "chunk")
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: tmp_path / "substrate.duckdb")
+
+    result = materialization._ensure_substrate_materialized_for_read(window=requested)
+
+    assert result.status == "coverage_bound"
+    assert result.coverage["complete"] is False
+    assert result.coverage["effective_window"]["end"] == "2026-07-25"
+
+
 def test_schema45_graph_read_treats_missing_fingerprint_as_stale(monkeypatch) -> None:
     requested = (date(2026, 9, 6), date(2026, 9, 8))
     conn = _graph_fixture_connection(

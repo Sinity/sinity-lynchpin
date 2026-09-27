@@ -135,6 +135,8 @@ def test_ensure_substrate_materialized_for_read_logs_when_blocked(monkeypatch, c
     class BlockedResult:
         status = "blocked"
         reason = "no transparent materializer is defined for this contract"
+        source_high_water = {"source_fingerprint": "fixture"}
+        coverage = {"requested_window": ["2020-01-01", "2020-01-05"]}
 
         def to_json(self) -> dict[str, object]:
             return {"name": "evidence_graph_substrate", "status": "blocked"}

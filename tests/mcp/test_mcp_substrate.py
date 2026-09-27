@@ -53,6 +53,26 @@ def test_query_substrate_reports_served_generation_when_convergence_is_blocked(
 
     assert result["rows"] == [["served-generation"]]
     assert result["serving"] == {"kind": "canonical", "refresh_id": "served-generation", "publication_id": None}
+    assert result["freshness"] == {"status": "blocked", "reason": "fixture failure"}
+
+
+def test_query_substrate_rejects_freshness_receipt_for_another_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.substrate.ensure_substrate_materialized_for_read",
+        lambda **_kwargs: {
+            "status": "ready",
+            "source_high_water": {"serving_refresh_id": "former-generation"},
+        },
+    )
+    from lynchpin.mcp.tools.substrate import query_substrate
+
+    result = query_substrate("SELECT 1 AS value")
+    assert result["serving"]["refresh_id"] is None
+    assert result["freshness"]["status"] == "blocked"
+    assert "changed after freshness inspection" in result["freshness"]["reason"]
 
 
 def test_query_substrate_identifies_read_snapshot_fallback(

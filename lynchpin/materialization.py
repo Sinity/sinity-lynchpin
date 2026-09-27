@@ -164,7 +164,7 @@ MaterializationStatus = Literal[
     "coverage_bound",
     "manual",
 ]
-MaterializationBudget = Literal["inline", "background", "manual"]
+MaterializationBudget = Literal["inline", "manual"]
 
 # Nested readers may share one recent tail refresh; long-lived MCP processes
 # must observe later input after the same bounded freshness interval.
@@ -289,6 +289,8 @@ class ReadConvergencePlan:
     source_fingerprint: str
     predecessor_refresh_id: str | None = None
     tail_start: date | None = None
+    serving_refresh_id: str | None = None
+    serving_window: tuple[date, date] | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -300,6 +302,8 @@ class ReadConvergencePlan:
             "source_fingerprint": self.source_fingerprint,
             "predecessor_refresh_id": self.predecessor_refresh_id,
             "tail_start": self.tail_start.isoformat() if self.tail_start else None,
+            "serving_refresh_id": self.serving_refresh_id,
+            "serving_window": _window_payload(self.serving_window),
         }
 
 
@@ -312,6 +316,8 @@ def ensure_materialized(
     cfg: LynchpinConfig | None = None,
 ) -> MaterializationResult:
     """Converge a normal read once per bounded freshness and input key."""
+    if budget not in {"inline", "manual"}:
+        raise ValueError(f"unsupported materialization budget: {budget}")
     cfg = cfg or get_config()
     if budget == "manual" or force:
         return _ensure_materialized_once(
@@ -860,17 +866,41 @@ def plan_read_convergence(
         try:
             with serving_generation() as generation:
                 refresh_id = generation_refresh_id(generation.database_path)
+                conn = generation.connection
+                fingerprint = _substrate_fingerprint(conn, cfg)
+                has_fingerprint = conn.execute(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = 'main' AND table_name = 'evidence_graph_build' "
+                    "AND column_name = 'input_fingerprint' LIMIT 1"
+                ).fetchone() is not None
+                fingerprint_column = "input_fingerprint" if has_fingerprint else "NULL"
+                build_row = conn.execute(
+                    "SELECT refresh_id, start_date, end_date, "
+                    f"{fingerprint_column} FROM evidence_graph_build "
+                    "WHERE len(projects) = 0 "
+                    "ORDER BY end_date DESC, materialized_at DESC LIMIT 1"
+                ).fetchone()
         except Exception as exc:
             return ReadConvergencePlan(
                 product, None, None, "blocked", str(exc), "unavailable"
             )
+        serving_window = (build_row[1], build_row[2]) if build_row else None
+        current = bool(
+            build_row and build_row[3] == fingerprint
+            and str(build_row[0]) == refresh_id
+        )
         return ReadConvergencePlan(
             product,
             None,
             None,
-            "inspect",
-            "the serving generation is already the bounded read",
-            refresh_id or "unavailable",
+            "inspect" if current else "blocked",
+            (
+                "serving graph input fingerprint is current"
+                if current else "serving graph input fingerprint or refresh differs from current inputs"
+            ),
+            fingerprint,
+            serving_refresh_id=refresh_id,
+            serving_window=serving_window,
         )
 
     try:
@@ -909,15 +939,6 @@ def plan_read_convergence(
             "unavailable",
         )
     requested_start, requested_end = window
-    if requested_end - requested_start > timedelta(days=READ_CONVERGENCE_MAX_DAYS):
-        return ReadConvergencePlan(
-            product,
-            window,
-            None,
-            "blocked",
-            f"requested window exceeds the {READ_CONVERGENCE_MAX_DAYS}-day read budget",
-            fingerprint,
-        )
     if predecessor is None:
         return ReadConvergencePlan(
             product,
@@ -928,10 +949,21 @@ def plan_read_convergence(
             fingerprint,
         )
     effective_end = max(requested_end, predecessor["end"])
-    tail_start = min(
-        requested_start,
-        predecessor["end"] - timedelta(days=READ_CONVERGENCE_OVERLAP_DAYS),
-    )
+    if requested_end > predecessor["end"]:
+        # A wide maintenance request advances the durable high-water mark in
+        # bounded chunks; the historical base remains the candidate's start.
+        tail_start = max(
+            requested_start,
+            predecessor["end"] - timedelta(days=READ_CONVERGENCE_OVERLAP_DAYS),
+        )
+        effective_end = min(
+            effective_end, tail_start + timedelta(days=READ_CONVERGENCE_MAX_DAYS)
+        )
+    else:
+        tail_start = min(
+            requested_start,
+            predecessor["end"] - timedelta(days=READ_CONVERGENCE_OVERLAP_DAYS),
+        )
     if effective_end - tail_start > timedelta(days=READ_CONVERGENCE_MAX_DAYS):
         return ReadConvergencePlan(
             product,
@@ -1011,8 +1043,10 @@ def _ensure_substrate_materialized_for_read(
             plan.reason,
             _elapsed_ms(started),
             (substrate_path(),),
-            {"source_fingerprint": plan.source_fingerprint},
-            {"requested_window": _window_payload(window), "action": plan.action},
+            {"source_fingerprint": plan.source_fingerprint,
+             "serving_refresh_id": plan.serving_refresh_id},
+            {"requested_window": _window_payload(window), "action": plan.action,
+             "serving_window": _window_payload(plan.serving_window)},
         )
     try:
         refresh_id = _execute_substrate_convergence(plan)
@@ -1028,18 +1062,24 @@ def _ensure_substrate_materialized_for_read(
             {"requested_window": _window_payload(window), "action": plan.action},
             (type(exc).__name__,),
         )
+    assert plan.effective_window is not None
+    complete = window is None or plan.effective_window[1] >= window[1]
     return MaterializationResult(
         plan.product,
-        "updated",
+        "updated" if complete else "coverage_bound",
         True,
-        "bounded substrate tail converged and one generation was published",
+        "bounded substrate tail converged; requested coverage remains incomplete"
+        if not complete
+        else "bounded substrate tail converged and one generation was published",
         _elapsed_ms(started),
         (substrate_path(),),
         {
             "source_fingerprint": plan.source_fingerprint,
             "refresh_id": refresh_id,
         },
-        {"requested_window": _window_payload(window), "action": plan.action},
+        {"requested_window": _window_payload(window), "action": plan.action,
+         "effective_window": _window_payload(plan.effective_window),
+         "complete": complete},
     )
 
 

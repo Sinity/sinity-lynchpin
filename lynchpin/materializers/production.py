@@ -94,7 +94,7 @@ def ensure_materialized(
     name: str,
     *,
     window: tuple[date, date] | None = None,
-    budget: Literal["inline", "background", "manual"] = "inline",
+    budget: Literal["inline", "manual"] = "inline",
     force: bool = False,
     cfg: Any | None = None,
 ) -> "MaterializationResult":
@@ -103,6 +103,9 @@ def ensure_materialized(
     Coverage probes remain in the audit module, while this typed production
     boundary owns the decision and closed-registry execution route.
     """
+
+    if budget not in {"inline", "manual"}:
+        raise ValueError(f"unsupported materialization budget: {budget}")
 
     audit = _audit()
     started = datetime.now(timezone.utc)

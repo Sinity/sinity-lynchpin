@@ -130,6 +130,9 @@ def build_agentctl_plan(*, maintenance_end: date | None = None) -> dict[str, Any
         graph_plan = plan_read_convergence(window=(history_start, history_end))
         if graph_plan.action == "converge" and graph_plan.tail_start is not None:
             promotion_tail_start = graph_plan.tail_start
+            if graph_plan.effective_window is None:
+                raise RuntimeError("substrate maintenance has no effective window")
+            history_end = graph_plan.effective_window[1]
         elif graph_plan.action not in {"skip", "inspect"}:
             raise RuntimeError(f"substrate maintenance is blocked: {graph_plan.reason}")
     promotion_generation = hashlib.sha256(

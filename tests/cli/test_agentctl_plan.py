@@ -99,6 +99,31 @@ def test_agentctl_plan_still_promotes_machine_and_live_sources_when_products_are
     assert plan["nodes"][0]["depends_on"] == []
 
 
+def test_agentctl_plan_uses_bounded_graph_catchup_end(monkeypatch) -> None:
+    from lynchpin import materialization
+    from lynchpin.cli import agentctl_plan, materialize
+
+    start = date(2020, 1, 1)
+    end = date(2026, 9, 1)
+    chunk_end = date(2026, 7, 25)
+    monkeypatch.setattr(agentctl_plan, "plan_materializations", lambda **_kwargs: [])
+    monkeypatch.setattr(materialize, "_all_history_window", lambda: (start, end))
+    monkeypatch.setattr(
+        materialization,
+        "plan_read_convergence",
+        lambda **_kwargs: materialization.ReadConvergencePlan(
+            "evidence_graph_substrate", (start, end), (start, chunk_end),
+            "converge", "bounded catch-up", "fingerprint",
+            predecessor_refresh_id="base", tail_start=date(2026, 6, 24),
+        ),
+    )
+
+    plan = agentctl_plan.build_agentctl_plan(maintenance_end=end)
+    promotion = plan["nodes"][0]
+    assert promotion["parameters"]["end"] == chunk_end.isoformat()
+    assert promotion["parameters"]["tail_start"] == "2026-06-24"
+
+
 def test_agentctl_plan_keeps_unavailable_prerequisites_out_of_execution_dag(
     monkeypatch,
 ) -> None:
