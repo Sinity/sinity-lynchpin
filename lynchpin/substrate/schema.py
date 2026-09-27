@@ -1082,6 +1082,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
         exit_code               INTEGER,
         host                    VARCHAR NOT NULL,
         git_commit              VARCHAR,
+        git_branch              VARCHAR,
         git_dirty               BOOLEAN,
         live_stage              VARCHAR,
         args                    JSON NOT NULL DEFAULT '[]',

@@ -181,7 +181,13 @@ def promote_work_sources(
                 window_end,
                 breakdown,
             )
-        if polylogue_contract_violated:
+        polylogue_rejected = len(polylogue_snapshot.rejected) if polylogue_snapshot is not None else 0
+        if polylogue_rejected:
+            breakdown = (
+                f"{breakdown}, polylogue_verification_rejected={polylogue_rejected} "
+                f"(first: {polylogue_snapshot.rejected[0][1]})"
+            )
+        if polylogue_contract_violated or polylogue_rejected:
             status = "degraded"
             reason = breakdown
         elif not counts["work_observations"]:

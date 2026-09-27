@@ -3454,6 +3454,9 @@ def _polylogue_verification_dataset(_cfg: LynchpinConfig) -> MaterializedDataset
         observations = snapshot.observations
         status = "ready" if observations else "empty"
         reason = f"Polylogue verification lane holds {len(observations)} runs"
+        if snapshot.rejected:
+            status = "degraded"
+            reason = f"{reason}; {len(snapshot.rejected)} rows rejected ({snapshot.rejected[0][1]})"
     observed_dates = tuple(row.started_at.date() for row in observations)
     return MaterializedDataset(
         name=contract.name,

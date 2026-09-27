@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,6 +30,8 @@ WORK_KIND = "polylogue_verification_run"
 RECEIPT_KIND = "polylogue.verification-receipt"
 SUPPORTED_SCHEMA_VERSIONS = frozenset({1})
 PATH_ENV = "POLYLOGUE_VERIFICATION_EVIDENCE_PATH"
+
+_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 _TERMINAL_STATUSES = frozenset({"passed", "failed", "interrupted", "cancelled"})
 
@@ -80,6 +83,7 @@ class PolylogueVerificationObservation:
     host: str
     git_commit: str | None
     git_dirty: bool | None
+    git_branch: str | None
     live_stage: str | None
     args_json: str
     outcome_known: bool | None
@@ -116,6 +120,10 @@ class PolylogueVerificationSnapshot:
     generation: Mapping[str, Any]
     observations: tuple[PolylogueVerificationObservation, ...]
     superseded_rows: int
+    #: Rows that parse as receipts but describe no real run (e.g. a test
+    #: fixture's placeholder commit). They are excluded, never ingested, and
+    #: reported so the source's status can say so.
+    rejected: tuple[tuple[str, str], ...] = ()
 
 
 def verification_lane_path(env: Mapping[str, str] | None = None) -> Path:
@@ -149,6 +157,7 @@ def read_verification_snapshot(path: Path | None = None) -> PolylogueVerificatio
     lines = text.split("\n")
     in_flight = lines.pop()  # "" when the file ends with a newline
     by_run: dict[str, PolylogueVerificationObservation] = {}
+    rejected: list[tuple[str, str]] = []
     rows = 0
     for number, line in enumerate(lines, start=1):
         if not line.strip():
@@ -158,6 +167,10 @@ def read_verification_snapshot(path: Path | None = None) -> PolylogueVerificatio
         except json.JSONDecodeError as error:
             raise PolylogueVerificationContractError(f"{lane}:{number} is not valid JSON") from error
         observation = _observation(payload, location=f"{lane}:{number}", lane=lane)
+        invalid = _invalidity(observation)
+        if invalid is not None:
+            rejected.append((f"{lane}:{number}", invalid))
+            continue
         rows += 1
         by_run[observation.source_id] = observation
     generation = {
@@ -173,7 +186,19 @@ def read_verification_snapshot(path: Path | None = None) -> PolylogueVerificatio
         generation=generation,
         observations=tuple(sorted(by_run.values(), key=lambda row: (row.started_at, row.source_id))),
         superseded_rows=rows - len(by_run),
+        rejected=tuple(rejected),
     )
+
+
+def _invalidity(row: PolylogueVerificationObservation) -> str | None:
+    """Why a well-formed receipt cannot describe a real run, or None."""
+    if row.git_commit is None or not _COMMIT_RE.match(row.git_commit):
+        return f"source_revision {row.git_commit!r} is not a git commit"
+    if row.ended_at is not None and row.ended_at < row.started_at:
+        return "finished_at precedes started_at"
+    if row.duration_s is not None and row.duration_s < 0:
+        return "negative duration"
+    return None
 
 
 def iter_observations(
@@ -268,6 +293,7 @@ def _observation(payload: Any, *, location: str, lane: Path) -> PolylogueVerific
         host="unknown",
         git_commit=_optional_text(payload.get("source_revision")),
         git_dirty=None,
+        git_branch=_optional_text(payload.get("branch")) or _optional_text(payload.get("git_branch")),
         live_stage=semantic_status,
         args_json=_json(args),
         outcome_known=True if terminal else None,

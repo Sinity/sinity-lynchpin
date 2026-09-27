@@ -38,7 +38,7 @@ from lynchpin.substrate.locking import publication_lock
 if TYPE_CHECKING:
     import duckdb
 
-SUBSTRATE_VERSION = 48
+SUBSTRATE_VERSION = 49
 """Current schema contract; incompatible changes rebuild, declared additive changes migrate."""
 
 log = logging.getLogger(__name__)
@@ -1757,7 +1757,7 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
     ).fetchone()
     current = int(row[0]) if row else None
 
-    if current in (43, 44, 45, 46, 47) and SUBSTRATE_VERSION == 48:
+    if current in (43, 44, 45, 46, 47, 48) and SUBSTRATE_VERSION == 49:
         # Additive transitions are idempotent and cumulative: a database at any
         # supported earlier version applies every delta it is missing, so a
         # multi-step upgrade (43 -> 47) never skips a later column.
@@ -1811,6 +1811,11 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS work_observation_project_operation "
             "ON work_observation(project, operation, started_at)"
+        )
+        # 49: the branch a run was made on separates a default-branch run from
+        # a change run. Existing rows keep NULL until their source re-promotes.
+        conn.execute(
+            "ALTER TABLE work_observation ADD COLUMN IF NOT EXISTS git_branch VARCHAR"
         )
         conn.execute(
             "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",

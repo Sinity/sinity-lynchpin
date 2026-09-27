@@ -276,7 +276,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
     """The additive graph-lineage rollout must retain the verified predecessor."""
     from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
 
-    assert SUBSTRATE_VERSION == 48
+    assert SUBSTRATE_VERSION == 49
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
@@ -311,7 +311,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
         ).fetchall() == [("verified", 12, 34, None, None)]
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() == ("48",)
+        ).fetchone() == ("49",)
         migrated_indexes = {
             row[0]
             for row in conn.execute(
@@ -503,7 +503,7 @@ def test_apply_schema_migrates_version_46_work_observation_operation(
     from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
     from lynchpin.substrate.schema import DDL_STATEMENTS
 
-    assert SUBSTRATE_VERSION == 48
+    assert SUBSTRATE_VERSION == 49
     # Reconstruct the pre-47 table shape from the live DDL so the fixture cannot
     # drift away from the real column list.
     create = next(
@@ -543,7 +543,7 @@ def test_apply_schema_migrates_version_46_work_observation_operation(
         ).fetchall() == [("agentctl:9", None)]
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() == ("48",)
+        ).fetchone() == ("49",)
 
 
 def test_migrates_47_dirty_unknown_with_existing_indexes(tmp_path):
@@ -561,3 +561,42 @@ def test_migrates_47_dirty_unknown_with_existing_indexes(tmp_path):
         apply_schema(conn)
         assert conn.execute("SELECT is_nullable, column_default FROM information_schema.columns WHERE table_name='work_observation' AND column_name='git_dirty'").fetchone() == ("YES", None)
         assert set(conn.execute("SELECT index_name FROM duckdb_indexes() WHERE table_name='work_observation'").fetchall()) == {(name,) for name, _ in indexes}
+
+
+def test_apply_schema_migrates_version_48_adds_work_branch(tmp_path: Path) -> None:
+    """Anti-vacuity: drop the 49 ALTER and the migrated row has no git_branch column."""
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        conn.execute(
+            "INSERT INTO work_observation (source, source_id, work_kind, started_at, status, host, refresh_id) "
+            "VALUES ('xtask_history', 'x:1', 'xtask_invocation', TIMESTAMPTZ '2026-09-27 10:00:00+00', 'success', 'h', 'r')"
+        )
+        for (view_name,) in conn.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'VIEW'"
+        ).fetchall():
+            conn.execute(f'DROP VIEW "{view_name}"')
+        indexes = conn.execute(
+            "SELECT index_name, sql FROM duckdb_indexes() WHERE table_name = 'work_observation'"
+        ).fetchall()
+        for index_name, _sql in indexes:
+            conn.execute(f'DROP INDEX "{index_name}"')
+        rows = conn.execute("SELECT * EXCLUDE (git_branch) FROM work_observation").fetchall()
+        columns = [c[0] for c in conn.execute("SELECT * EXCLUDE (git_branch) FROM work_observation LIMIT 0").description]
+        conn.execute("DROP TABLE work_observation")
+        # Recreate the version-48 shape: the current DDL without git_branch.
+        from lynchpin.substrate.schema import DDL_STATEMENTS
+        ddl = next(stmt for stmt in DDL_STATEMENTS if "CREATE TABLE work_observation (" in stmt)
+        conn.execute("\n".join(line for line in ddl.splitlines() if "git_branch" not in line))
+        placeholders = ", ".join("?" for _ in columns)
+        conn.executemany(f"INSERT INTO work_observation ({', '.join(columns)}) VALUES ({placeholders})", rows)
+        for _name, sql in indexes:
+            conn.execute(sql)
+        conn.execute("UPDATE substrate_meta SET value = '48' WHERE key = 'version'")
+
+        apply_schema(conn)
+
+        assert conn.execute("SELECT source_id, git_branch FROM work_observation").fetchall() == [("x:1", None)]
+        assert conn.execute("SELECT value FROM substrate_meta WHERE key = 'version'").fetchone() == ("49",)

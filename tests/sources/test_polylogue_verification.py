@@ -222,6 +222,7 @@ def test_xtask_and_polylogue_runs_share_tier_and_outcome_fields(tmp_path: Path) 
         status="success",
         host="h",
         args_json="[]",
+        git_branch="master",
     )
     xtask_row = XtaskInvocation(**fields)
     lane = _write(tmp_path / "e.jsonl", [_receipt("20260927T100000Z-quick-9-5678")])
@@ -234,10 +235,39 @@ def test_xtask_and_polylogue_runs_share_tier_and_outcome_fields(tmp_path: Path) 
             conn, refresh_id="r", rows=polylogue_rows, delete_existing=False
         )
         rows = conn.execute(
-            "SELECT source, operation, status, outcome_known FROM work_observation ORDER BY source"
+            "SELECT source, operation, status, outcome_known, git_branch FROM work_observation ORDER BY source"
         ).fetchall()
 
     assert rows == [
-        ("polylogue_verification", "quick", "success", True),
-        ("xtask_history", "check", "success", True),
+        ("polylogue_verification", "quick", "success", True, None),
+        ("xtask_history", "check", "success", True, "master"),
     ]
+
+
+def test_receipt_describing_no_real_run_is_rejected_not_ingested(tmp_path: Path) -> None:
+    """Anti-vacuity: remove _invalidity and the placeholder-commit row is ingested."""
+    from lynchpin import materialization
+
+    lane = Path(verification_lane_path())
+    _write(
+        lane,
+        [
+            _receipt("20260927T100000Z-quick-10-aaaa"),
+            _receipt("20260927T100100Z-focused-test-11-bbbb", source_revision="abc123"),
+        ],
+    )
+
+    snapshot = read_verification_snapshot(lane)
+    row = materialization._polylogue_verification_dataset(SimpleNamespace())
+
+    assert [o.source_id for o in snapshot.observations] == ["polylogue-verification:20260927T100000Z-quick-10-aaaa"]
+    assert len(snapshot.rejected) == 1 and "not a git commit" in snapshot.rejected[0][1]
+    assert row.status == "degraded"
+
+
+def test_branch_is_carried_when_the_receipt_records_it(tmp_path: Path) -> None:
+    lane = _write(tmp_path / "e.jsonl", [_receipt("20260927T100000Z-quick-12-cccc", branch="claude/x")])
+
+    (row,) = read_verification_snapshot(lane).observations
+
+    assert row.git_branch == "claude/x"
