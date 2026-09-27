@@ -70,7 +70,11 @@ def build_context(
             if isinstance(row, dict) and isinstance(row.get("revision"), str)
         )
     jobs = _compact_job_details(
-        _agentctl_jobs(owner_id, selected_revisions=selected_revisions),
+        _agentctl_jobs(
+            owner_id,
+            selected_revisions=selected_revisions,
+            selected_workspace=str(repo.resolve()),
+        ),
         package_dir,
         revision,
     )
@@ -658,7 +662,10 @@ def _read_agentctl_snapshot() -> Any:
 
 
 def _agentctl_jobs(
-    project: str, *, selected_revisions: set[str] | None = None
+    project: str,
+    *,
+    selected_revisions: set[str] | None = None,
+    selected_workspace: str | None = None,
 ) -> dict[str, Any]:
     observed_at = datetime.now(timezone.utc).isoformat()
     from .chisel_options import active_options
@@ -702,14 +709,32 @@ def _agentctl_jobs(
             candidates.append((row, reference))
     # Detail reads are intentionally bounded; the lifecycle list remains complete.
     revisions = selected_revisions or set()
-    selected = sorted(
+    ranked = sorted(
         candidates,
-        key=lambda pair: (
-            pair[0].git_commit in revisions if pair[0].git_commit else False,
-            pair[0].started_at or datetime.min.replace(tzinfo=timezone.utc),
-        ),
+        key=lambda pair: pair[0].started_at or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
-    )[:24]
+    )
+    workspaces = getattr(snapshot, "workspace_paths", {})
+    revision_matches = [pair for pair in ranked if pair[0].git_commit in revisions]
+    workspace_matches = [
+        pair for pair in ranked
+        if selected_workspace and workspaces.get(pair[0].source_id) == selected_workspace
+    ]
+    selected: list[tuple[Any, str]] = []
+    reasons: dict[str, str] = {}
+    for group, reason, cap in (
+        (revision_matches, "matching_revision_hint", 24),
+        (workspace_matches, "captured_checkout_workspace", 8),
+        (ranked, "recent_fallback", 24),
+    ):
+        for pair in group:
+            source_id = pair[0].source_id
+            if source_id in reasons:
+                continue
+            if sum(value == reason for value in reasons.values()) >= cap or len(selected) >= 24:
+                break
+            selected.append(pair)
+            reasons[source_id] = reason
     details = []
     detail_errors = 0
     for row, reference in selected:
@@ -717,19 +742,23 @@ def _agentctl_jobs(
         if detail is None:
             detail_errors += 1
         else:
+            detail["selection_reason"] = reasons[row.source_id]
             details.append(detail)
     return {
         "coverage": "all_retained_jobs",
         "observed_at": observed_at,
         "records": records,
         "details": details,
-        "detail_coverage": {"selection": "Matching captured revision hints first, then most recent retained terminal test/verify/check/benchmark/qualification jobs with launch references in context window; maximum 24",
+        "detail_coverage": {"selection": "Matching captured revision hints first, up to 8 exact captured-checkout workspace matches, then recent terminal test/verify/check/benchmark/qualification jobs with launch references in context window; maximum 24",
                             "window_days": window_days, "window_start": cutoff.isoformat(),
                             "eligible_count": len(candidates), "selected_count": len(selected),
                             "captured_count": len(details), "failed_count": detail_errors,
                             "eligible_revision_hints": sum(row.git_commit in revisions for row, _ in candidates if row.git_commit),
                             "selected_revision_hints": sum(row.git_commit in revisions for row, _ in selected if row.git_commit),
                             "revision_hint_availability": "available" if any(row.git_commit for row, _ in candidates) else "unavailable_in_job_list",
+                            "eligible_workspace_hints": len(workspace_matches),
+                            "selected_by_reason": {reason: sum(value == reason for value in reasons.values())
+                                                   for reason in ("matching_revision_hint", "captured_checkout_workspace", "recent_fallback")},
                             "capped": len(candidates) > len(selected)},
         "gaps": list(snapshot.caveats)
         + [

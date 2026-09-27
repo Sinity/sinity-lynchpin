@@ -297,6 +297,42 @@ def test_job_detail_selection_prioritizes_captured_revision_hints(monkeypatch):
     assert jobs["detail_coverage"]["capped"] is True
 
 
+def test_job_detail_selection_reserves_exact_checkout_workspaces(monkeypatch):
+    now = datetime.now(timezone.utc)
+    rows = tuple(
+        SimpleNamespace(
+            project="polylogue", source_id=f"agentctl:{index}",
+            operation="check", command=(), started_at=now - timedelta(minutes=index),
+            ended_at=now, duration_s=1.0, status="succeeded", exit_code=0,
+            outcome_known=True, git_commit=None, git_dirty=None, caveats_json="[]",
+        )
+        for index in range(30)
+    )
+    snapshot = SimpleNamespace(
+        observations=rows, caveats=(),
+        detail_references={row.source_id: f"ref-{index}" for index, row in enumerate(rows)},
+        workspace_paths={row.source_id: "/captured" for row in rows[24:]},
+    )
+    monkeypatch.setattr(chisel_context, "_read_agentctl_snapshot", lambda: snapshot)
+    monkeypatch.setattr(
+        chisel_context, "_agentctl_job_detail",
+        lambda row, reference: {"source_id": row.source_id, "reference": reference},
+    )
+    jobs = chisel_context._agentctl_jobs(
+        "polylogue", selected_workspace="/captured"
+    )
+    assert len(jobs["details"]) == 24
+    assert {row["source_id"] for row in jobs["details"][:6]} == {
+        f"agentctl:{index}" for index in range(24, 30)
+    }
+    assert jobs["detail_coverage"]["selected_by_reason"] == {
+        "matching_revision_hint": 0,
+        "captured_checkout_workspace": 6,
+        "recent_fallback": 18,
+    }
+    assert all("workspace" not in row for row in jobs["details"])
+
+
 def test_job_content_manifests_are_deduplicated_and_unrelated_details_summarized(tmp_path):
     manifest = {"schema_version": 1, "sha256": "contents", "coverage": "complete_declared_scope",
                 "scope": "captured inputs", "files": [{"path": "a.py", "sha256": "abc"}], "omissions": []}

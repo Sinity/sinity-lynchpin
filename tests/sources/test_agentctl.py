@@ -37,6 +37,7 @@ def test_agentctl_native_adapter_projects_only_public_observation_fields() -> No
 
     assert snapshot.contract_schema == 4
     assert snapshot.detail_references[row.source_id] == "private-reference"
+    assert snapshot.workspace_paths[row.source_id] == "/private/worktree"
     assert row.source_id == "agentctl:111"
     assert row.project == "lynchpin"
     assert row.operation == "check"

@@ -112,6 +112,7 @@ class AgentctlObservationSnapshot:
     observations: tuple[AgentctlJobObservation, ...]
     caveats: tuple[str, ...]
     detail_references: Mapping[str, str]
+    workspace_paths: Mapping[str, str]
 
 
 def read_observation_snapshot(
@@ -135,6 +136,7 @@ def read_observation_snapshot(
     ]
     observations: list[AgentctlJobObservation] = []
     detail_references: dict[str, str] = {}
+    workspace_paths: dict[str, str] = {}
     for job in rows:
         if not isinstance(job, Mapping):
             raise AgentctlObservationContractError("agentctl job.list contains an invalid job record")
@@ -143,12 +145,16 @@ def read_observation_snapshot(
         reference = _optional_text(job.get("reference"))
         if reference:
             detail_references[observation.source_id] = reference
+        workspace = _optional_text(job.get("path"))
+        if workspace:
+            workspace_paths[observation.source_id] = workspace
     return AgentctlObservationSnapshot(
         contract_schema=CONTRACT_SCHEMA,
         generation=generation,
         observations=tuple(observations),
         caveats=tuple(caveats),
         detail_references=detail_references,
+        workspace_paths=workspace_paths,
     )
 
 
