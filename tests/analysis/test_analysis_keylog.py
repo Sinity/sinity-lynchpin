@@ -399,6 +399,55 @@ def test_keylog_day_counter_cache_ignores_a_different_chord_window(tmp_path) -> 
     assert keylog_analysis._load_day_counter_cache(cache, 900) == {}
 
 
+def test_keylog_day_counter_cache_scans_disjoint_stale_ranges_separately(
+    tmp_path, monkeypatch
+) -> None:
+    start, end = date(2026, 6, 1), date(2026, 6, 10)
+    days = keylog_analysis._date_range(start, end)
+    cache = tmp_path / "counters.json"
+    keylog_analysis._save_day_counter_cache(
+        cache,
+        1500,
+        {
+            day: (
+                f"old-{day.isoformat()}",
+                keylog_analysis._DayCounters(source_event_count=day.day),
+            )
+            for day in days
+        },
+    )
+    stale = {date(2026, 6, 2), date(2026, 6, 9)}
+    monkeypatch.setattr(
+        keylog_analysis,
+        "_day_input_signature",
+        lambda day, _bindings: (
+            f"new-{day.isoformat()}" if day in stale else f"old-{day.isoformat()}"
+        ),
+    )
+    scans: list[tuple[date, date]] = []
+
+    def scan(*, start, end, **_kwargs):
+        scans.append((start, end))
+        return {
+            day: keylog_analysis._DayCounters(source_event_count=100 + day.day)
+            for day in keylog_analysis._date_range(start, end)
+        }
+
+    monkeypatch.setattr(keylog_analysis, "_scan_day_counters", scan)
+
+    counters = keylog_analysis._windowed_day_counters(
+        start=start, end=end, bindings_path=tmp_path / "bindings", by_chord={},
+        chord_window_ms=1500, cache_path=cache,
+    )
+
+    assert scans == [
+        (date(2026, 6, 2), date(2026, 6, 2)),
+        (date(2026, 6, 9), date(2026, 6, 9)),
+    ]
+    assert counters[date(2026, 6, 5)].source_event_count == 5
+    assert counters[date(2026, 6, 9)].source_event_count == 109
+
+
 def test_analysis_input_files_exclude_the_still_open_capture_day(tmp_path, monkeypatch) -> None:
     logs = tmp_path / "logs"
     logs.mkdir()

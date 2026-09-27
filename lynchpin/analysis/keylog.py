@@ -836,14 +836,21 @@ def _windowed_day_counters(
 
     counters = {day: cached[day][1] for day in days if day not in stale}
     if stale:
-        # One streaming pass over the contiguous stale span: the reader pays per
-        # file, so scanning a range once beats scanning each day separately.
-        scanned = _scan_day_counters(
-            start=min(stale), end=max(stale), by_chord=by_chord, chord_window_ms=chord_window_ms
-        )
-        for day in days:
-            if min(stale) <= day <= max(stale):
-                counters[day] = scanned.get(day, _DayCounters())
+        # Scan adjacent stale days together without reparsing cached days
+        # between separate changes. A single min/max span can be years long.
+        group_start = group_end = stale[0]
+        for day in (*stale[1:], None):
+            if day is not None and day == group_end + timedelta(days=1):
+                group_end = day
+                continue
+            scanned = _scan_day_counters(
+                start=group_start, end=group_end, by_chord=by_chord,
+                chord_window_ms=chord_window_ms,
+            )
+            for affected in _date_range(group_start, group_end):
+                counters[affected] = scanned.get(affected, _DayCounters())
+            if day is not None:
+                group_start = group_end = day
         _save_day_counter_cache(
             cache_path,
             chord_window_ms,

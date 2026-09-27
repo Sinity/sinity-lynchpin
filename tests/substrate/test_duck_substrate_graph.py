@@ -1031,16 +1031,15 @@ def test_finalize_graph_writes_to_substrate(
     assert loaded.start == date(2026, 5, 1)
 
 
-def test_finalize_graph_substrate_write_fails_silently(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_finalize_graph_write_failure_rejects_candidate_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """_finalize_graph returns a valid graph even when the substrate write fails."""
-    # Point substrate to an unwriteable location.
-    unwriteable = tmp_path / "no_such_dir" / "substrate.duckdb"
-    # Override substrate_path to return the unwriteable path.
+    """A failed graph write cannot publish an unverified candidate."""
     import lynchpin.substrate.connection as duck_conn
+    import lynchpin.substrate as substrate
+    from lynchpin.substrate.connection import bootstrap_candidate_generation
 
-    monkeypatch.setattr(duck_conn, "substrate_path", lambda: unwriteable)
+    monkeypatch.setattr(duck_conn, "substrate_path", lambda: tmp_path / "substrate.duckdb")
 
     from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
     from lynchpin.graph.evidence_graph import _finalize_graph
@@ -1056,16 +1055,23 @@ def test_finalize_graph_substrate_write_fails_silently(
         ),
     ]
 
-    # Must not raise — best-effort write, errors are logged not raised.
-    result = _finalize_graph(
-        nodes=nodes,
-        edges=[],
-        start=date(2026, 5, 1),
-        end=date(2026, 5, 1),
-        mode="materialized",  # type: ignore[arg-type]
-        generated_at=_dt(2026, 5, 1, 12),
-        promote=True,
-    )
+    with pytest.raises(RuntimeError, match="candidate has no verified promoted generation"):
+        with bootstrap_candidate_generation():
+            def fail_connect():
+                raise OSError("synthetic candidate write failure")
+
+            monkeypatch.setattr(substrate, "connect", fail_connect)
+            result = _finalize_graph(
+                nodes=nodes,
+                edges=[],
+                start=date(2026, 5, 1),
+                end=date(2026, 5, 1),
+                mode="materialized",  # type: ignore[arg-type]
+                generated_at=_dt(2026, 5, 1, 12),
+                promote=True,
+            )
 
     assert isinstance(result, EvidenceGraph)
     assert len(result.nodes) >= 1
+    assert "Failed to promote evidence graph to substrate: synthetic candidate write failure" in caplog.text
+    assert not (tmp_path / "substrate.duckdb").exists()
