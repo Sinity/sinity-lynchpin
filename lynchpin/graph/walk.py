@@ -50,9 +50,9 @@ class WalkStep:
 class WalkResult:
     """Output of a single `walk_evidence` invocation.
 
-    `truncated` is True iff the walk hit the depth or node cap; `reason`
-    names which cap fired. Edges returned are those traversed at least
-    once, deduplicated.
+    `truncated` is True iff a reachable node was omitted by the depth or
+    node cap; `reason` names which cap fired. Edges returned are those
+    traversed at least once, deduplicated.
     """
 
     start_id: str
@@ -83,7 +83,8 @@ def walk_evidence(
     """Breadth-first walk over the evidence graph from `start_id`.
 
     Caps are clamped: `max_depth` to `_HARD_DEPTH_CAP` (5), `max_nodes`
-    to `_HARD_NODE_CAP` (1000). Cycle-safe via visited set.
+    to the inclusive range 1–_HARD_NODE_CAP (1000). The start node counts
+    against the node budget. Cycle-safe via visited set.
 
     Direction semantics:
         - "out":  follow source_id == current → target_id
@@ -96,7 +97,7 @@ def walk_evidence(
     output, not pruning).
     """
     max_depth = min(max_depth, _HARD_DEPTH_CAP)
-    max_nodes = min(max_nodes, _HARD_NODE_CAP)
+    max_nodes = max(1, min(max_nodes, _HARD_NODE_CAP))
     allowed_kinds = set(edge_kinds) if edge_kinds is not None else None
 
     node_index = graph.node_map()
@@ -128,9 +129,6 @@ def walk_evidence(
 
     while queue:
         current_id, depth = queue.popleft()
-        if depth >= max_depth:
-            continue
-
         neighbors: list[tuple[EvidenceEdge, str, Direction]] = []
         if direction in ("out", "both"):
             for edge in out_adj.get(current_id, ()):
@@ -138,6 +136,16 @@ def walk_evidence(
         if direction in ("in", "both"):
             for edge in in_adj.get(current_id, ()):
                 neighbors.append((edge, edge.source_id, "in"))
+
+        if depth >= max_depth:
+            if any(
+                neighbor_id not in visited and neighbor_id in node_index
+                for _edge, neighbor_id, _walked_dir in neighbors
+            ):
+                truncated = True
+                reason = f"max_depth cap ({max_depth}) reached"
+                break
+            continue
 
         for edge, neighbor_id, walked_dir in neighbors:
             edge_key = (edge.source_id, edge.target_id, edge.relation)
@@ -149,6 +157,10 @@ def walk_evidence(
                 continue
             if neighbor_id not in node_index:
                 continue
+            if len(visited) >= max_nodes:
+                truncated = True
+                reason = f"max_nodes cap ({max_nodes}) reached"
+                break
 
             visited.add(neighbor_id)
             steps.append(
@@ -159,20 +171,10 @@ def walk_evidence(
                     direction_followed=walked_dir,
                 )
             )
-            if len(visited) >= max_nodes:
-                truncated = True
-                reason = f"max_nodes cap ({max_nodes}) reached"
-                break
             queue.append((neighbor_id, depth + 1))
 
         if truncated:
             break
-
-    if not truncated and any(step.depth == max_depth for step in steps):
-        # We surfaced nodes AT the depth cap but didn't recurse from them;
-        # callers may want to know there's more reachable graph beyond.
-        truncated = True
-        reason = f"max_depth cap ({max_depth}) reached"
 
     if node_predicate is not None:
         steps = [step for step in steps if step.depth == 0 or node_predicate(step.node)]

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from pathlib import Path
 
 import duckdb
 import pytest
 
+from lynchpin.core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
 from tests.mcp.conftest import setup_substrate
 
 
@@ -213,3 +215,45 @@ def test_walk_evidence_pinned_refresh_id_does_not_materialize(monkeypatch: pytes
 
     assert result["reason"] == "evidence_graph build 'pinned' not found"
     assert result["materialization"]["status"] == "pinned"
+
+
+def test_walk_evidence_view_honors_inclusive_node_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    graph = EvidenceGraph(
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 31),
+        generated_at=datetime(2026, 5, 25, 12, 0, 0),
+        nodes=(
+            EvidenceNode(
+                id="a", kind="commit", source="test", date=date(2026, 5, 25),
+                project="p", summary="a",
+            ),
+            EvidenceNode(
+                id="b", kind="commit", source="test", date=date(2026, 5, 25),
+                project="p", summary="b",
+            ),
+        ),
+        edges=(EvidenceEdge(source_id="a", target_id="b", relation="references", evidence="a->b"),),
+    )
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.views.pinned_materialization_for_read",
+        lambda **_kwargs: {"status": "pinned"},
+    )
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
+    monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Conn())
+    monkeypatch.setattr("lynchpin.substrate.graph.load_evidence_graph", lambda *_args, **_kwargs: graph)
+
+    from lynchpin.mcp.tools.views import walk_evidence
+
+    result = walk_evidence("a", refresh_id="fixture-refresh", max_nodes=1)
+
+    assert [node["id"] for node in result["nodes"]] == ["a"]
+    assert result["max_nodes"] == 1
+    assert result["truncated"] is True

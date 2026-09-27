@@ -99,6 +99,92 @@ def test_walk_max_nodes_cap_short_circuits() -> None:
     assert "max_nodes" in (result.reason or "")
 
 
+def test_walk_counts_start_node_against_positive_budget() -> None:
+    graph = _graph([_node("a"), _node("b")], [_edge("a", "b")])
+
+    result = walk_evidence(graph, "a", max_nodes=1)
+
+    assert [step.node.id for step in result.steps] == ["a"]
+    assert result.max_nodes == 1
+    assert result.truncated is True
+    assert "max_nodes" in (result.reason or "")
+
+
+def test_walk_singleton_fits_one_node_budget() -> None:
+    result = walk_evidence(_graph([_node("a")], []), "a", max_nodes=1)
+
+    assert [step.node.id for step in result.steps] == ["a"]
+    assert result.truncated is False
+    assert result.reason is None
+
+
+def test_walk_clamps_zero_node_budget_to_start_node() -> None:
+    graph = _graph([_node("a"), _node("b")], [_edge("a", "b")])
+
+    result = walk_evidence(graph, "a", max_nodes=0)
+
+    assert [step.node.id for step in result.steps] == ["a"]
+    assert result.max_nodes == 1
+    assert result.truncated is True
+
+
+def test_walk_exact_node_budget_is_not_truncated() -> None:
+    graph = _graph([_node("a"), _node("b")], [_edge("a", "b")])
+
+    result = walk_evidence(graph, "a", max_nodes=2)
+
+    assert [step.node.id for step in result.steps] == ["a", "b"]
+    assert result.truncated is False
+    assert result.reason is None
+
+
+def test_walk_node_budget_cycle_is_not_truncated() -> None:
+    graph = _graph(
+        [_node("a"), _node("b")],
+        [_edge("a", "b"), _edge("b", "a")],
+    )
+
+    result = walk_evidence(graph, "a", max_nodes=2)
+
+    assert [step.node.id for step in result.steps] == ["a", "b"]
+    assert result.truncated is False
+    assert result.reason is None
+
+
+def test_walk_node_budget_reports_omitted_reachable_node() -> None:
+    graph = _graph(
+        [_node("a"), _node("b"), _node("c")],
+        [_edge("a", "b"), _edge("b", "c")],
+    )
+
+    result = walk_evidence(graph, "a", max_nodes=2)
+
+    assert [step.node.id for step in result.steps] == ["a", "b"]
+    assert result.truncated is True
+    assert "max_nodes" in (result.reason or "")
+
+
+def test_walk_depth_boundary_is_not_truncated_without_omitted_nodes() -> None:
+    graph = _graph([_node("a"), _node("b")], [_edge("a", "b")])
+
+    result = walk_evidence(graph, "a", max_depth=1)
+
+    assert [step.node.id for step in result.steps] == ["a", "b"]
+    assert result.truncated is False
+
+
+def test_walk_depth_boundary_cycle_is_not_truncated() -> None:
+    graph = _graph(
+        [_node("a"), _node("b")],
+        [_edge("a", "b"), _edge("b", "a")],
+    )
+
+    result = walk_evidence(graph, "a", max_depth=1)
+
+    assert [step.node.id for step in result.steps] == ["a", "b"]
+    assert result.truncated is False
+
+
 def test_walk_direction_in_follows_reverse_edges() -> None:
     nodes = [_node(c) for c in "abcd"]
     # a -> b -> c, and d -> c (separate inbound to c)

@@ -602,7 +602,7 @@ def walk_evidence(
 ) -> dict[str, Any]:
     """Generic BFS walk over the evidence graph from a starting node.
 
-    Cycle-safe, bidirectional, hard-capped (depth ≤ 5, nodes ≤ 1000).
+    Cycle-safe, bidirectional, hard-capped (depth ≤ 5, nodes 1–1000).
     Replaces the need for raw SQL exploration of evidence_edge for
     "what's connected to X?" questions.
 
@@ -610,14 +610,15 @@ def walk_evidence(
         start_id:    evidence_node.id to start from.
         edge_kinds:  filter edges by relation. None = all.
         max_depth:   BFS depth limit (clamped to 5).
-        max_nodes:   total node visit cap (clamped to 1000).
+        max_nodes:   total node visit cap (clamped to 1–1000, including start).
         direction:   "out", "in", or "both".
         refresh_id:  substrate snapshot. Defaults to latest evidence_graph build.
 
     Returns:
         {
             "start_id", "direction", "edge_kinds", "max_depth", "max_nodes",
-            "truncated": bool, "reason": str | None,
+            "truncated": whether the depth/node cap omitted reachable nodes,
+            "reason": str | None,
             "nodes": [{"id", "kind", "source", "date", "project", "summary",
                        "depth", "parent_edge_source", "parent_edge_target",
                        "parent_edge_relation", "direction_followed"}, ...],
