@@ -227,10 +227,52 @@ def test_candidate_report_keeps_unbound_lifecycle_records_out_of_snapshot_rows(t
     assert coverage["unbound_native_records"] == 1
     assert coverage["lifecycle_observations_kept_separate"] == 1
     assert coverage["bound_detailed_jobs"] == 1
+    assert coverage["unbound_detail_reasons"] == {"complete_content_scope_unavailable": 1}
     report = json.loads((tmp_path / "reports/coverage.json").read_text())
     assert report["dataset_coverage"]["verification/records.jsonl"] == {
         "status": "available", "records": len(records),
     }
+
+
+def test_candidate_report_explains_same_revision_content_gaps(tmp_path):
+    from lynchpin.analysis.projects.chisel_reports import build_reports
+    from lynchpin.sources.chisel_browse import query_records
+
+    (tmp_path / "capture.json").write_text(json.dumps({"snapshot_id": "primary-id", "revision": "commit"}))
+    (tmp_path / "source").mkdir()
+    (tmp_path / "inventory.jsonl").write_text(json.dumps({
+        "path": "a.py", "included": True, "sha256": "abc", "mode": 420,
+    }) + "\n")
+    verification = tmp_path / "verification"
+    verification.mkdir()
+    def detail(name, files, coverage="complete_declared_scope"):
+        manifest = {"files": files, "sha256": name, "coverage": coverage}
+        return {"kind": "agentctl_job_execution", "reference": name,
+                "execution_receipt": {"start": {"head": "commit", "dirty": True,
+                                                 "content_manifest": manifest},
+                                      "end": {"head": "commit", "dirty": True,
+                                               "content_manifest": manifest}}}
+    records = [
+        detail("changed", [{"path": "a.py", "kind": "file", "sha256": "different", "mode": 420}]),
+        detail("missing", [{"path": "a.py", "kind": "file", "sha256": "abc", "mode": 420},
+                           {"path": "b.py", "kind": "file", "sha256": "extra", "mode": 420}]),
+        detail("partial", [{"path": "a.py", "kind": "file", "sha256": "abc", "mode": 420}],
+               coverage="partial"),
+    ]
+    (verification / "records.jsonl").write_text("".join(json.dumps(row) + "\n" for row in records))
+
+    build_reports(tmp_path, project="fixture", task_roots=[])
+    response = query_records(tmp_path, "candidate-evidence", None, 10, 0)
+    assert response["rows"] == []
+    coverage = response["evidence_coverage"]
+    assert coverage["unbound_detail_reasons"] == {
+        "complete_content_scope_unavailable": 1,
+        "endpoint_content_mismatch": 1,
+        "owner_paths_absent_from_capture": 1,
+    }
+    examples = {row["evidence_id"]: row for row in coverage["unbound_detail_examples"]}
+    assert examples["changed"]["mismatched_path_count"] == 1
+    assert examples["missing"]["uncaptured_owner_path_count"] == 1
 
 
 def test_candidate_report_distinguishes_missing_and_empty_evidence_datasets(tmp_path):

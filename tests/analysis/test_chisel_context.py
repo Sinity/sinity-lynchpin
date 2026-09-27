@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from lynchpin.sources import chisel, chisel_context
@@ -149,7 +149,7 @@ def test_context_preserves_missing_dates_and_marks_stale_dirty_evidence(
     monkeypatch.setattr(
         chisel_context,
         "_agentctl_jobs",
-        lambda project: {
+        lambda project, **_kwargs: {
             "coverage": "all_retained_jobs",
             "observed_at": "2026-01-01T00:00:00+00:00",
             "records": [
@@ -266,6 +266,35 @@ def test_agentctl_job_detail_requires_matching_launch_reference(monkeypatch):
     monkeypatch.setattr(chisel_context.subprocess, "run", run)
     assert chisel_context._agentctl_job_detail(row, "expected-launch") is None
     assert calls[0] == ["agentctl", "job", "get", "12", "--reference", "expected-launch", "--json"]
+
+
+def test_job_detail_selection_prioritizes_captured_revision_hints(monkeypatch):
+    now = datetime.now(timezone.utc)
+    rows = tuple(
+        SimpleNamespace(
+            project="polylogue", source_id=f"agentctl:{index}",
+            operation="check", command=(), started_at=now - timedelta(minutes=index),
+            ended_at=now, duration_s=1.0, status="succeeded", exit_code=0,
+            outcome_known=True, git_commit="captured" if index == 25 else None,
+            git_dirty=None, caveats_json="[]",
+        )
+        for index in range(26)
+    )
+    snapshot = SimpleNamespace(
+        observations=rows, caveats=(),
+        detail_references={row.source_id: f"ref-{index}" for index, row in enumerate(rows)},
+    )
+    monkeypatch.setattr(chisel_context, "_read_agentctl_snapshot", lambda: snapshot)
+    monkeypatch.setattr(
+        chisel_context, "_agentctl_job_detail",
+        lambda row, reference: {"source_id": row.source_id, "reference": reference},
+    )
+    jobs = chisel_context._agentctl_jobs("polylogue", selected_revisions={"captured"})
+    assert len(jobs["details"]) == 24
+    assert jobs["details"][0]["source_id"] == "agentctl:25"
+    assert jobs["detail_coverage"]["eligible_revision_hints"] == 1
+    assert jobs["detail_coverage"]["selected_revision_hints"] == 1
+    assert jobs["detail_coverage"]["capped"] is True
 
 
 def test_job_content_manifests_are_deduplicated_and_unrelated_details_summarized(tmp_path):

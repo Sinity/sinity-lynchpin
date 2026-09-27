@@ -333,6 +333,10 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
     owner_jobs = package / "owners/jobs.json"
     execution_details = (json.loads(owner_jobs.read_text()).get("details") or []) if owner_jobs.is_file() else [
         r for r in verification if r.get("kind") == "agentctl_job_execution"]
+    owner_detail_coverage = (
+        json.loads(owner_jobs.read_text()).get("detail_coverage")
+        if owner_jobs.is_file() else None
+    )
     for selected in catalogue["snapshots"]:
         selected_id = selected.get("snapshot_id")
         selected_revision = selected.get("revision")
@@ -404,6 +408,47 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
                               "ended_at": detail.get("ended_at")},
                 "interpretation": "Owner job execution is associated by endpoint content; its result is not acceptance, and endpoints do not attest to an immutable execution interval.",
             })
+    bound_details = {
+        row["evidence_id"] for row in candidates
+        if row.get("evidence_kind") == "agentctl_job_execution"
+    }
+    unbound_details = []
+    for detail in execution_details:
+        evidence_id = detail.get("reference") or detail.get("source_id")
+        if evidence_id in bound_details:
+            continue
+        receipt = detail.get("execution_receipt") or {}
+        start, end = receipt.get("start") or {}, receipt.get("end") or {}
+        if not isinstance(start, dict) or not isinstance(end, dict) or not start or not end:
+            reason = "execution_endpoints_unavailable"
+            comparisons = []
+        else:
+            matching = [selected for selected in catalogue["snapshots"]
+                        if selected.get("snapshot_id") in by_snapshot
+                        and selected.get("revision") == start.get("head") == end.get("head")]
+            comparisons = [content_match(by_snapshot[selected["snapshot_id"]],
+                                         _owner_receipt(package, receipt)) for selected in matching]
+            if not matching:
+                reason = "captured_revision_mismatch"
+            elif any(row.get("mismatched_paths") for row in comparisons):
+                reason = "endpoint_content_mismatch"
+            elif any(row.get("uncaptured_owner_paths") for row in comparisons):
+                reason = "owner_paths_absent_from_capture"
+            elif any(row.get("owner_endpoints_same") is False for row in comparisons):
+                reason = "execution_endpoints_changed"
+            elif all(row.get("complete_scope_match") is None for row in comparisons):
+                reason = "complete_content_scope_unavailable"
+            else:
+                reason = "candidate_binding_unestablished"
+        unbound_details.append({
+            "evidence_id": evidence_id,
+            "reason": reason,
+            "observed_head": start.get("head") if isinstance(start, dict) else None,
+            "mismatched_path_count": max((len(row.get("mismatched_paths", [])) for row in comparisons), default=0),
+            "uncaptured_owner_path_count": max((len(row.get("uncaptured_owner_paths", [])) for row in comparisons), default=0),
+        })
+    unbound_reasons = {reason: sum(row["reason"] == reason for row in unbound_details)
+                       for reason in sorted({row["reason"] for row in unbound_details})}
     activation_path = package / "verification/activation.json"
     if activation_path.exists():
         activation = json.loads(activation_path.read_text())
@@ -443,6 +488,9 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
             ) else None,
             "bound_detailed_jobs": sum(r.get("evidence_kind") == "agentctl_job_execution" for r in candidates)
             if (owner_jobs.is_file() or (package / "verification/records.jsonl").is_file()) else None,
+            "owner_detail_selection": owner_detail_coverage,
+            "unbound_detail_reasons": unbound_reasons,
+            "unbound_detail_examples": unbound_details[:24],
             "unbound_native_records": len(native_records) - len({
                 r["evidence_id"] for r in candidates
                 if r.get("evidence_kind") != "agentctl_job_execution"

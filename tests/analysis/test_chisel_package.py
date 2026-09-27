@@ -60,7 +60,7 @@ def test_complete_attachment_works_offline_and_failure_retains_it(
     monkeypatch.setattr(chisel_context, "read_native_evidence", lambda project: {
         "coverage": "unavailable", "rows": [], "gaps": ["synthetic offline owner"],
     })
-    monkeypatch.setattr(chisel_context, "_agentctl_jobs", lambda project: {
+    monkeypatch.setattr(chisel_context, "_agentctl_jobs", lambda project, **_kwargs: {
         "coverage": "unavailable", "rows": [], "gaps": ["synthetic offline owner"],
     })
     root = tmp_path / "out"

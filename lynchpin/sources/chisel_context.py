@@ -61,7 +61,19 @@ def build_context(
 
     owner_id, owner_descriptor = _owner_project(package_dir / "source", project)
     evidence = read_native_evidence(owner_id)
-    jobs = _compact_job_details(_agentctl_jobs(owner_id), package_dir, revision)
+    selected_revisions = {revision}
+    catalogue = package_dir / "snapshots.json"
+    if catalogue.is_file():
+        selected_revisions.update(
+            row["revision"]
+            for row in json.loads(catalogue.read_text()).get("snapshots", [])
+            if isinstance(row, dict) and isinstance(row.get("revision"), str)
+        )
+    jobs = _compact_job_details(
+        _agentctl_jobs(owner_id, selected_revisions=selected_revisions),
+        package_dir,
+        revision,
+    )
     from .campaign import read_batches
     from .beads import read_tasks
 
@@ -645,7 +657,9 @@ def _read_agentctl_snapshot() -> Any:
     return agentctl.read_observation_snapshot()
 
 
-def _agentctl_jobs(project: str) -> dict[str, Any]:
+def _agentctl_jobs(
+    project: str, *, selected_revisions: set[str] | None = None
+) -> dict[str, Any]:
     observed_at = datetime.now(timezone.utc).isoformat()
     from .chisel_options import active_options
     window_days = active_options.context_days
@@ -687,7 +701,15 @@ def _agentctl_jobs(project: str) -> dict[str, Any]:
                         for word in ("test", "verify", "check", "benchmark", "qualif"))):
             candidates.append((row, reference))
     # Detail reads are intentionally bounded; the lifecycle list remains complete.
-    selected = sorted(candidates, key=lambda pair: pair[0].started_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[:24]
+    revisions = selected_revisions or set()
+    selected = sorted(
+        candidates,
+        key=lambda pair: (
+            pair[0].git_commit in revisions if pair[0].git_commit else False,
+            pair[0].started_at or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )[:24]
     details = []
     detail_errors = 0
     for row, reference in selected:
@@ -701,10 +723,13 @@ def _agentctl_jobs(project: str) -> dict[str, Any]:
         "observed_at": observed_at,
         "records": records,
         "details": details,
-        "detail_coverage": {"selection": "24 most recent retained terminal test/verify/check/benchmark/qualification jobs with launch references in context window",
+        "detail_coverage": {"selection": "Matching captured revision hints first, then most recent retained terminal test/verify/check/benchmark/qualification jobs with launch references in context window; maximum 24",
                             "window_days": window_days, "window_start": cutoff.isoformat(),
                             "eligible_count": len(candidates), "selected_count": len(selected),
                             "captured_count": len(details), "failed_count": detail_errors,
+                            "eligible_revision_hints": sum(row.git_commit in revisions for row, _ in candidates if row.git_commit),
+                            "selected_revision_hints": sum(row.git_commit in revisions for row, _ in selected if row.git_commit),
+                            "revision_hint_availability": "available" if any(row.git_commit for row, _ in candidates) else "unavailable_in_job_list",
                             "capped": len(candidates) > len(selected)},
         "gaps": list(snapshot.caveats)
         + [
