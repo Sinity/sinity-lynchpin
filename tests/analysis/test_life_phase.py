@@ -216,7 +216,7 @@ def test_coverage_provenance_reported(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_sparse_event_volumes_keep_active_days_and_substances_separate() -> None:
     start = date(2025, 1, 1)
-    rows = [_day(start + timedelta(days=i), aw=4.0) for i in range(4)]
+    rows = [_day(start + timedelta(days=i), aw=4.0) for i in range(5)]
     rows[0].sources_present = frozenset({"activitywatch", "substance", "wykop"})
     rows[0].substance_doses = 1
     rows[0].substance_mg_by_name = {"caffeine": 100.0}
@@ -228,28 +228,30 @@ def test_sparse_event_volumes_keep_active_days_and_substances_separate() -> None
 
     phases = lp._build_phases(
         rows,
-        [lp.PhaseBoundary(rows[2].date, 0.5, ("fixture",), ())],
+        [lp.PhaseBoundary(rows[4].date, 0.5, ("fixture",), ())],
         {},
     )
 
     first = phases[0]
-    assert first.n_days == 2
+    assert first.n_days == 4
     assert set(first.sparse_event_volume) == {
         "substance:doses", "substance:caffeine", "substance:melatonin", "wykop", "reddit",
     }
     doses = first.sparse_event_volume["substance:doses"]
-    assert (doses.total, doses.unit, doses.event_days, doses.calendar_days) == (2, "doses", 2, 2)
+    assert (doses.total, doses.unit, doses.event_days, doses.calendar_days) == (2, "doses", 2, 4)
     caffeine = first.sparse_event_volume["substance:caffeine"]
     melatonin = first.sparse_event_volume["substance:melatonin"]
     assert (caffeine.total, caffeine.unit, caffeine.event_days, caffeine.calendar_days) == (
-        100.0, "mg", 1, 2,
+        100.0, "mg", 1, 4,
     )
     assert caffeine.per_event_day == 100.0
     assert (melatonin.total, melatonin.unit, melatonin.event_days, melatonin.calendar_days) == (
-        3.0, "mg", 1, 2,
+        3.0, "mg", 1, 4,
     )
     assert first.sparse_event_volume["wykop"].per_event_day == 2.0
     assert first.sparse_event_volume["reddit"].per_event_day == 5.0
+    assert first.sparse_event_volume["wykop"].calendar_days == 4
+    assert first.sparse_event_volume["reddit"].calendar_days == 4
     assert all("quiet dates are unknown, not zero" in value.interpretation
                for value in first.sparse_event_volume.values())
     assert phases[1].sparse_event_volume == {}
