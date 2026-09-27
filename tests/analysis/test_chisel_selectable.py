@@ -234,6 +234,75 @@ def test_candidate_report_keeps_unbound_lifecycle_records_out_of_snapshot_rows(t
     }
 
 
+def test_candidate_acceptance_requires_authored_version_and_exact_execution(tmp_path):
+    from lynchpin.analysis.projects.chisel_reports import build_reports
+
+    (tmp_path / "capture.json").write_text(json.dumps({"snapshot_id": "clean", "revision": "commit"}))
+    (tmp_path / "snapshots.json").write_text(json.dumps({"snapshots": [
+        {"snapshot_id": "clean", "revision": "commit", "dirty": False},
+        {"snapshot_id": "dirty", "revision": "commit", "dirty": True},
+    ]}))
+    (tmp_path / "source").mkdir()
+    (tmp_path / "inventory.jsonl").write_text(json.dumps({
+        "path": "a.py", "included": True, "sha256": "clean-hash", "mode": 420,
+    }) + "\n")
+    overlay = tmp_path / "snapshots/worktree"
+    overlay.mkdir(parents=True)
+    (overlay / "manifest.json").write_text(json.dumps({"snapshot_id": "dirty", "changed": [],
+        "deleted": [], "files": [{"path": "a.py", "included": True, "sha256": "dirty-hash", "mode": 420}]}))
+    tasks = tmp_path / "trackers"
+    tasks.mkdir()
+    criterion = {"id": "AC-1", "revision": "criterion-v1", "text": "Check behavior",
+                 "verification": {"selector": ["test", "behavior"], "workload": "focused"}}
+    (tasks / "beads-export.jsonl").write_text(json.dumps({"id": "task-1",
+        "metadata": {"acceptance_criteria": [criterion]}}) + "\n")
+    verification = tmp_path / "verification"
+    verification.mkdir()
+    def record(name, digest, *, version="criterion-v1", selector=None, workload="focused",
+               command_observed=True, coverage="complete_declared_scope"):
+        manifest = {"coverage": coverage, "sha256": name,
+                    "files": [{"path": "a.py", "kind": "file", "sha256": digest, "mode": 420}]}
+        check = {"tested_revision": "commit", "criterion_ids": ["AC-1"],
+                 "claimed_outcome": "passed", "receipt": name,
+                 "owner_observation": {"checked": True, "eligible": True, "phase": "succeeded", "exit_code": 0,
+                     "reference": name, "execution_evidence": {"command_execution_observed": command_observed,
+                         "selector": selector or ["test", "behavior"], "workload": workload},
+                     "execution_receipt": {"start": {"head": "commit", "dirty": True, "content_manifest": manifest},
+                                           "end": {"head": "commit", "dirty": True, "content_manifest": manifest}}}}
+        return {"kind": "native_evidence", "evidence_id": name, "candidate_revision": "commit",
+                "verification": [check], "source_record": {"task_snapshot": [{"id": "task-1",
+                    "evidence_binding": {"v2_available": True, "bead_revision": "task-v1",
+                        "criteria": [{"id": "AC-1", "revision": version, "text": "Check behavior"}]}}],
+                    "worker_result": {"beads": [{"id": "task-1", "bead_revision": "task-v1",
+                        "criteria": [{"id": "AC-1", "revision": version, "text": "Check behavior", "status": "satisfied"}]}]}}}
+    records = [record("bound", "dirty-hash"), record("wrong-version", "dirty-hash", version="criterion-v2"),
+               record("wrong-selector", "dirty-hash", selector=["test", "other"]),
+               record("wrong-workload", "dirty-hash", workload="full"),
+               record("unobserved-command", "dirty-hash", command_observed=None),
+               record("different-content", "other-hash"),
+               record("incomplete-scope", "dirty-hash", coverage="partial")]
+    (verification / "records.jsonl").write_text("".join(json.dumps(row) + "\n" for row in records))
+    owners = tmp_path / "owners"
+    owners.mkdir()
+    (owners / "jobs.json").write_text(json.dumps({"details": [
+        {"reference": name, "execution_receipt": next(row for row in records
+            if row["evidence_id"] == name)["verification"][0]["owner_observation"]["execution_receipt"]}
+        for name in ("different-content", "incomplete-scope")
+    ]}))
+
+    build_reports(tmp_path, project="fixture", task_roots=[])
+
+    rows = [json.loads(line) for line in (tmp_path / "reports/candidate-evidence.jsonl").read_text().splitlines()]
+    bound = [row for row in rows if row["acceptance"] is not None]
+    assert [(row["snapshot_id"], row["evidence_id"]) for row in bound] == [("dirty", "bound")]
+    assert bound[0]["acceptance"]["criterion_version"] == "criterion-v1"
+    assert {row["evidence_id"] for row in rows} == {
+        "bound", "wrong-version", "wrong-selector", "wrong-workload", "unobserved-command",
+    }
+    reasons = json.loads((tmp_path / "reports/coverage.json").read_text())["candidate_evidence"]["unbound_detail_reasons"]
+    assert reasons == {"complete_content_scope_unavailable": 1, "endpoint_content_mismatch": 1}
+
+
 def test_candidate_report_explains_same_revision_content_gaps(tmp_path):
     from lynchpin.analysis.projects.chisel_reports import build_reports
     from lynchpin.sources.chisel_browse import query_records

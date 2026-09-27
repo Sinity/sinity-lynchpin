@@ -120,10 +120,13 @@ def test_context_preserves_missing_dates_and_marks_stale_dirty_evidence(
                             "observation": {
                                 "observed_at": "2026-01-01T00:00:00+00:00",
                                 "checked": True,
+                                "reference": "agentctl://jobs/1/ref",
                                 "eligible": True,
                                 "phase": "succeeded",
                                 "exit_code": 0,
                                 "argv": ["pytest", "-q"],
+                                "execution_evidence": {"selector": ["pytest", "-q"],
+                                                       "workload": "focused", "command_execution_observed": True},
                             },
                         },
                         {
@@ -196,6 +199,9 @@ def test_context_preserves_missing_dates_and_marks_stale_dirty_evidence(
     ]
     checks = evidence_rows[0]["verification"]
     assert checks[0]["applicable_to_package"] is False
+    assert checks[0]["owner_observation"]["reference"] == "agentctl://jobs/1/ref"
+    assert checks[0]["owner_observation"]["checked"] is True
+    assert checks[0]["owner_observation"]["execution_evidence"]["workload"] == "focused"
     assert checks[1]["applicable_to_package"] is None
     assert payload["captured_package_dirty"] is True
     assert payload["benchmark_exports"] == "unavailable"
@@ -331,6 +337,18 @@ def test_job_detail_selection_reserves_exact_checkout_workspaces(monkeypatch):
         "recent_fallback": 18,
     }
     assert all("workspace" not in row for row in jobs["details"])
+
+
+def test_agentctl_owner_unavailability_does_not_claim_empty_job_coverage(monkeypatch):
+    def unavailable():
+        raise chisel_context.agentctl.AgentctlObservationError("owner snapshot unavailable")
+
+    monkeypatch.setattr(chisel_context, "_read_agentctl_snapshot", unavailable)
+    jobs = chisel_context._agentctl_jobs("polylogue", selected_revisions={"candidate"})
+    assert jobs["coverage"] == "unavailable"
+    assert jobs["records"] == []
+    assert jobs["gaps"] == ["owner snapshot unavailable"]
+    assert "details" not in jobs
 
 
 def test_job_content_manifests_are_deduplicated_and_unrelated_details_summarized(tmp_path):

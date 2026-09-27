@@ -329,6 +329,8 @@ def _verification_payload(
             )
             receipt_observed = observation.get("checked") is True
             owner_result = {
+                "checked": observation.get("checked"),
+                "reference": observation.get("reference"),
                 "phase": observation.get("phase"),
                 "exit_code": observation.get("exit_code"),
                 "eligible": observation.get("eligible"),

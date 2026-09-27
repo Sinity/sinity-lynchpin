@@ -231,6 +231,83 @@ def _owner_receipt(package: Path, receipt: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _authored_acceptance(
+    tasks: list[dict[str, Any]], record: dict[str, Any], checks: list[dict[str, Any]],
+    comparisons: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Bind a criterion only when its authored version and execution match exactly."""
+    source = record.get("source_record") or {}
+    result = source.get("worker_result") or {}
+    for task_binding in source.get("task_snapshot") or []:
+        if not isinstance(task_binding, dict):
+            continue
+        task_id = task_binding.get("id")
+        authored = next((task for task in tasks if task.get("id") == task_id), None)
+        binding = task_binding.get("evidence_binding") or {}
+        if not authored or binding.get("v2_available") is not True:
+            continue
+        metadata = authored.get("metadata") or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except ValueError:
+                continue
+        if not isinstance(metadata, dict):
+            continue
+        criteria = authored.get("acceptance_criteria")
+        if not isinstance(criteria, list):
+            criteria = metadata.get("acceptance_criteria")
+        if not isinstance(criteria, list):
+            continue
+        claimed = next((entry for entry in result.get("beads") or []
+                        if isinstance(entry, dict) and entry.get("id") == task_id), None)
+        if not claimed or str(claimed.get("bead_revision")) != str(binding.get("bead_revision")):
+            continue
+        for criterion in criteria:
+            if not isinstance(criterion, dict):
+                continue
+            criterion_id = criterion.get("id")
+            version = criterion.get("revision")
+            expectation = criterion.get("verification") or {}
+            if not criterion_id or not isinstance(version, str) or not version or not isinstance(expectation, dict):
+                continue
+            selector = expectation.get("selector")
+            workload = expectation.get("workload")
+            if not isinstance(selector, list) or not selector or not all(isinstance(x, str) for x in selector) or not isinstance(workload, str) or not workload:
+                continue
+            matching_claim = any(isinstance(row, dict) and row.get("id", row.get("ac_id")) == criterion_id
+                                 and row.get("revision") == version and row.get("text") == criterion.get("text")
+                                 and row.get("status") == "satisfied"
+                                 for row in claimed.get("criteria") or [])
+            matching_binding = any(isinstance(row, dict) and row.get("id", row.get("ac_id")) == criterion_id
+                                   and row.get("revision") == version and row.get("text") == criterion.get("text")
+                                   for row in binding.get("criteria") or [])
+            if not matching_claim or not matching_binding:
+                continue
+            for check, comparison in zip(checks, comparisons):
+                observation = check.get("owner_observation") or {}
+                execution = observation.get("execution_evidence") or {}
+                coverage = check.get("criterion_ids") or []
+                if (comparison.get("complete_scope_match") is True
+                    and criterion_id in coverage
+                    and check.get("tested_revision") == record.get("candidate_revision")
+                    and check.get("claimed_outcome") == "passed"
+                    and isinstance(check.get("receipt"), str) and bool(check["receipt"])
+                    and check["receipt"] == observation.get("reference")
+                    and observation.get("checked") is True
+                    and observation.get("eligible") is True
+                    and observation.get("phase") in {"succeeded", "passed"}
+                    and observation.get("exit_code") == 0
+                    and execution.get("command_execution_observed") is True
+                    and execution.get("selector") == selector
+                    and execution.get("workload") == workload):
+                    return {"state": "criterion_receipt_bound", "task_id": task_id,
+                            "criterion_id": criterion_id, "criterion_version": version,
+                            "selector": selector, "workload": workload,
+                            "receipt": check.get("receipt")}
+    return None
+
+
 def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict[str, Any]:
     capture = json.loads((package / "capture.json").read_text())
     snapshot = capture["snapshot_id"]
@@ -374,7 +451,9 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
                 "revision_match": True,
                 "integration": (record.get("source_record") or {}).get("publication"),
                 "focused_tests": checks, "content_comparisons": comparisons,
-                "qualification": None, "acceptance": None, "deployment": None,
+                "qualification": None,
+                "acceptance": _authored_acceptance(tasks, record, checks, comparisons),
+                "deployment": None,
                 "interpretation": "Eligible execution endpoints associate this evidence with the snapshot; endpoints alone do not establish immutable execution or acceptance."})
         for detail in execution_details:
             receipt = detail.get("execution_receipt") or {}
@@ -422,21 +501,25 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
         if not isinstance(start, dict) or not isinstance(end, dict) or not start or not end:
             reason = "execution_endpoints_unavailable"
             comparisons = []
+            reason_comparisons = comparisons
         else:
             matching = [selected for selected in catalogue["snapshots"]
                         if selected.get("snapshot_id") in by_snapshot
                         and selected.get("revision") == start.get("head") == end.get("head")]
             comparisons = [content_match(by_snapshot[selected["snapshot_id"]],
                                          _owner_receipt(package, receipt)) for selected in matching]
+            closest = [row for row in comparisons if not row.get("mismatched_paths")
+                       and not row.get("uncaptured_owner_paths")]
+            reason_comparisons = closest or comparisons
             if not matching:
                 reason = "captured_revision_mismatch"
-            elif any(row.get("mismatched_paths") for row in comparisons):
+            elif any(row.get("mismatched_paths") for row in reason_comparisons):
                 reason = "endpoint_content_mismatch"
-            elif any(row.get("uncaptured_owner_paths") for row in comparisons):
+            elif any(row.get("uncaptured_owner_paths") for row in reason_comparisons):
                 reason = "owner_paths_absent_from_capture"
-            elif any(row.get("owner_endpoints_same") is False for row in comparisons):
+            elif any(row.get("owner_endpoints_same") is False for row in reason_comparisons):
                 reason = "execution_endpoints_changed"
-            elif all(row.get("complete_scope_match") is None for row in comparisons):
+            elif all(row.get("complete_scope_match") is None for row in reason_comparisons):
                 reason = "complete_content_scope_unavailable"
             else:
                 reason = "candidate_binding_unestablished"
@@ -444,8 +527,8 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
             "evidence_id": evidence_id,
             "reason": reason,
             "observed_head": start.get("head") if isinstance(start, dict) else None,
-            "mismatched_path_count": max((len(row.get("mismatched_paths", [])) for row in comparisons), default=0),
-            "uncaptured_owner_path_count": max((len(row.get("uncaptured_owner_paths", [])) for row in comparisons), default=0),
+            "mismatched_path_count": max((len(row.get("mismatched_paths", [])) for row in reason_comparisons), default=0),
+            "uncaptured_owner_path_count": max((len(row.get("uncaptured_owner_paths", [])) for row in reason_comparisons), default=0),
         })
     unbound_reasons = {reason: sum(row["reason"] == reason for row in unbound_details)
                        for reason in sorted({row["reason"] for row in unbound_details})}
