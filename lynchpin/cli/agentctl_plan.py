@@ -39,7 +39,26 @@ def build_agentctl_plan(*, maintenance_end: date | None = None) -> dict[str, Any
     typed = plan_materializations(
         maintenance=True, maintenance_end=maintenance_end
     )
-    runnable = {step.product: step for step in typed if step.action == "materialize"}
+    unavailable = {
+        step.product
+        for step in typed
+        if step.action != "materialize" and step.status != "ready"
+    }
+    blocked = set(unavailable)
+    changed = True
+    while changed:
+        changed = False
+        for step in typed:
+            if step.product not in blocked and any(
+                dependency in blocked for dependency in step.dependencies
+            ):
+                blocked.add(step.product)
+                changed = True
+    runnable = {
+        step.product: step
+        for step in typed
+        if step.action == "materialize" and step.product not in blocked
+    }
     scheduled_generations: dict[str, str] = {}
 
     def scheduled_generation(product: str, visiting: frozenset[str] = frozenset()) -> str:
@@ -123,26 +142,39 @@ def build_agentctl_plan(*, maintenance_end: date | None = None) -> dict[str, Any
             }
         ).encode()
     ).hexdigest()
-    nodes.append(
-        {
-            "id": "substrate:promotion",
-            "operation": "promote_node",
-            "depends_on": [f"product:{name}" for name in sorted(runnable)],
-            "input_generation": promotion_generation,
-            "parameters": {
-                "start": history_start.isoformat(),
-                "end": history_end.isoformat(),
-                "tail_start": promotion_tail_start.isoformat(),
-                "input_generation": promotion_generation,
-            },
-        }
+    blocked_materializations = blocked.intersection(
+        step.product for step in typed if step.action == "materialize"
     )
-    plan_generation = hashlib.sha256(canonical_json(nodes).encode()).hexdigest()
-    return {
+    if not blocked_materializations:
+        nodes.append(
+            {
+                "id": "substrate:promotion",
+                "operation": "promote_node",
+                "depends_on": [f"product:{name}" for name in sorted(runnable)],
+                "input_generation": promotion_generation,
+                "parameters": {
+                    "start": history_start.isoformat(),
+                    "end": history_end.isoformat(),
+                    "tail_start": promotion_tail_start.isoformat(),
+                    "input_generation": promotion_generation,
+                },
+            }
+        )
+    plan_state = {
+        "nodes": nodes,
+        "unavailable_products": sorted(unavailable),
+        "blocked_products": sorted(blocked - unavailable),
+    }
+    plan_generation = hashlib.sha256(canonical_json(plan_state).encode()).hexdigest()
+    result = {
         "schema": "lynchpin.agentctl-plan.v1",
         "input_generation": plan_generation,
         "nodes": nodes,
     }
+    if unavailable:
+        result["unavailable_products"] = sorted(unavailable)
+        result["blocked_products"] = sorted(blocked - unavailable)
+    return result
 
 
 def run_product_node(
@@ -274,15 +306,12 @@ def run_convergence(*, maintenance_end: date | None = None) -> dict[str, Any]:
     from lynchpin.cli.materialize import _all_history_window
 
     maintenance_end = maintenance_end or (date.today() + timedelta(days=1))
-    steps = tuple(
-        step
-        for step in plan_materializations(
-            maintenance=True, maintenance_end=maintenance_end
-        )
-        if step.action == "materialize"
+    planned_steps = tuple(
+        plan_materializations(maintenance=True, maintenance_end=maintenance_end)
     )
+    steps = tuple(step for step in planned_steps if step.action == "materialize")
     refresh_id = f"convergence:{datetime.now().astimezone().isoformat()}"
-    completed = run_materialization_plan(steps, refresh_id=refresh_id)
+    completed = run_materialization_plan(planned_steps, refresh_id=refresh_id)
     if len(completed) != len(steps):
         raise RuntimeError(
             "convergence materialization did not complete every planned product: "

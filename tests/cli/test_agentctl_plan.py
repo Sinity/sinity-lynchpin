@@ -15,13 +15,16 @@ def _step(
     *,
     dependencies: tuple[str, ...] = (),
     window: tuple[date, date] | None = None,
+    action: str = "materialize",
+    status: str = "pending",
 ):
     return SimpleNamespace(
         product=product,
         input_generation=generation,
-        action="materialize",
+        action=action,
         dependencies=dependencies,
         effective_window=window,
+        status=status,
     )
 
 
@@ -94,6 +97,105 @@ def test_agentctl_plan_still_promotes_machine_and_live_sources_when_products_are
 
     assert [node["id"] for node in plan["nodes"]] == ["substrate:promotion"]
     assert plan["nodes"][0]["depends_on"] == []
+
+
+def test_agentctl_plan_keeps_unavailable_prerequisites_out_of_execution_dag(
+    monkeypatch,
+) -> None:
+    from lynchpin.cli import agentctl_plan
+    from lynchpin.cli import materialize
+
+    end = date(2026, 8, 26)
+    plan_steps = [
+        _step("activitywatch", "aw-gen", action="check-only", status="missing"),
+        _step(
+            "activitywatch_event_index",
+            "index-gen",
+            dependencies=("activitywatch",),
+        ),
+        _step("atuin", "atuin-gen"),
+    ]
+    monkeypatch.setattr(agentctl_plan, "plan_materializations", lambda **_kwargs: plan_steps)
+    monkeypatch.setattr(
+        materialize,
+        "_all_history_window",
+        lambda: (date(2020, 1, 1), end),
+    )
+
+    plan = agentctl_plan.build_agentctl_plan(maintenance_end=end)
+    node_ids = {node["id"] for node in plan["nodes"]}
+
+    assert node_ids == {"product:atuin"}
+    assert plan["unavailable_products"] == ["activitywatch"]
+    assert plan["blocked_products"] == ["activitywatch_event_index"]
+
+
+def test_scheduled_convergence_propagates_unavailable_prerequisite_and_keeps_sibling(
+    monkeypatch,
+) -> None:
+    import pytest
+
+    from lynchpin.cli import agentctl_plan, materialize
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.materializers import production
+    from lynchpin.materializers.executor import ClosedHandlerRegistry, HandlerDefinition
+
+    end = date(2026, 8, 26)
+    calls: list[str] = []
+    receipts: list[tuple[str, str]] = []
+    products = ("activitywatch", "activitywatch_event_index", "atuin")
+    actions = {"activitywatch": "check-only"}
+    audit = SimpleNamespace(
+        _dataset_fingerprint=lambda row: f"{row.name}:generation",
+        source_contract=lambda _product: SimpleNamespace(materialization_hint="fixture"),
+        _record_materialization_step=lambda _refresh, product, status, *_args, **_kwargs: receipts.append((product, status)),
+        _int_or_none=lambda value: value,
+        _window_payload=lambda value: value,
+        _PRODUCT_REFRESHED_AT={},
+        monotonic=lambda: 1.0,
+    )
+    monkeypatch.setattr(production, "_audit", lambda: audit)
+    planned = tuple(
+        production._step(
+            production.PRODUCT_CATALOG[name],
+            row=SimpleNamespace(name=name, status="missing"),
+            action=actions.get(name, "materialize"),
+            reason="neutral fixture",
+            window=None,
+        )
+        for name in products
+    )
+    monkeypatch.setattr(agentctl_plan, "plan_materializations", lambda **_kwargs: planned)
+    monkeypatch.setattr(
+        materialize, "_all_history_window", lambda: (date(2020, 1, 1), end)
+    )
+
+    def handler(product: str):
+        return lambda _context: calls.append(product) or {"row_count": 1}
+
+    registry = ClosedHandlerRegistry(
+        {
+            production.PRODUCT_CATALOG[name].handler: HandlerDefinition(
+                production.PRODUCT_CATALOG[name].handler,
+                handler(name),
+                raw_read_permission=production.PRODUCT_CATALOG[name].raw_read_permission,
+                window_policy=production.PRODUCT_CATALOG[name].window_policy,
+            )
+            for name in products
+        }
+    )
+    monkeypatch.setattr(production, "handler_registry", lambda: registry)
+    monkeypatch.setattr(
+        agentctl_plan,
+        "run_promotion_node",
+        lambda **_kwargs: pytest.fail("promotion ran with an unavailable prerequisite"),
+    )
+
+    with pytest.raises(MaterializationError, match="activitywatch_event_index"):
+        agentctl_plan.run_convergence(maintenance_end=end)
+
+    assert calls == ["atuin"]
+    assert ("activitywatch_event_index", "skipped") in receipts
 
 
 def test_declared_converge_runs_typed_nodes_without_agentctl_plan_api(
