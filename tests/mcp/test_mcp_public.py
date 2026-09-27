@@ -442,6 +442,63 @@ def test_invalid_actions_return_structured_error(tmp_path: Path, monkeypatch: py
     assert "status" in result["choices"]
 
 
+def test_public_note_search_and_read_route_to_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lynchpin.mcp.tools import owner_access
+    from lynchpin.mcp.tools.public import lynchpin_personal
+
+    calls: list[dict[str, object]] = []
+
+    def notes(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {"source": "dendron", "status": "complete", "notes": [{"path": "entry.md"}]}
+
+    monkeypatch.setattr(owner_access, "notes", notes)
+    search = lynchpin_personal(action="notes", query="entry", offset=201, limit=20)
+    read = lynchpin_personal(action="notes", view="read", path="entry.md")
+
+    assert search["ok"] is True
+    assert search["meta"]["action"] == "notes"
+    assert search["data"]["notes"][0]["path"] == "entry.md"
+    assert read["ok"] is True
+    assert calls == [
+        {"view": "search", "query": "entry", "path": None, "offset": 201, "limit": 20},
+        {"view": "read", "query": "", "path": "entry.md", "offset": 0, "limit": 100},
+    ]
+    assert lynchpin_personal(action="notes", view="read")["error_code"] == "missing_argument"
+    assert lynchpin_personal(action="notes", view="search", path="entry.md")["error_code"] == "invalid_argument"
+
+
+def test_public_owner_failures_are_not_success_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lynchpin.mcp.tools import owner_access
+    from lynchpin.mcp.tools.public import lynchpin_machine, lynchpin_personal
+
+    monkeypatch.setattr(
+        owner_access, "notes",
+        lambda **_kwargs: {"error": "FileNotFoundError", "message": "missing", "source": "dendron"},
+    )
+    monkeypatch.setattr(
+        owner_access, "agentctl_job",
+        lambda **_kwargs: {"error": "LookupError", "message": "missing", "source": "agentctl"},
+    )
+    assert lynchpin_personal(action="notes", view="read", path="missing.md")["ok"] is False
+    assert lynchpin_machine(action="job", job_id="123")["ok"] is False
+    assert lynchpin_machine(action="job")["error_code"] == "missing_argument"
+
+
+def test_public_agentctl_job_detail_preserves_owner_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lynchpin.mcp.tools import owner_access
+    from lynchpin.mcp.tools.public import lynchpin_machine
+
+    monkeypatch.setattr(
+        owner_access, "agentctl_job",
+        lambda *, job_id: {"job_id": job_id, "result": {"phase": "passed"}, "source": "agentctl"},
+    )
+    result = lynchpin_machine(action="job", job_id="123")
+    assert result["ok"] is True
+    assert result["data"]["job_id"] == "123"
+    assert result["meta"]["route"] == "lynchpin.mcp.tools.owner_access.agentctl_job"
+
+
 def test_lynchpin_status_readiness_forwards_window_to_analysis_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

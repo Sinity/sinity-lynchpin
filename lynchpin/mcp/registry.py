@@ -157,6 +157,7 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
             ActionSpec("communications", "Communication events and daily summaries.", "converge", parameters=("view", "start", "end", "limit"), response_kind="communications"),
             ActionSpec("web", "Web and Google Takeout activity.", "converge", parameters=("view", "start", "end", "query", "limit"), views=("daily", "provenance", "takeout"), response_kind="web_activity"),
             ActionSpec("bookmarks", "Paged browser and Raindrop bookmark search, or browser daily summaries.", "converge", parameters=("view", "query", "start", "end", "source", "limit", "offset", "expected_source_revision"), response_kind="bookmarks"),
+            ActionSpec("notes", "Search and read local notes with source provenance.", "read", parameters=("view", "query", "path", "limit", "offset"), views=("search", "read"), response_kind="notes"),
             ActionSpec("media", "Spotify/media daily summaries.", "read", parameters=("start", "end"), response_kind="media_daily"),
             ActionSpec("operator", "Operator rhythm and retrospective readiness.", "converge", parameters=("view", "start", "end", "project"), views=("rhythm", "readiness"), response_kind="operator"),
             ActionSpec("reports", "Generated cross-source personal analysis reports.", "read", parameters=("view", "project"), views=("anomaly", "life_phase", "productivity", "substance", "burnout", "ai_efficiency"), response_kind="analysis_report"),
@@ -177,6 +178,7 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
             ActionSpec("benchmarks", "Benchmark, validation, and matched-experiment views.", "read", parameters=("view", "limit"), response_kind="benchmarks"),
             ActionSpec("diagnostics", "Attribution, assumptions, support, and dataset diagnostics.", "read", parameters=("view", "project", "limit"), response_kind="diagnostics"),
             ActionSpec("windows", "Machine context/work-state windows.", "converge", parameters=("view", "start", "end", "project", "limit"), response_kind="windows"),
+            ActionSpec("job", "Read one AgentCTL job and its owner receipt.", "read", parameters=("job_id",), requires=("job_id",), response_kind="agentctl_job"),
         ),
     ),
     PublicToolSpec(

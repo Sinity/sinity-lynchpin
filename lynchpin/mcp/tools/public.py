@@ -891,14 +891,17 @@ def lynchpin_personal(
     limit: int = 100,
     offset: int = 0,
     expected_source_revision: str | None = None,
+    path: str | None = None,
 ) -> dict[str, Any]:
-    """Personal router. action: daily, activity, phone, health, communications, web, bookmarks, media, operator, reports."""
+    """Personal router for signals, notes, bookmarks, and reports."""
     if invalid := _mark_route("lynchpin_personal", action):
         return invalid
     if invalid := _require_view("lynchpin_personal", action, view):
         return invalid
-    if action != "bookmarks" and (offset or expected_source_revision is not None):
-        return _error("invalid_argument", "offset and expected_source_revision apply only to bookmark search")
+    if action not in {"bookmarks", "notes"} and offset:
+        return _error("invalid_argument", "offset applies only to bookmark or note search")
+    if action != "bookmarks" and expected_source_revision is not None:
+        return _error("invalid_argument", "expected_source_revision applies only to bookmark search")
     if action == "daily":
         return _internal_call("lynchpin.mcp.tools.personal", "personal_daily_signals", start=start, end=end, source=source, limit=limit)
     if action == "activity":
@@ -940,6 +943,25 @@ def lynchpin_personal(
             query=query, start=start, end=end, limit=limit, source=source or "all",
             offset=offset, expected_source_revision=expected_source_revision,
         )
+    if action == "notes":
+        from lynchpin.mcp.tools.owner_access import notes
+
+        notes_view = view or "search"
+        if notes_view == "read" and not path:
+            return _error("missing_argument", "path is required to read a note")
+        if notes_view == "read" and (query or offset or limit != 100):
+            return _error("invalid_argument", "query, offset, and limit apply only to note search")
+        if notes_view == "search" and path is not None:
+            return _error("invalid_argument", "path applies only to note read")
+        result = notes(view=notes_view, query=query, path=path, offset=offset, limit=limit)
+        if "error" in result:
+            code = {"ValueError": "invalid_argument", "FileNotFoundError": "not_found"}.get(
+                str(result["error"]), "source_unavailable"
+            )
+            return _error(code, str(result.get("message", "note read failed")), details={"source": result.get("source")})
+        if result.get("status") == "unavailable":
+            return _error("source_unavailable", str(result.get("reason", "note root is unavailable")), details={"source": result.get("source")})
+        return _ok(result, **_action_meta("lynchpin_personal", "notes", route="lynchpin.mcp.tools.owner_access.notes"))
     if action == "media":
         return _internal_call("lynchpin.mcp.tools.personal", "spotify_daily", start=start, end=end)
     if action == "operator":
@@ -971,8 +993,9 @@ def lynchpin_machine(
     operation: str | None = None,
     host: str | None = None,
     limit: int = 100,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
-    """Machine router. action: status, metrics, pressure, services, workloads, observations, benchmarks, diagnostics, windows."""
+    """Machine router for telemetry, diagnostics, and job details."""
     if invalid := _mark_route("lynchpin_machine", action):
         return invalid
     if invalid := _require_view("lynchpin_machine", action, view):
@@ -1016,6 +1039,16 @@ def lynchpin_machine(
         return _internal_call("lynchpin.mcp.tools.machine_diagnostics", "machine_attribution", view=view or "summary", project=project, limit=limit)
     if action == "windows":
         return _internal_call("lynchpin.mcp.tools.machine_status", "machine_windows", view=view or "context", start=start, end=end, project=project, limit=limit)
+    if action == "job":
+        if not job_id:
+            return _error("missing_argument", "job_id is required for a job detail read")
+        from lynchpin.mcp.tools.owner_access import agentctl_job
+
+        result = agentctl_job(job_id=job_id)
+        if "error" in result:
+            code = "not_found" if result["error"] == "LookupError" else "source_unavailable"
+            return _error(code, str(result.get("message", "job read failed")), details={"source": result.get("source")})
+        return _ok(result, **_action_meta("lynchpin_machine", "job", route="lynchpin.mcp.tools.owner_access.agentctl_job"))
     return _invalid_action("lynchpin_machine", action)
 
 
