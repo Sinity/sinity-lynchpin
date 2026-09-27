@@ -13,7 +13,7 @@ from contextvars import copy_context
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from threading import Lock
-from typing import Any, Iterable, Literal, TYPE_CHECKING
+from typing import Any, Callable, Iterable, Literal, TYPE_CHECKING
 
 from .catalog import PRODUCT_CATALOG, handler_registry
 from .executor import StepContext, validate_step_contract
@@ -454,6 +454,7 @@ def run_materialization_plan(
     window: tuple[date, date] | None = None,
     full: bool = False,
     continue_on_error: bool = False,
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[PlanStep]:
     """Execute typed source steps while preserving receipts and failure policy."""
 
@@ -464,6 +465,28 @@ def run_materialization_plan(
     refresh_id = refresh_id or f"materialize:{datetime.now(timezone.utc).isoformat()}"
     ran: list[PlanStep] = []
     ran_lock = Lock()
+    progress_lock = Lock()
+
+    def emit(step: PlanStep, event: str, **details: Any) -> None:
+        if progress is None:
+            return
+        payload = {
+            "schema": "lynchpin.materialization-progress.v1",
+            "refresh_id": refresh_id,
+            "project": "lynchpin",
+            "stage": "source-materialize",
+            "product": step.product,
+            "event": event,
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            **details,
+        }
+        # Progress output must never change a source result. Serialize callback
+        # writes because independent materializers run in worker threads.
+        with progress_lock:
+            try:
+                progress(payload)
+            except Exception:
+                pass
     outcomes: dict[str, StepResult] = {
         step.product: StepResult(
             step.product,
@@ -475,11 +498,12 @@ def run_materialization_plan(
         if step.action != "materialize"
     }
 
-    def run_one(step: PlanStep, dependencies: dict[str, StepResult]) -> StepResult:
+    def run_one(step: PlanStep, dependencies: dict[str, StepResult], queued_at: datetime) -> StepResult:
         definition = registry.resolve(step.spec.handler)
         validate_step_contract(step, definition)
         effective_window = step.effective_window if step.effective_window is not None else window
         started = datetime.now(timezone.utc)
+        emit(step, "started", queue_wait_seconds=round((started - queued_at).total_seconds(), 3), effective_window=audit._window_payload(effective_window))
         audit._record_materialization_step(refresh_id, step.product, "started", step.reason, started_at=started)
         try:
             value = definition.handler(
@@ -490,6 +514,7 @@ def run_materialization_plan(
                 )
             )
         except Exception as exc:
+            emit(step, "failed", elapsed_seconds=round((datetime.now(timezone.utc) - started).total_seconds(), 3), error_type=type(exc).__name__)
             audit._record_materialization_step(
                 refresh_id,
                 step.product,
@@ -512,6 +537,7 @@ def run_materialization_plan(
             finished_at=datetime.now(timezone.utc),
         )
         audit._PRODUCT_REFRESHED_AT[step.product] = audit.monotonic()
+        emit(step, "succeeded", elapsed_seconds=round((datetime.now(timezone.utc) - started).total_seconds(), 3), row_count=row_count)
         with ran_lock:
             ran.append(step)
         return StepResult(step.product, "succeeded", "materialized", step.output)
@@ -536,9 +562,10 @@ def run_materialization_plan(
                     audit._record_materialization_step(
                         refresh_id, product, "skipped", reason, finished_at=datetime.now(timezone.utc),
                     )
+                    emit(step, "skipped", reason=reason)
                 elif occupied.isdisjoint(step.resources.exclusive):
                     dependencies = {name: outcomes[name] for name in step.dependencies if name in outcomes}
-                    future = executor.submit(copy_context().run, run_one, step, dependencies)
+                    future = executor.submit(copy_context().run, run_one, step, dependencies, datetime.now(timezone.utc))
                     running[future] = step
                     active_products.add(product)
                     occupied.update(step.resources.exclusive)

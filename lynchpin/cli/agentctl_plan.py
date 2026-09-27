@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
+import sys
 import uuid
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -321,7 +323,11 @@ def run_convergence(*, maintenance_end: date | None = None) -> dict[str, Any]:
     )
     steps = tuple(step for step in planned_steps if step.action == "materialize")
     refresh_id = f"convergence:{datetime.now().astimezone().isoformat()}"
-    completed = run_materialization_plan(planned_steps, refresh_id=refresh_id)
+    def progress(event: dict[str, Any]) -> None:
+        sys.stderr.write(json.dumps(event, sort_keys=True) + "\n")
+        sys.stderr.flush()
+
+    completed = run_materialization_plan(planned_steps, refresh_id=refresh_id, progress=progress)
     if len(completed) != len(steps):
         raise RuntimeError(
             "convergence materialization did not complete every planned product: "

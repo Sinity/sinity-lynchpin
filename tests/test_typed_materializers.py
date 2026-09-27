@@ -153,6 +153,7 @@ def test_production_failure_skips_dependent_and_reports_reuse(monkeypatch) -> No
 
     calls = []
     receipts = []
+    progress = []
 
     def broken(_context):
         raise RuntimeError("broken")
@@ -161,15 +162,34 @@ def test_production_failure_skips_dependent_and_reports_reuse(monkeypatch) -> No
     steps = tuple(replace_step(step, action="materialize") for step in plan.steps)
     production_harness(monkeypatch, [("test:base", broken), ("test:child", lambda _context: calls.append("child"))], receipts)
     with pytest.raises(MaterializationError, match="base, child"):
-        production.run_materialization_plan(steps, continue_on_error=True)
+        production.run_materialization_plan(steps, continue_on_error=True, progress=progress.append)
     assert calls == []
     assert ("base", "error") in receipts
     assert ("child", "skipped") in receipts
+    assert {(event["product"], event["event"]) for event in progress} == {
+        ("base", "started"), ("base", "failed"), ("child", "skipped")
+    }
+    assert all(event["project"] == "lynchpin" and event["refresh_id"] for event in progress)
+    assert progress[0]["queue_wait_seconds"] >= 0
 
     production_harness(monkeypatch, [("test:child", lambda context: calls.append(context.dependency_results["base"].status))], receipts)
     reused = (replace_step(steps[0], action="skip", status="ready"), steps[1])
     assert production.run_materialization_plan(reused) == [steps[1]]
     assert calls == ["reused"]
+
+
+def test_progress_callback_failure_does_not_change_materialization_result(monkeypatch) -> None:
+    from lynchpin.materializers import production
+
+    receipts = []
+    production_harness(monkeypatch, [("test:a", lambda _context: None)], receipts)
+    step = replace_step(planned(spec("a")).steps[0], action="materialize")
+
+    def broken_progress(_event):
+        raise OSError("log sink unavailable")
+
+    assert production.run_materialization_plan((step,), progress=broken_progress) == [step]
+    assert ("a", "ok") in receipts
 
 
 def test_serialized_plan_rejects_arbitrary_callable() -> None:

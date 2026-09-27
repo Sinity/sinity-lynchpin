@@ -124,7 +124,7 @@ def test_agentctl_plan_uses_bounded_graph_catchup_end(monkeypatch) -> None:
     assert promotion["parameters"]["tail_start"] == "2026-06-24"
 
 
-def test_source_chunk_caps_published_generation_in_both_routes(monkeypatch) -> None:
+def test_source_chunk_caps_published_generation_in_both_routes(monkeypatch, capsys) -> None:
     from lynchpin import materialization
     from lynchpin.cli import agentctl_plan, materialize
 
@@ -138,7 +138,11 @@ def test_source_chunk_caps_published_generation_in_both_routes(monkeypatch) -> N
     planned = agentctl_plan.build_agentctl_plan(maintenance_end=end)
     assert planned["nodes"][-1]["parameters"]["end"] == chunk_end.isoformat()
 
-    monkeypatch.setattr(agentctl_plan, "run_materialization_plan", lambda steps, **_kwargs: list(steps))
+    def run_steps(steps, **kwargs):
+        kwargs["progress"]({"project": "lynchpin", "stage": "source-materialize", "product": "atuin", "event": "started"})
+        return list(steps)
+
+    monkeypatch.setattr(agentctl_plan, "run_materialization_plan", run_steps)
     monkeypatch.setattr(materialization, "_audit_one", lambda *_args, **_kwargs: SimpleNamespace(status="ready", reason="ready"))
     monkeypatch.setattr(materialization, "_materialized_enough_for_window", lambda *_args, **_kwargs: True)
     published = []
@@ -146,6 +150,7 @@ def test_source_chunk_caps_published_generation_in_both_routes(monkeypatch) -> N
 
     agentctl_plan.run_convergence(maintenance_end=end)
     assert published[0]["end"] == chunk_end
+    assert '"product": "atuin"' in capsys.readouterr().err
 
 
 def test_agentctl_plan_keeps_unavailable_prerequisites_out_of_execution_dag(
