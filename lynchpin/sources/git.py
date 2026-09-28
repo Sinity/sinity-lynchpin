@@ -924,6 +924,29 @@ def _repo_identity(repo_path: Path) -> str:
     return common_path.parent.name
 
 
+def _git_probe(path: Path, args: list[str]) -> str | None:
+    """Probe an optional ref; only Git's missing-ref status means absent."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), *args],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise GitSourceError(path, f"git {args[0]} failed: {exc}") from exc
+    if result.returncode == 1:
+        return None
+    if (args[0] == "symbolic-ref" and result.returncode == 128
+            and "is not a symbolic ref" in result.stderr):
+        return None
+    if result.returncode != 0:
+        raise GitSourceError(
+            path, f"git {args[0]} exited {result.returncode}: {result.stderr.strip()[:300]}"
+        )
+    return result.stdout.strip() or None
+
+
 def _default_history_ref(repo_path: Path) -> str | None:
     """The history ref to read, verified to resolve to a commit.
 
@@ -931,7 +954,7 @@ def _default_history_ref(repo_path: Path) -> str | None:
     silent substitution or an empty history. ``None`` means the repository has
     no commits yet, which is a genuinely empty history.
     """
-    remote_head = _git_output(
+    remote_head = _git_probe(
         repo_path, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]
     )
     if remote_head:
@@ -944,14 +967,14 @@ def _default_history_ref(repo_path: Path) -> str | None:
     for candidate in ("master", "main"):
         if _ref_resolves(repo_path, candidate):
             return candidate
-    current = _git_output(repo_path, ["branch", "--show-current"])
+    current = _run_git_checked(repo_path, ["branch", "--show-current"]).strip()
     if current and _ref_resolves(repo_path, current):
         return current
     return "HEAD" if _ref_resolves(repo_path, "HEAD") else None
 
 
 def _ref_resolves(repo_path: Path, ref: str) -> bool:
-    return _git_output(repo_path, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"]) is not None
+    return _git_probe(repo_path, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"]) is not None
 
 
 def _finalize_record(
