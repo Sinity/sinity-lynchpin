@@ -428,13 +428,21 @@ def test_schema45_graph_read_treats_missing_fingerprint_as_stale(monkeypatch) ->
 
 
 def test_graph_fingerprint_tracks_direct_source_file_revisions(monkeypatch, tmp_path: Path) -> None:
-    from lynchpin.sources import sms
+    from lynchpin.sources import outlook, sms
 
     sms_root = tmp_path / "SMS"
     sms_root.mkdir()
     source_file = sms_root / "SMS_export.csv"
     source_file.write_text("initial", encoding="utf-8")
     monkeypatch.setattr(sms, "SMS_ROOT", sms_root)
+
+    outlook_root = tmp_path / "outlook exports"
+    outlook_root.mkdir()
+    outlook_csv = outlook_root / "inbox.CSV"
+    outlook_pst = outlook_root / "inbox_backup.pst"
+    outlook_csv.write_text("initial", encoding="utf-8")
+    outlook_pst.write_text("ignored", encoding="utf-8")
+    monkeypatch.setattr(outlook, "PST_ROOT", outlook_root)
 
     cfg = materialization.get_config()
     first = {
@@ -449,6 +457,20 @@ def test_graph_fingerprint_tracks_direct_source_file_revisions(monkeypatch, tmp_
 
     assert {"git_live", "sms", "outlook", "svn", "gmail", "google_takeout_files", "analysis_artifacts_files"} <= first.keys()
     assert first["sms"] != second["sms"]
+
+    outlook_pst.write_text("changed PST", encoding="utf-8")
+    after_pst_change = {
+        row["name"]: row
+        for row in materialization._graph_source_revisions(cfg)
+    }
+    assert second["outlook"] == after_pst_change["outlook"]
+
+    outlook_csv.write_text("changed CSV", encoding="utf-8")
+    after_csv_change = {
+        row["name"]: row
+        for row in materialization._graph_source_revisions(cfg)
+    }
+    assert after_pst_change["outlook"] != after_csv_change["outlook"]
 
 
 def test_graph_build_without_fingerprint_is_stale(monkeypatch) -> None:
