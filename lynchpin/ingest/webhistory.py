@@ -218,9 +218,9 @@ def _write_raw_batch(
 # ── dedup ─────────────────────────────────────────────────────────────
 
 
-def _make_dedup_key(norm_url: str, ts: datetime) -> tuple[str, datetime]:
-    """Canonical dedup key: (normalized URL, timestamp rounded to second)."""
-    return (norm_url, ts.replace(microsecond=0))
+def _make_dedup_key(norm_url: str, ts: datetime, source: str) -> tuple[str, datetime, str]:
+    """Deduplicate retries within one observation source."""
+    return (norm_url, ts.replace(microsecond=0), source)
 
 
 def dedup_raw_files(
@@ -243,10 +243,10 @@ def dedup_raw_files(
     data_dir.mkdir(parents=True, exist_ok=True)
 
     # Build seen-set from existing canonical segments
-    seen: dict[tuple[str, datetime], bool] = {}
+    seen: dict[tuple[str, datetime, str], bool] = {}
     if data_dir.is_dir():
         for visit in iter_gestalt_events(data_dir):
-            key = _make_dedup_key(normalize_url(visit.url), visit.timestamp)
+            key = _make_dedup_key(normalize_url(visit.url), visit.timestamp, visit.source)
             seen[key] = True
 
     reports: list[dict[str, Any]] = []
@@ -272,14 +272,14 @@ def dedup_raw_files(
             base = v.timestamp.replace(microsecond=0)
             is_dup = False
             for delta in range(-tolerance_seconds, tolerance_seconds + 1):
-                key = (norm, base + timedelta(seconds=delta))
+                key = (norm, base + timedelta(seconds=delta), v.source)
                 if key in seen:
                     duplicates += 1
                     is_dup = True
                     break
             if is_dup:
                 continue
-            seen[(norm, base)] = True
+            seen[(norm, base, v.source)] = True
             unique.append(v)
 
         if not unique:
@@ -399,7 +399,7 @@ def build_full_history(
     if not dry_run:
         output.parent.mkdir(parents=True, exist_ok=True)
 
-    seen: dict[tuple[str, datetime], bool] = {}
+    seen: dict[tuple[str, datetime, str], bool] = {}
     row_count = 0
     duplicate_count = 0
     output_source_counts: dict[str, int] = {}
@@ -411,14 +411,14 @@ def build_full_history(
             base = timestamp.replace(microsecond=0)
             is_dup = False
             for delta in range(-tolerance_seconds, tolerance_seconds + 1):
-                key = (norm, base + timedelta(seconds=delta))
+                key = (norm, base + timedelta(seconds=delta), source)
                 if key in seen:
                     is_dup = True
                     duplicate_count += 1
                     break
             if is_dup:
                 continue
-            seen[(norm, base)] = True
+            seen[(norm, base, source)] = True
             row_count += 1
             output_source_counts[source] = output_source_counts.get(source, 0) + 1
             yield {

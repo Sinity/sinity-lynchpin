@@ -56,6 +56,21 @@ def test_live_profile_snapshot_failure_keeps_prior_raw_batch(monkeypatch, tmp_pa
     assert "prior.example" in prior.read_text()
 
 
+def test_history_merge_keeps_same_visit_from_distinct_observation_sources(tmp_path) -> None:
+    data = tmp_path / "segments"
+    data.mkdir()
+    for name, source in (("active", "live_profile:chrome/Default"), ("archive", "takeout:export")):
+        (data / f"{name}_unique_2026-05-01_to_2026-05-01.ndjson").write_text(
+            json.dumps({"iso_time": "2026-05-01T12:00:00+00:00", "url": "https://same.example/", "source": source}) + "\n"
+        )
+    output = tmp_path / "derived" / "full_history.ndjson"
+    report = webhistory.build_full_history(data_dir=data, output=output)
+    from lynchpin.sources.web import iter_file_visits
+
+    assert report["row_count"] == 2
+    assert {row.source for row in iter_file_visits(output)} == {"live_profile:chrome/Default", "takeout:export"}
+
+
 def test_build_full_history_streams_deduplicated_rows_in_order(monkeypatch, tmp_path) -> None:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
