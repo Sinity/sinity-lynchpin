@@ -104,7 +104,7 @@ class SparseEventVolume:
     """Observed event totals with explicit event-day and calendar denominators."""
 
     unit: str
-    total: float
+    total: Optional[float]
     event_days: int
     calendar_days: int
     per_event_day: Optional[float]
@@ -570,12 +570,12 @@ def _build_phases(
             for name, amount in row.substance_mg_by_name.items():
                 substance_amounts[name].append(float(amount))
         event_volume: dict[str, SparseEventVolume] = {}
-        if substance_days:
-            doses = float(sum(row.substance_doses for row in substance_days))
-            event_volume["substance:doses"] = SparseEventVolume(
-                unit="doses", total=doses, event_days=len(substance_days),
-                calendar_days=n, per_event_day=doses / len(substance_days),
-            )
+        doses = float(sum(row.substance_doses for row in substance_days))
+        event_volume["substance:doses"] = SparseEventVolume(
+            unit="doses", total=doses if substance_days else None,
+            event_days=len(substance_days), calendar_days=n,
+            per_event_day=doses / len(substance_days) if substance_days else None,
+        )
         for name, amounts in substance_amounts.items():
             total = sum(amounts)
             event_days = len(amounts)
@@ -592,12 +592,12 @@ def _build_phases(
                 for row in phase_rows
                 if source in row.sources_present
             ]
-            if observed:
-                total = sum(observed)
-                event_volume[source] = SparseEventVolume(
-                    unit=unit, total=total, event_days=len(observed),
-                    calendar_days=n, per_event_day=total / len(observed),
-                )
+            total = sum(observed)
+            event_volume[source] = SparseEventVolume(
+                unit=unit, total=total if observed else None,
+                event_days=len(observed), calendar_days=n,
+                per_event_day=total / len(observed) if observed else None,
+            )
 
         # Web distraction ratio: only compute when at least one day has visits.
         web_rows = [r for r in phase_rows if r.web_visits > 0]
@@ -658,9 +658,10 @@ def _summarize_phases(report: LifePhaseReport) -> str:
         web_dist = f"{p.web_distraction_ratio:.2f}" if p.web_distraction_ratio is not None else "?"
         spotify = f"{p.spotify_hours_per_day:.1f}h" if p.spotify_hours_per_day is not None else "?"
         event_summary = ", ".join(
-            f"{name}={value.total:g}{value.unit} on {value.event_days}/{value.calendar_days} days"
+            f"{name}={f'{value.total:g}{value.unit}' if value.total is not None else 'unknown'} "
+            f"on {value.event_days}/{value.calendar_days} observed event days"
             for name, value in sorted(p.sparse_event_volume.items())
-        ) or "none observed"
+        )
         lines.append(
             f"  {p.start} → {p.end} ({p.n_days:>4}d) | "
             f"AW={aw:>4s} git={p.git_commits_per_day:>5.1f}/d "

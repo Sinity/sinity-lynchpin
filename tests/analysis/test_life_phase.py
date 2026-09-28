@@ -254,7 +254,11 @@ def test_sparse_event_volumes_keep_active_days_and_substances_separate() -> None
     assert first.sparse_event_volume["reddit"].calendar_days == 4
     assert all("quiet dates are unknown, not zero" in value.interpretation
                for value in first.sparse_event_volume.values())
-    assert phases[1].sparse_event_volume == {}
+    assert set(phases[1].sparse_event_volume) == {"substance:doses", "wykop", "reddit"}
+    for value in phases[1].sparse_event_volume.values():
+        assert (value.total, value.event_days, value.calendar_days, value.per_event_day) == (
+            None, 0, 1, None,
+        )
     assert not {"substance_mg", "wykop", "reddit"}.intersection(
         metric.name for metric in lp._METRICS
     )
@@ -277,6 +281,40 @@ def test_sparse_source_ending_does_not_create_a_zero_rate_boundary(monkeypatch) 
     wykop_coverage = next(row for row in report.event_metric_coverage if row.startswith("Wykop:"))
     assert rows[7].date.isoformat() in wykop_coverage
     assert "quiet dates unknown" in wykop_coverage
+
+
+def test_sparse_events_distinguish_no_observation_from_observed_zero() -> None:
+    start = date(2025, 1, 1)
+    rows = [_day(start + timedelta(days=i), aw=4.0) for i in range(4)]
+    rows[1].sources_present = rows[1].sources_present | {"wykop"}
+    rows[1].wykop_comments = 0
+    phases = lp._build_phases(
+        rows, [lp.PhaseBoundary(rows[3].date, 0.5, ("fixture",), ())], {},
+    )
+
+    observed = phases[0].sparse_event_volume["wykop"]
+    assert (observed.total, observed.event_days, observed.calendar_days, observed.per_event_day) == (
+        0.0, 1, 3, 0.0,
+    )
+    unknown = phases[0].sparse_event_volume["reddit"]
+    assert (unknown.total, unknown.event_days, unknown.calendar_days, unknown.per_event_day) == (
+        None, 0, 3, None,
+    )
+    assert phases[1].sparse_event_volume["wykop"].total is None
+
+
+def test_capture_boundary_with_observed_zero_does_not_split_phase(monkeypatch) -> None:
+    start = date(2025, 1, 1)
+    rows = [OperatorDay(date=start + timedelta(days=i)) for i in range(120)]
+    for row in rows[:60]:
+        row.aw_active_hours = 0.0
+        row.sources_present = frozenset({"activitywatch"})
+    _patch_sources(monkeypatch, rows, cov_first=rows[0].date, cov_last=rows[-1].date)
+
+    report = lp.analyze(rows[0].date, rows[-1].date, known_events=[])
+
+    assert report.boundaries == []
+    assert report.phases == []
 
 
 def test_life_phase_report_versions_sparse_event_schema(tmp_path, monkeypatch) -> None:
