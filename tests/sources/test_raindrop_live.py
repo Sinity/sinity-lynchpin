@@ -124,6 +124,18 @@ def test_iter_live_bookmarks_respects_since(mock_urlopen, monkeypatch):
     assert len(results) == 0
 
 
+def test_live_page_failure_is_reported(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise OSError("offline")
+    monkeypatch.setattr("lynchpin.sources.raindrop_live._api_get", fail)
+    try:
+        list(iter_live_bookmarks(token="fake-token", max_pages=1))
+    except OSError as exc:
+        assert str(exc) == "offline"
+    else:
+        raise AssertionError("API failure was incorrectly reported as an empty result")
+
+
 # ── Daily rollup tests ─────────────────────────────────────────────────────────
 
 

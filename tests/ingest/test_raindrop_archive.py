@@ -27,6 +27,20 @@ def test_iter_cache_ready_ids_filters_and_survives_bad_lines(tmp_path):
     assert list(mod.iter_cache_ready_ids([src, tmp_path / "missing.jsonl"])) == [1, 4]
 
 
+def test_retained_metadata_reads_active_trash_and_highlights(tmp_path):
+    snapshot = tmp_path / "2026-09-28-api-export"
+    snapshot.mkdir()
+    _write_jsonl(snapshot / "raindrops-all.jsonl", [{"_id": 17, "created": "2026-01-01T00:00:00Z"}])
+    _write_jsonl(snapshot / "raindrops-trash.jsonl", [{"_id": 18, "lastUpdate": "2026-02-01T00:00:00Z"}])
+    _write_jsonl(snapshot / "highlights.jsonl", [{"_id": 91, "raindropId": 17, "text": "quoted"}])
+    from lynchpin.sources.raindrop_live import iter_retained_bookmarks
+
+    rows = list(iter_retained_bookmarks(raw_root=tmp_path))
+    assert [(row.id, row.state) for row in rows] == [(17, "active"), (18, "trash")]
+    assert rows[0].created is not None and rows[0].created.year == 2026
+    assert rows[0].highlights[0]["text"] == "quoted"
+
+
 def test_download_is_resumable_and_records_errors(tmp_path, monkeypatch):
     src = tmp_path / "all.jsonl"
     _write_jsonl(src, [{"_id": i, "cache": {"status": "ready"}} for i in (1, 2, 3)])

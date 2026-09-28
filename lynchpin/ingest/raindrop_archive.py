@@ -132,6 +132,37 @@ def export_metadata(out_dir: Path, token: str) -> dict[str, int]:
     return counts
 
 
+def iter_retained_metadata(raw_root: Path | None = None) -> Iterator[dict[str, Any]]:
+    """Read the newest retained API snapshot, including trash state and highlights."""
+    root = raw_root or _default_raw_root()
+    snapshots = sorted(root.glob("*-api-export"), reverse=True)
+    if not snapshots:
+        return
+    latest = snapshots[0]
+    for filename, state in (("raindrops-all.jsonl", "active"), ("raindrops-trash.jsonl", "trash")):
+        path = latest / filename
+        if not path.exists():
+            continue
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    item = json.loads(line)
+                    yield {**item, "_lynchpin_state": state, "_lynchpin_snapshot": str(latest)}
+
+
+def iter_retained_highlights(raw_root: Path | None = None) -> Iterator[dict[str, Any]]:
+    root = raw_root or _default_raw_root()
+    snapshots = sorted(root.glob("*-api-export"), reverse=True)
+    if not snapshots:
+        return
+    path = snapshots[0] / "highlights.jsonl"
+    if path.exists():
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    yield json.loads(line)
+
+
 def iter_cache_ready_ids(jsonl_paths: Iterable[Path]) -> Iterator[int]:
     for path in jsonl_paths:
         if not path.exists():
