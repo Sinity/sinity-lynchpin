@@ -251,6 +251,11 @@ def test_materialize_atuin_history_merges_requested_window(monkeypatch, tmp_path
     rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
     assert [row["command"] for row in rows] == ["before", "new-window", "after"]
     assert calls and calls[0]["start"] is not None and calls[0]["end"] is not None
-    assert manifest["covered_dates"] == ["2026-06-05", "2026-06-06", "2026-06-07"]
+    # The old manifest never recorded input_versions, so it cannot establish
+    # its carried-forward coverage claims for 2026-06-05/07 against this
+    # run's input; only 2026-06-06 (this run's actual window) is claimed.
+    # The rows for the other days are still preserved in the output above --
+    # only the coverage *claim* outside the rescanned window is dropped.
+    assert manifest["covered_dates"] == ["2026-06-06"]
     assert manifest["window_start"] == "2026-06-06"
     assert manifest["window_end"] == "2026-06-07"

@@ -192,3 +192,31 @@ def test_merge_manifest_covered_dates_drops_stale_days_when_input_changed_and_no
         input_versions=[{"path": "source", "stat": [2]}],
     )
     assert result == (date(2026, 1, 2),)
+
+
+def test_merge_manifest_covered_dates_drops_stale_days_inside_a_stale_verified_bound(tmp_path) -> None:
+    # verified_bounds is the min/max of the *merged* row set (old
+    # carried-forward rows plus this run's freshly scanned window), so a
+    # stale day can fall inside that span purely because of rows this run
+    # never re-scanned -- it is not evidence that day was verified against
+    # the new input. With the input changed, nothing carried forward can be
+    # trusted, regardless of where it falls relative to verified_bounds.
+    manifest = tmp_path / "manifest.json"
+    previous = [{"path": "source", "stat": [1]}]
+    manifest.write_text(json.dumps({
+        "covered_dates": ["2026-01-01", "2026-01-02", "2026-01-03"],
+        "input_versions": previous,
+    }), encoding="utf-8")
+
+    result = merge_manifest_covered_dates(
+        manifest=manifest,
+        start=date(2026, 1, 2),
+        end=date(2026, 1, 3),
+        observed_dates=[date(2026, 1, 2)],
+        # Old, unverified rows for Jan 1 and Jan 3 are still present in the
+        # merged output, so the caller's verified_bounds spans all three
+        # days even though only Jan 2 was actually rescanned.
+        verified_bounds=(date(2026, 1, 1), date(2026, 1, 3)),
+        input_versions=[{"path": "source", "stat": [2]}],
+    )
+    assert result == (date(2026, 1, 2),)

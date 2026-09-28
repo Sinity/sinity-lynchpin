@@ -74,18 +74,24 @@ def merge_manifest_covered_dates(
     # that established them is unchanged. Older manifests without versions (or
     # a changed input) cannot establish that provenance outside observed rows.
     same_input = input_versions is not None and _read_manifest(manifest).get("input_versions") == input_versions
-    if verified_bounds is not None and not same_input:
+    if input_versions is not None and not same_input:
+        # The input changed (or the prior manifest never recorded a
+        # version): a carried-forward day's coverage claim was never made
+        # against *this* input, and `verified_bounds` (the min/max of the
+        # merged row set, old rows included) is not a substitute -- a day
+        # can fall inside that span purely because of rows this run never
+        # re-scanned. Only what this run actually observed can be trusted;
+        # everything else carried forward is dropped rather than silently
+        # re-stamped with the new input version.
+        existing = set()
+    elif verified_bounds is not None and not same_input:
+        # Legacy corruption guard for callers that don't track input
+        # versions at all: clip stale coverage to the true min/max of data
+        # this run can currently see.
         lower, upper = verified_bounds
         if lower > upper:
             lower, upper = upper, lower
         existing = {day for day in existing if lower <= day <= upper}
-    elif verified_bounds is None and input_versions is not None and not same_input:
-        # The caller opted into input-version verification but observed no
-        # rows at all this run, so there is no bound to clip stale coverage
-        # against. With the input also changed, nothing carried forward from
-        # the old manifest can still be trusted, so drop it rather than
-        # silently re-affirming a stale claim forever.
-        existing = set()
     existing.update(day for day in observed_dates if not (start <= day < end))
     existing.update(half_open_dates(start, end))
     return tuple(sorted(existing))
