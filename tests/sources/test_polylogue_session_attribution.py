@@ -14,6 +14,7 @@ from lynchpin.sources import polylogue_session_attribution
 from lynchpin.core.errors import SourceUnavailableError
 from lynchpin.sources.polylogue_session_attribution import (
     SessionRepoInterval,
+    _project_from_root_path,
     attribute_spans_by_session_overlap,
     session_repo_intervals,
 )
@@ -171,6 +172,17 @@ def test_session_repo_intervals_reads_facade_summaries(monkeypatch, tmp_path):
     assert not (tmp_path / "index.db-wal").exists()
     assert not (tmp_path / "index.db-shm").exists()
     assert calls == [1_000_000, 1_000_000]
+
+
+def test_project_from_root_path_resolves_repo_name_not_working_directory_basename():
+    # A session opened in a subdirectory of a checkout (e.g. lynchpin/src)
+    # must still attribute to the checkout's own name, not the leaf
+    # component of whatever path the session happened to be working in.
+    assert _project_from_root_path("/realm/project/lynchpin") == "lynchpin"
+    assert _project_from_root_path("/realm/project/lynchpin/src") == "lynchpin"
+    assert _project_from_root_path("/realm/project/lynchpin/src/lynchpin/sources") == "lynchpin"
+    assert _project_from_root_path("/home/sinity/scratch") is None
+    assert _project_from_root_path("") is None
 
 
 def test_session_repo_intervals_reports_missing_archive(tmp_path):
