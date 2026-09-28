@@ -438,7 +438,9 @@ def test_social_phase_distinguishable_from_coding_phase(
         # Every phase object should now carry the new signal attributes.
         assert hasattr(phase, "spotify_hours_per_day")
         assert hasattr(phase, "web_distraction_ratio")
-    social_phase = next(p for p in report.phases if "reddit" in p.sparse_event_volume)
+    social_phase = next(
+        p for p in report.phases if p.sparse_event_volume["reddit"].event_days > 0
+    )
     assert social_phase.sparse_event_volume["reddit"].event_days == social_phase.n_days
     assert social_phase.sparse_event_volume["reddit"].calendar_days == social_phase.n_days
 
