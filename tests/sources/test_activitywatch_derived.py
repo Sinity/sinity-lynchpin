@@ -30,6 +30,27 @@ def test_app_session_counts_observed_union_not_wall_gap():
     assert (sessions[0].end - sessions[0].start).total_seconds() == 180
 
 
+def test_app_session_absorbs_short_other_app_without_changing_anchor():
+    from lynchpin.sources.activitywatch import _app_sessions_from_spans
+    from lynchpin.sources.activitywatch_models import FocusSpan
+
+    start = datetime(2026, 6, 6, 10, tzinfo=timezone.utc)
+
+    def span(app, offset, seconds):
+        return FocusSpan(start=start + timedelta(seconds=offset),
+                         end=start + timedelta(seconds=offset + seconds),
+                         kind="focused", app=app, title=app,
+                         mode="coding", project="demo")
+
+    sessions = _app_sessions_from_spans(
+        [span("A", 0, 60), span("B", 70, 10), span("A", 90, 60),
+         span("B", 3600, 10)], min_duration_s=1,
+    )
+    assert [session.app for session in sessions] == ["A", "B"]
+    assert sessions[0].duration_s == 120
+    assert sessions[0].interruptions == 1
+
+
 def test_partition_paths_follow_relocated_derived_root(tmp_path):
     from lynchpin.ingest.activitywatch_derived_materialize import _existing_partitions
 
