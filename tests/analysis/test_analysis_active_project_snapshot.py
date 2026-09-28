@@ -132,3 +132,37 @@ def test_active_git_facts_emit_commit_and_file_rows_without_side_branches(tmp_pa
     assert modified_demo["lines_deleted"] == 1
     assert modified_demo["lines_changed"] == 2
     assert all(row["project"] == "demo" for row in rows)
+
+
+def test_active_git_facts_discover_linked_worktree_with_git_file(tmp_path: Path) -> None:
+    repo = tmp_path / "source"
+    repo.mkdir()
+    _git(repo, "init", "-b", "master")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Tester")
+    (repo / "fact.txt").write_text("original input\n", encoding="utf-8")
+    _git(repo, "add", "fact.txt")
+    _git(repo, "commit", "-m", "add authoritative fact", when="2026-05-02T10:00:00+00:00")
+
+    worktree = tmp_path / "worktree"
+    _git(repo, "worktree", "add", str(worktree), "-b", "linked")
+    assert (worktree / ".git").is_file()
+    profile = ProjectProfile(
+        name="demo",
+        path=worktree,
+        classify=_classify,
+        categories=("src", "tests", "config"),
+        colors={},
+    )
+
+    payload = build_active_commit_facts(
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 3),
+        projects=("demo",),
+        profiles={"demo": profile},
+    )
+
+    assert payload["projects"][0]["is_git_repo"] is True
+    assert payload["summary"]["commit_count"] == 1
+    assert [row["subject"] for row in payload["commits"]] == ["add authoritative fact"]
+    assert payload["commits"][0]["date"] == "2026-05-02"
