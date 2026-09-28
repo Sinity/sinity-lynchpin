@@ -40,6 +40,34 @@ def _ready_client(
     )
 
 
+def test_coverage_bounds_uses_day_product(monkeypatch):
+    queries = []
+    def coverage(query):
+        queries.append(query)
+        return [
+            SimpleNamespace(bucket="2026-04-23", session_count=2),
+            SimpleNamespace(bucket="2026-04-21", session_count=1),
+            SimpleNamespace(bucket="2026-04-22", session_count=0),
+        ]
+    monkeypatch.setattr(polylogue, "_polylogue_client", lambda: SimpleNamespace(list_archive_coverage_insights=coverage))
+
+    bounds = polylogue.coverage_bounds()
+
+    assert bounds is not None
+    assert (bounds.first, bounds.last) == (date(2026, 4, 21), date(2026, 4, 23))
+    assert queries[0].group_by == "day"
+    assert queries[0].limit is None
+
+
+def test_coverage_bounds_reports_unavailable_product(monkeypatch, caplog):
+    def unavailable(query):
+        raise RuntimeError("product absent")
+    monkeypatch.setattr(polylogue, "_polylogue_client", lambda: SimpleNamespace(list_archive_coverage_insights=unavailable))
+
+    assert polylogue.coverage_bounds() is None
+    assert "coverage unavailable" in caplog.text
+
+
 def test_iter_session_profiles_reloads_when_polylogue_db_changes(
     tmp_path, monkeypatch
 ) -> None:

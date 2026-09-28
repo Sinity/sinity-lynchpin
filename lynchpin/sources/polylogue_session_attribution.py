@@ -1,11 +1,10 @@
-"""Session/repo time-overlap project attribution via the raw Polylogue index DB.
+"""Session/repo time-overlap attribution via Polylogue session summaries.
 
 Fallback tier for ``activitywatch._enrich_with_polylogue``: the primary tier
 attributes spans via polylogue ``work_events``, which requires materialized
 insight products that are frequently absent (devshell: polylogue:missing).
-This tier instead reads ``sessions`` + ``session_repos`` directly from the
-Polylogue index sqlite DB — those tables are populated by ordinary archive
-ingestion, no insight materialization needed — and attributes a focus span
+This tier reads the typed archive summary facade, available after ordinary
+ingestion without insight materialization, and attributes a focus span
 to whichever ``/realm/project/*`` checkout the dominant overlapping session
 was rooted in.
 
@@ -22,13 +21,14 @@ from __future__ import annotations
 import functools
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Protocol, Sequence
 
 from ..core.cache import files_signature
+from ..core.errors import SourceUnavailableError
 from ..core.primitives import split_by_day
-from .polylogue_client import _readonly_polylogue_connection
+from .polylogue_client import _polylogue_client
 
 __all__ = [
     "SessionRepoInterval",
@@ -40,6 +40,7 @@ __all__ = [
 
 _DEFAULT_CONFIDENCE_FLOOR = 0.3
 _DEFAULT_SLACK_S = 30.0
+_SUMMARY_LIMIT = 1_000_000
 
 
 class SpanWindow(Protocol):
@@ -54,12 +55,13 @@ class SpanWindow(Protocol):
 
 @dataclass(frozen=True)
 class SessionRepoInterval:
-    """One session's [created, updated] window rooted in one repo checkout."""
+    """One session's [created, updated] window and its reported directory."""
 
     session_id: str
     project: str
     start: datetime
     end: datetime
+    provenance: str = "polylogue.session_summary.working_directories"
 
 
 @dataclass(frozen=True)
@@ -78,11 +80,13 @@ def _project_from_root_path(root_path: str) -> str | None:
 
 
 def session_repo_intervals(db_path: str) -> tuple[SessionRepoInterval, ...]:
-    """Read (session, project, [created,updated]) triples from the index DB.
+    """Read session intervals from Polylogue's typed archive summaries.
 
     Invalidate the cached intervals when the database or its WAL changes.
     """
     path = Path(db_path)
+    if not path.exists():
+        raise SourceUnavailableError("polylogue", path=db_path, reason="archive index absent")
     signature = files_signature((path, Path(f"{path}-wal")))
     return _session_repo_intervals_cached(db_path, signature)
 
@@ -91,31 +95,31 @@ def session_repo_intervals(db_path: str) -> tuple[SessionRepoInterval, ...]:
 def _session_repo_intervals_cached(
     db_path: str, _signature: object
 ) -> tuple[SessionRepoInterval, ...]:
-    with _readonly_polylogue_connection(Path(db_path)) as conn:
-        rows = conn.execute(
-            """
-            SELECT sr.session_id, sr.root_path, s.created_at_ms, s.updated_at_ms
-            FROM session_repos sr
-            JOIN sessions s ON s.session_id = sr.session_id
-            WHERE sr.root_path LIKE '/realm/project/%'
-              AND s.created_at_ms IS NOT NULL
-              AND s.updated_at_ms IS NOT NULL
-              AND s.updated_at_ms >= s.created_at_ms
-            """
-        ).fetchall()
+    try:
+        # Explicit limit overrides the facade's default single-page cap.
+        summaries = _polylogue_client().list_summaries(limit=_SUMMARY_LIMIT)
+    except Exception as exc:
+        raise SourceUnavailableError(
+            "polylogue", path=db_path, reason=f"session summaries unavailable: {exc}"
+        ) from exc
+    if len(summaries) >= _SUMMARY_LIMIT:
+        raise SourceUnavailableError(
+            "polylogue", path=db_path, reason="session summary limit reached"
+        )
 
     out: list[SessionRepoInterval] = []
-    for session_id, root_path, created_ms, updated_ms in rows:
-        project = _project_from_root_path(root_path)
-        if not project:
+    for summary in summaries:
+        start, end = summary.created_at, summary.updated_at
+        if start is None or end is None or end <= start:
             continue
-        start = datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc)
-        end = datetime.fromtimestamp(updated_ms / 1000, tz=timezone.utc)
-        if end <= start:
-            continue
-        out.append(
-            SessionRepoInterval(session_id=session_id, project=project, start=start, end=end)
-        )
+        for root_path in summary.working_directories:
+            if not root_path.startswith("/realm/project/"):
+                continue
+            project = _project_from_root_path(root_path)
+            if project:
+                out.append(SessionRepoInterval(
+                    session_id=str(summary.id), project=project, start=start, end=end,
+                ))
     return tuple(out)
 
 

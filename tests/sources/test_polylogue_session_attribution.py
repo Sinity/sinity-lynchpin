@@ -1,14 +1,17 @@
-"""Coverage for the index-DB session/repo overlap attributor (fallback tier)."""
+"""Coverage for the typed Polylogue session overlap attributor."""
 
 from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from lynchpin.sources.polylogue_client import _readonly_polylogue_connection
+from lynchpin.sources import polylogue_session_attribution
+from lynchpin.core.errors import SourceUnavailableError
 from lynchpin.sources.polylogue_session_attribution import (
     SessionRepoInterval,
     attribute_spans_by_session_overlap,
@@ -131,9 +134,20 @@ def _make_index_db(path: str) -> None:
     conn.close()
 
 
-def test_session_repo_intervals_reads_real_schema_shape(tmp_path):
+def test_session_repo_intervals_reads_facade_summaries(monkeypatch, tmp_path):
     db_path = str(tmp_path / "index.db")
-    _make_index_db(db_path)
+    polylogue_session_attribution._session_repo_intervals_cached.cache_clear()
+    (tmp_path / "index.db").touch()
+    calls = []
+    summaries = [
+        SimpleNamespace(id="claude-code-session:abc", working_directories=("/realm/project/sinity-lynchpin",), created_at=datetime.fromtimestamp(1_776_000_000, tz=timezone.utc), updated_at=datetime.fromtimestamp(1_776_003_600, tz=timezone.utc)),
+        SimpleNamespace(id="claude-code-session:def", working_directories=("/home/sinity/scratch",), created_at=datetime.fromtimestamp(1_776_000_000, tz=timezone.utc), updated_at=datetime.fromtimestamp(1_776_003_600, tz=timezone.utc)),
+        SimpleNamespace(id="claude-code-session:ghi", working_directories=("/realm/project/sinnix",), created_at=datetime.fromtimestamp(1_776_003_600, tz=timezone.utc), updated_at=datetime.fromtimestamp(1_776_000_000, tz=timezone.utc)),
+    ]
+    def list_summaries(*, limit):
+        calls.append(limit)
+        return summaries
+    monkeypatch.setattr(polylogue_session_attribution, "_polylogue_client", lambda: SimpleNamespace(list_summaries=list_summaries))
 
     intervals = session_repo_intervals(db_path)
 
@@ -145,16 +159,10 @@ def test_session_repo_intervals_reads_real_schema_shape(tmp_path):
             end=datetime.fromtimestamp(1_776_003_600_000 / 1000, tz=timezone.utc),
         ),
     )
+    assert intervals[0].provenance == "polylogue.session_summary.working_directories"
 
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT INTO sessions VALUES (?, ?, ?)",
-            ("claude-code-session:new", 1_776_000_000_000, 1_776_003_600_000),
-        )
-        conn.execute(
-            "INSERT INTO session_repos VALUES (?, ?)",
-            ("claude-code-session:new", "/realm/project/polylogue"),
-        )
+    summaries.append(SimpleNamespace(id="claude-code-session:new", working_directories=("/realm/project/polylogue",), created_at=datetime.fromtimestamp(1_776_000_000, tz=timezone.utc), updated_at=datetime.fromtimestamp(1_776_003_600, tz=timezone.utc)))
+    polylogue_session_attribution._session_repo_intervals_cached.cache_clear()
 
     assert {interval.session_id for interval in session_repo_intervals(db_path)} == {
         "claude-code-session:abc",
@@ -162,6 +170,25 @@ def test_session_repo_intervals_reads_real_schema_shape(tmp_path):
     }
     assert not (tmp_path / "index.db-wal").exists()
     assert not (tmp_path / "index.db-shm").exists()
+    assert calls == [1_000_000, 1_000_000]
+
+
+def test_session_repo_intervals_reports_missing_archive(tmp_path):
+    with pytest.raises(SourceUnavailableError):
+        session_repo_intervals(str(tmp_path / "missing.db"))
+
+
+def test_session_repo_intervals_reports_unavailable_facade(monkeypatch, tmp_path):
+    path = tmp_path / "index.db"
+    path.touch()
+    def unavailable(*, limit):
+        raise RuntimeError("archive product missing")
+    monkeypatch.setattr(
+        polylogue_session_attribution, "_polylogue_client",
+        lambda: SimpleNamespace(list_summaries=unavailable),
+    )
+    with pytest.raises(SourceUnavailableError, match="archive product missing"):
+        session_repo_intervals(str(path))
 
 
 def test_polylogue_connection_refuses_writes_and_missing_file(tmp_path):

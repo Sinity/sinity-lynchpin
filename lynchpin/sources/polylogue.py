@@ -1360,22 +1360,25 @@ def daily_activity(*, start: date, end: date) -> list[ChatDayActivity]:
 
 
 def coverage_bounds() -> CoverageBounds | None:
-    db = _default_polylogue_db_path()
-    if not db.exists():
-        return None
     try:
-        with _readonly_polylogue_connection(db) as conn:
-            row = conn.execute(
-                "SELECT MIN(created_at), MAX(created_at) FROM conversations"
-            ).fetchone()
-    except Exception:
+        from polylogue.insights.archive import ArchiveCoverageInsightQuery
+
+        rows = _polylogue_client().list_archive_coverage_insights(
+            ArchiveCoverageInsightQuery(group_by="day", limit=None)
+        )
+    except Exception as exc:
+        logger.warning("polylogue coverage unavailable: %s", exc)
         return None
-    if not row or row[0] is None:
+    days = []
+    for row in rows:
+        try:
+            if row.session_count:
+                days.append(date.fromisoformat(str(row.bucket)))
+        except (TypeError, ValueError):
+            logger.warning("polylogue coverage has invalid day bucket: %r", row.bucket)
+    if not days:
         return None
-    from datetime import datetime
-    first = datetime.fromisoformat(row[0]).date()
-    last = datetime.fromisoformat(row[1]).date()
-    return CoverageBounds(source="polylogue", first=first, last=last, kind="capture")
+    return CoverageBounds(source="polylogue", first=min(days), last=max(days), kind="capture")
 
 
 def work_thread_activity(*, start: date, end: date) -> list[ChatDayActivity]:

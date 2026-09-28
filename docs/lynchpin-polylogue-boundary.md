@@ -30,6 +30,10 @@ reimplement transcript ingestion.
 ## Read contract
 
 Normal reads use the typed Polylogue facade or stable archive-product tables.
+ActivityWatch's coarse session overlap fallback reads typed archive summaries:
+their reported working directories provide the project identity and their
+timestamps bound the interval. Coverage bounds use the day archive-coverage
+insight. A failed facade read is unavailable, not an empty observation.
 `archive_readiness()` may inspect SQLite directly because it must diagnose the
 archive even when facade construction or a required product read is degraded.
 That diagnostic exception does not permit ordinary analysis to bypass the

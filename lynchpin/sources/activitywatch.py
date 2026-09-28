@@ -14,6 +14,7 @@ API surface.
 from __future__ import annotations
 
 import functools
+import logging
 import math
 from collections import defaultdict
 from bisect import bisect_left
@@ -55,6 +56,8 @@ from .activitywatch_models import (
     _WindowSpan,
 )
 from .activitywatch_raw import afk_events, events, web_events, window_events
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "AWEvent",
@@ -260,11 +263,9 @@ def _enrich_with_polylogue(
     1. Primary: cross-reference against polylogue work_events (per-turn
        granularity) and resolve each event's conversation to a project via
        session profiles. Requires materialized polylogue insight products.
-    2. Fallback: for spans the primary tier leaves unattributed (including
-       when insight products aren't materialized at all), read
-       sessions/session_repos straight from the polylogue index DB and
-       attribute by dominant session-interval overlap. Coarser but needs no
-       materialization — see ``polylogue_session_attribution``.
+    2. Fallback: for spans the primary tier leaves unattributed, read typed
+       Polylogue archive summaries and attribute by dominant session-interval
+       overlap. This route needs no insight materialization.
 
     Gracefully returns spans unchanged when polylogue is unavailable.
     """
@@ -309,7 +310,7 @@ def _enrich_with_polylogue(
 def _enrich_with_session_overlap(
     spans: list[FocusSpan], idxs: list[int]
 ) -> list[FocusSpan]:
-    """Fallback tier: attribute remaining spans via raw index-DB session overlap.
+    """Fallback tier: attribute remaining spans via typed archive summaries.
 
     Gracefully returns spans unchanged when the polylogue index DB is
     missing or unreadable.
@@ -322,10 +323,9 @@ def _enrich_with_session_overlap(
 
     try:
         db_path = get_config().polylogue_db
-        if not db_path.exists():
-            return spans
         intervals = session_repo_intervals(str(db_path))
-    except Exception:
+    except Exception as exc:
+        logger.warning("polylogue session overlap unavailable: %s", exc)
         return spans
     if not intervals:
         return spans
