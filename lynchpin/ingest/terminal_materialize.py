@@ -9,13 +9,14 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..core.cache import input_versions
 from ..core.config import get_config
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
 from ..core.primitives import date_to_dt_range, logical_date
 from ..sources.terminal import canonical_atuin_history_path, commands_from_atuin_db
+from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, product_lock, write_manifest
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
 
 
 ATUIN_HISTORY_SCHEMA_VERSION = 1
@@ -37,6 +38,7 @@ def materialize_atuin_history(
     if start is not None and end is not None and end <= start:
         raise MaterializationError("terminal_materialize", reason="Atuin history materialization end must be after start")
     input_files = atuin_input_files(cfg)
+    source_versions = input_versions(input_files)
     output.parent.mkdir(parents=True, exist_ok=True)
 
     query_window = _query_window(start, end)
@@ -49,6 +51,25 @@ def materialize_atuin_history(
             continue
         window_rows.append(_command_row(command))
 
+    if input_versions(input_files) != source_versions:
+        raise MaterializationError("terminal_materialize", reason="Atuin input changed during source scan")
+
+    # Source queries can overlap. Publication cannot: the rows, prior
+    # coverage, shrink guard, and manifest are one read/modify/write unit.
+    with product_lock(output):
+        if input_versions(input_files) != source_versions:
+            raise MaterializationError("terminal_materialize", reason="Atuin input changed before publication")
+        return _publish_atuin_history(output, start, end, window_rows, input_files, source_versions)
+
+
+def _publish_atuin_history(
+    output: Path,
+    start: date | None,
+    end: date | None,
+    window_rows: list[CommandRow],
+    input_files: tuple[Path, ...],
+    source_versions: list[dict[str, Any]],
+) -> dict[str, Any]:
     if start is not None and end is not None:
         rows = _merge_existing_rows(output=output, start=start, end=end, window_rows=window_rows)
         logical_dates = [_row_logical_date(row) for row in rows]
@@ -57,6 +78,7 @@ def materialize_atuin_history(
             start=start,
             end=end,
             verified_bounds=(min(logical_dates), max(logical_dates)) if logical_dates else None,
+            versions=source_versions,
         )
     else:
         rows = window_rows
@@ -85,6 +107,7 @@ def materialize_atuin_history(
         "window_end": end.isoformat() if end is not None else None,
         "window_semantics": "start inclusive, end exclusive" if start is not None and end is not None else None,
         "input_files": [str(path) for path in input_files],
+        "input_versions": source_versions,
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
     }
@@ -152,8 +175,12 @@ def _merge_covered_dates(
     start: date,
     end: date,
     verified_bounds: tuple[date, date] | None = None,
+    versions: list[dict[str, Any]] | None = None,
 ) -> tuple[date, ...]:
-    return merge_manifest_covered_dates(manifest=manifest, start=start, end=end, verified_bounds=verified_bounds)
+    return merge_manifest_covered_dates(
+        manifest=manifest, start=start, end=end,
+        verified_bounds=verified_bounds, input_versions=versions,
+    )
 
 
 def _query_window(start: date | None, end: date | None) -> tuple[datetime, datetime] | None:

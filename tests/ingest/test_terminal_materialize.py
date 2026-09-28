@@ -1,10 +1,105 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
+from threading import Barrier, Event
 from types import SimpleNamespace
 
 from lynchpin.sources.terminal import AtuinCommand
+
+
+def _command(day: int) -> AtuinCommand:
+    return AtuinCommand(
+        timestamp=datetime(2026, 1, day, 10, tzinfo=timezone.utc),
+        duration_ns=1, exit_code=0, cwd="/repo", command=f"command-day-{day}",
+    )
+
+
+def test_sparse_atuin_refresh_keeps_verified_empty_days_with_unchanged_input(monkeypatch, tmp_path):
+    from lynchpin.ingest import terminal_materialize
+
+    db = tmp_path / "history.db"
+    db.write_text("fixture", encoding="utf-8")
+    output = tmp_path / "history.ndjson"
+    monkeypatch.setattr(terminal_materialize, "get_config", lambda: SimpleNamespace(atuin_db=db))
+    monkeypatch.setattr(terminal_materialize, "commands_from_atuin_db", lambda _db, **_kw: iter([_command(2)]))
+
+    windows = [(1, 4), (2, 4), (1, 3), (2, 4)]
+    coverage = [
+        terminal_materialize.materialize_atuin_history(
+            output=output, start=date(2026, 1, first), end=date(2026, 1, last),
+        )["covered_dates"]
+        for first, last in windows
+    ]
+    assert coverage == [["2026-01-01", "2026-01-02", "2026-01-03"]] * 4
+    assert len(output.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_concurrent_disjoint_atuin_windows_both_publish(monkeypatch, tmp_path):
+    from lynchpin.ingest import terminal_materialize
+
+    db = tmp_path / "history.db"
+    db.write_text("fixture", encoding="utf-8")
+    output = tmp_path / "history.ndjson"
+    monkeypatch.setattr(terminal_materialize, "get_config", lambda: SimpleNamespace(atuin_db=db))
+    barrier = Barrier(2)
+
+    def source(_db, **_kwargs):
+        barrier.wait(timeout=10)
+        return iter([_command(day) for day in (1, 2, 3)])
+
+    monkeypatch.setattr(terminal_materialize, "commands_from_atuin_db", source)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        calls = [
+            pool.submit(terminal_materialize.materialize_atuin_history, output=output,
+                        start=date(2026, 1, first), end=date(2026, 1, last))
+            for first, last in ((1, 2), (2, 4))
+        ]
+        manifests = [call.result(timeout=20) for call in calls]
+
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    manifest = json.loads(output.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+    assert sorted(row["command"] for row in rows) == [f"command-day-{day}" for day in (1, 2, 3)]
+    assert sorted(item["row_count"] for item in manifests) in ([1, 3], [2, 3])
+    assert manifest["row_count"] == len(rows) == 3
+    assert manifest["covered_dates"] == ["2026-01-01", "2026-01-02", "2026-01-03"]
+
+
+def test_atuin_reader_waits_for_data_and_manifest_publication(monkeypatch, tmp_path):
+    from lynchpin.ingest import terminal_materialize
+    from lynchpin.sources import terminal
+
+    db = tmp_path / "history.db"
+    db.write_text("fixture", encoding="utf-8")
+    output = tmp_path / "history.ndjson"
+    monkeypatch.setattr(terminal_materialize, "get_config", lambda: SimpleNamespace(atuin_db=db))
+    monkeypatch.setattr(terminal_materialize, "commands_from_atuin_db", lambda _db, **_kw: iter([_command(1)]))
+    monkeypatch.setattr(terminal, "canonical_atuin_history_path", lambda: output)
+    data_written = Event()
+    finish_manifest = Event()
+    reader_started = Event()
+    original = terminal_materialize.write_manifest
+
+    def delayed_manifest(path, fields):
+        data_written.set()
+        assert finish_manifest.wait(timeout=10)
+        original(path, fields)
+
+    monkeypatch.setattr(terminal_materialize, "write_manifest", delayed_manifest)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writer = pool.submit(terminal_materialize.materialize_atuin_history, output=output)
+        assert data_written.wait(timeout=10)
+        def read_commands():
+            reader_started.set()
+            return list(terminal.commands(ensure=False))
+
+        reader = pool.submit(read_commands)
+        assert reader_started.wait(timeout=10)
+        assert not reader.done()
+        finish_manifest.set()
+        assert writer.result(timeout=10)["row_count"] == 1
+        assert [command.command for command in reader.result(timeout=10)] == ["command-day-1"]
 
 
 def test_materialize_atuin_history_records_input_high_water(monkeypatch, tmp_path):

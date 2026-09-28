@@ -148,3 +148,23 @@ def test_merge_manifest_covered_dates_skips_verification_without_bounds(tmp_path
 
     assert date(2010, 1, 1) in result
     assert date(2026, 7, 12) in result
+
+
+def test_merge_manifest_covered_dates_keeps_empty_days_only_for_matching_input(tmp_path) -> None:
+    manifest = tmp_path / "manifest.json"
+    previous = [{"path": "source", "stat": [1]}]
+    manifest.write_text(json.dumps({
+        "covered_dates": ["2026-01-01", "2026-01-02", "2026-01-03"],
+        "input_versions": previous,
+    }), encoding="utf-8")
+
+    kwargs = dict(
+        manifest=manifest, start=date(2026, 1, 2), end=date(2026, 1, 3),
+        verified_bounds=(date(2026, 1, 2), date(2026, 1, 2)),
+    )
+    assert merge_manifest_covered_dates(**kwargs, input_versions=previous) == (
+        date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3),
+    )
+    assert merge_manifest_covered_dates(**kwargs, input_versions=[{"path": "source", "stat": [2]}]) == (
+        date(2026, 1, 2),
+    )
