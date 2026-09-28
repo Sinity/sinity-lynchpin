@@ -652,9 +652,9 @@ def _summarize_phases(report: LifePhaseReport) -> str:
             lines.append(f"  {prov}")
     lines += ["", "Phases:"]
     for p in report.phases:
-        aw = f"{p.aw_active_hours:.0f}h" if p.aw_active_hours else "?"
-        stress = f"{p.stress_mean:.0f}" if p.stress_mean else "?"
-        sleep = f"{p.sleep_hours:.1f}h" if p.sleep_hours else "?"
+        aw = f"{p.aw_active_hours:.0f}h" if p.aw_active_hours is not None else "?"
+        stress = f"{p.stress_mean:.0f}" if p.stress_mean is not None else "?"
+        sleep = f"{p.sleep_hours:.1f}h" if p.sleep_hours is not None else "?"
         web_dist = f"{p.web_distraction_ratio:.2f}" if p.web_distraction_ratio is not None else "?"
         spotify = f"{p.spotify_hours_per_day:.1f}h" if p.spotify_hours_per_day is not None else "?"
         event_summary = ", ".join(

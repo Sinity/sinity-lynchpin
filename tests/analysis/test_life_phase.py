@@ -302,6 +302,9 @@ def test_sparse_events_distinguish_no_observation_from_observed_zero() -> None:
     )
     assert phases[1].sparse_event_volume["wykop"].total is None
 
+    summary_report = lp.LifePhaseReport(start, rows[-1].date, len(rows), phases=phases)
+    assert "wykop=0comments on 1/3" in lp._summarize_phases(summary_report)
+
 
 def test_capture_boundary_with_observed_zero_does_not_split_phase(monkeypatch) -> None:
     start = date(2025, 1, 1)
@@ -315,6 +318,19 @@ def test_capture_boundary_with_observed_zero_does_not_split_phase(monkeypatch) -
 
     assert report.boundaries == []
     assert report.phases == []
+
+
+def test_observed_zero_is_rendered_in_phase_summary() -> None:
+    start = date(2025, 1, 1)
+    phase = lp.LifePhase(start, start, 1, aw_active_hours=0.0, stress_mean=0.0,
+                         sleep_hours=0.0)
+    report = lp.LifePhaseReport(start, start, 1, phases=[phase])
+
+    summary = lp._summarize_phases(report)
+
+    assert "AW=  0h" in summary
+    assert "stress=  0" in summary
+    assert "sleep= 0.0h" in summary
 
 
 def test_life_phase_report_versions_sparse_event_schema(tmp_path, monkeypatch) -> None:
