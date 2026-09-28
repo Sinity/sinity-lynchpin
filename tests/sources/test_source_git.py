@@ -399,6 +399,21 @@ def test_linked_worktree_reads_the_same_history_as_its_primary(tmp_path):
     assert [r.repo for r in git_source._iter_repo_commit_records(linked, **window)] == ["primary"]
 
 
+def test_commit_activity_from_linked_worktree_reports_primary_repo_identity(tmp_path):
+    # Same identity gap as _iter_repo_commit_records, but for the
+    # commit-activity route (iter_commit_activity/summarize_commit_activity),
+    # which used the checkout basename directly instead of the shared
+    # repository identity.
+    primary = tmp_path / "primary"
+    _init_repo(primary)
+    _commit_at(primary, "a.txt", "feat: base", "2026-01-02T12:00:00+00:00")
+    linked = tmp_path / "some-batch-worktree-suffix"
+    _git(primary, "worktree", "add", "-q", str(linked))
+    events = list(git_source.iter_commit_activity([linked], start_month="2026-01", end_month="2026-01"))
+    assert events
+    assert {e.repo for e in events} == {"primary"}
+
+
 def test_dangling_declared_default_ref_is_a_typed_failure(tmp_path):
     # Anti-vacuity: returning an empty history when origin/HEAD points at a
     # ref that does not resolve makes a broken repository look inactive.

@@ -757,7 +757,7 @@ def iter_commit_activity(
                 dt = datetime.fromisoformat(stamp)
             except ValueError:
                 continue
-            yield GitCommitActivity(repo=repo.name, timestamp=dt)
+            yield GitCommitActivity(repo=_repo_identity(repo), timestamp=dt)
 
 
 def summarize_commit_activity(
