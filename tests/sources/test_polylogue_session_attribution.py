@@ -212,6 +212,18 @@ def test_session_spanning_two_checkouts_attributes_no_span(monkeypatch, tmp_path
             updated_at=end,
         ),
         SimpleNamespace(
+            id="claude-code-session:unregistered",
+            working_directories=("/realm/project/sinnix", "/realm/project/other-checkout"),
+            created_at=start,
+            updated_at=end,
+        ),
+        SimpleNamespace(
+            id="claude-code-session:outside",
+            working_directories=("/realm/project/sinnix", "/home/sinity/scratch"),
+            created_at=start,
+            updated_at=end,
+        ),
+        SimpleNamespace(
             id="claude-code-session:same",
             working_directories=("/realm/project/sinnix", "/realm/project/sinnix/modules"),
             created_at=start,

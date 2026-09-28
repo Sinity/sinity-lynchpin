@@ -131,16 +131,14 @@ def _session_repo_intervals_cached(
         start, end = summary.created_at, summary.updated_at
         if start is None or end is None or end <= start:
             continue
-        projects = {
-            project
-            for root_path in summary.working_directories
-            if (project := _project_from_root_path(root_path))
-        }
-        # A session that worked in several checkouts gives no evidence which
-        # one a given span belongs to; its interval would claim all of them.
-        if len(projects) == 1:
+        # Every working directory must resolve to the same registered
+        # checkout. A session that also worked elsewhere (another checkout,
+        # registered or not, or any other directory) gives no evidence which
+        # place a given span belongs to, so it attributes nothing.
+        projects = {_project_from_root_path(root_path) for root_path in summary.working_directories}
+        if len(projects) == 1 and (project := projects.pop()) is not None:
             out.append(SessionRepoInterval(
-                session_id=str(summary.id), project=projects.pop(), start=start, end=end,
+                session_id=str(summary.id), project=project, start=start, end=end,
             ))
     return tuple(out)
 
