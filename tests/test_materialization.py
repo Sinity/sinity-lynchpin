@@ -260,7 +260,10 @@ def test_build_full_history_merges_requested_window(tmp_path):
         "https://example.com/new",
         "https://example.com/after",
     ]
-    assert [row["source"] for row in rows] == ["old", str(segment), "old"]
+    # The written row preserves each visit's native source tag (as recorded
+    # in its segment file), not the segment's file path; manifest accounting
+    # (segments/source_counts) is keyed by path separately.
+    assert [row["source"] for row in rows] == ["old", "fixture", "old"]
     assert report["covered_dates"] == ["2026-01-01", "2026-01-02", "2026-01-03"]
     assert report["window_start"] == "2026-01-02"
     assert report["window_end"] == "2026-01-03"

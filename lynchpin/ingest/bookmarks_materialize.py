@@ -98,9 +98,11 @@ def _discover_bookmark_files(roots: tuple[Path, ...]) -> list[Path]:
                 continue
     for history, _label in discover_profile_history_dbs():
         active = history.parent / "Bookmarks"
-        if not active.is_file():
-            raise MaterializationError("browser_bookmarks", reason=f"active profile bookmarks missing: {active}")
-        files.add(active)
+        # A profile with no Bookmarks file yet (fresh profile, or one that
+        # has never bookmarked anything) is not an error; only a Bookmarks
+        # file that exists but cannot be read/parsed is (handled below).
+        if active.is_file():
+            files.add(active)
     return sorted(files)
 
 
