@@ -237,13 +237,16 @@ def test_messenger_materialization_preserves_native_occurrences_and_reads_them(
     from lynchpin.sources.exports_messenger import iter_fbmessenger_messages
 
     raw = tmp_path / "gdpr"
+    sources = []
     for folder, thread_id, body in (
         ("one", "conversation-1", "same title"),
         ("two", "conversation-2", "same title"),
+        ("duplicate", "conversation-1", "same title"),
     ):
         directory = raw / folder / "messages"
         directory.mkdir(parents=True)
-        (directory / "message_1.json").write_text(
+        source = directory / "message_1.json"
+        source.write_text(
             json.dumps({
                 "threadId": thread_id,
                 "threadName": body,
@@ -256,6 +259,8 @@ def test_messenger_materialization_preserves_native_occurrences_and_reads_them(
             }),
             encoding="utf-8",
         )
+        if folder == "one":
+            sources.append(source)
     accounts = tmp_path / "accounts"
     monkeypatch.setattr(exports_materialize, "get_config", lambda: SimpleNamespace(
         accounts_root=accounts, fbmessenger_gdpr_root=raw
@@ -273,6 +278,14 @@ def test_messenger_materialization_preserves_native_occurrences_and_reads_them(
     assert {thread["thread_id"] for thread in threads} == {"conversation-1", "conversation-2"}
     assert len({message.source_locator for message in messages}) == 6
     assert messages_path.read_text(encoding="utf-8") == before, "unchanged reimport must be idempotent"
+
+    revised = json.loads(sources[0].read_text(encoding="utf-8"))
+    revised["messages"][0]["text"] = "revised"
+    sources[0].write_text(json.dumps(revised), encoding="utf-8")
+    exports_materialize.materialize_messenger()
+    revised_messages = list(iter_fbmessenger_messages(paths=[messages_path], ensure=False))
+    assert len(revised_messages) == 6, "a revised occurrence must replace its prior locator"
+    assert sum(message.text == "revised" for message in revised_messages) == 1
 
 
 def test_reddit_manifest_records_aggregate_bounds(tmp_path: Path) -> None:
