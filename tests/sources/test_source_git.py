@@ -504,6 +504,15 @@ def test_only_explicit_ai_coauthor_trailers_count_as_ai():
     assert git_source._extract_coauthor(agent) == "Claude Opus 5.5"
     by_address = "Co-authored-by: Helper <noreply@anthropic.com>"
     assert git_source._extract_coauthor(by_address) == "Helper"
+    # A real person's name can coincidentally contain an AI product word;
+    # an address present on an untrusted/personal domain must veto the
+    # loose name match, not just an unmatched one.
+    coincidental_name = "Co-Authored-By: Claude Dupont <claude.dupont@example.com>"
+    assert git_source._extract_coauthor(coincidental_name) is None
+    # A human's GitHub noreply address must not collide with the trusted
+    # "github.com" domain used for exact matching.
+    github_noreply = "Co-authored-by: Some Person <12345+person@users.noreply.github.com>"
+    assert git_source._extract_coauthor(github_noreply) is None
 
 
 def test_human_coauthor_is_unmarked_not_human_only(tmp_path, monkeypatch):

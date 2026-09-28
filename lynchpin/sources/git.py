@@ -119,6 +119,16 @@ _AI_COAUTHOR_RE = re.compile(
     r"\b(claude|anthropic|codex|openai|chatgpt|gpt-\d|copilot|gemini|cursor|devin|aider)\b",
     re.IGNORECASE,
 )
+# When a trailer carries an address, only a known AI-service domain can
+# assert AI attribution -- exact match, so a human's own
+# "user@users.noreply.github.com" doesn't collide with "github.com". A
+# human's own name can coincidentally contain an AI product word (a real
+# first name "Claude" with a real address), so an untrusted/personal domain
+# vetoes a loose name match too, not just an unmatched one.
+_AI_COAUTHOR_TRUSTED_DOMAINS = frozenset({
+    "anthropic.com", "openai.com", "github.com", "google.com",
+    "cursor.sh", "cursor.com", "devin.ai", "aider.chat",
+})
 
 
 class GitSourceError(SourceUnavailableError):
@@ -1150,8 +1160,11 @@ def _extract_coauthor(line: str) -> str | None:
     if not match:
         return None
     name = match.group(1).strip()
-    address = match.group(2) or ""
-    if not (_AI_COAUTHOR_RE.search(name) or _AI_COAUTHOR_RE.search(address)):
+    address = (match.group(2) or "").strip()
+    if "@" in address:
+        domain = address.rsplit("@", 1)[-1].strip().lower()
+        return name if domain in _AI_COAUTHOR_TRUSTED_DOMAINS else None
+    if not _AI_COAUTHOR_RE.search(name):
         return None
     return name
 
