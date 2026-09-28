@@ -26,7 +26,6 @@ from lynchpin.substrate.connection import (
 def isolated_substrate(monkeypatch, tmp_path: Path) -> Path:
     """Point substrate_path at an isolated tmp file for this test."""
     target = tmp_path / "substrate.duckdb"
-    monkeypatch.setenv("LYNCHPIN_SUBSTRATE_LOCK_ROOT", str(tmp_path / "runtime-locks"))
     monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: target)
     return target
 
