@@ -28,6 +28,7 @@ from typing import Protocol, Sequence
 from ..core.cache import files_signature
 from ..core.errors import SourceUnavailableError
 from ..core.primitives import split_by_day
+from ..core.projects import canonical_project_name
 from .polylogue_client import _polylogue_client
 
 __all__ = [
@@ -82,12 +83,18 @@ def _project_from_root_path(root_path: str) -> str | None:
     inside it (e.g. a session opened in ``/realm/project/lynchpin/src``),
     so the project is the path segment right after the prefix, not the
     working directory's own basename.
+
+    Delegates to the shared project registry (``canonical_project_name``)
+    rather than trusting the path segment verbatim: Polylogue's own
+    repository-edge writer requires a discoverable Git root or explicit
+    remote before treating a directory as a repository, and a raw path
+    segment (an arbitrary, possibly nonexistent directory name) offers
+    neither -- attributing to it would assert a repository edge Polylogue
+    itself would refuse to assert.
     """
     if not root_path or not root_path.startswith(_PROJECT_ROOT_PREFIX):
         return None
-    remainder = root_path[len(_PROJECT_ROOT_PREFIX):]
-    name = remainder.split("/", 1)[0]
-    return name or None
+    return canonical_project_name(root_path)
 
 
 def session_repo_intervals(db_path: str) -> tuple[SessionRepoInterval, ...]:

@@ -1377,7 +1377,12 @@ def coverage_bounds() -> CoverageBounds | None:
         logger.warning("polylogue coverage unavailable: %s", exc)
         return None
     if len(summaries) >= _SUMMARY_LIMIT:
-        logger.warning("polylogue coverage summary limit reached; bounds may be incomplete")
+        # An incomplete scan cannot bound anything: a truncated min/max is
+        # not "coverage that stops early", it is a wrong bound (the true
+        # earliest/latest day may be among the summaries never read). Fail
+        # closed rather than report it as capture evidence.
+        logger.warning("polylogue coverage summary limit reached; refusing an incomplete bound")
+        return None
     days = []
     for summary in summaries:
         if summary.created_at is not None:

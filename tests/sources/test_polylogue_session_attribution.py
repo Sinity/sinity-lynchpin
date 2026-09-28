@@ -175,14 +175,22 @@ def test_session_repo_intervals_reads_facade_summaries(monkeypatch, tmp_path):
 
 
 def test_project_from_root_path_resolves_repo_name_not_working_directory_basename():
-    # A session opened in a subdirectory of a checkout (e.g. lynchpin/src)
+    # A session opened in a subdirectory of a checkout (e.g. sinnix/src)
     # must still attribute to the checkout's own name, not the leaf
     # component of whatever path the session happened to be working in.
-    assert _project_from_root_path("/realm/project/lynchpin") == "lynchpin"
-    assert _project_from_root_path("/realm/project/lynchpin/src") == "lynchpin"
-    assert _project_from_root_path("/realm/project/lynchpin/src/lynchpin/sources") == "lynchpin"
+    assert _project_from_root_path("/realm/project/sinnix") == "sinnix"
+    assert _project_from_root_path("/realm/project/sinnix/src") == "sinnix"
+    assert _project_from_root_path("/realm/project/sinnix/src/lynchpin/sources") == "sinnix"
+    # An alias (checkout dirname differs from the canonical registry name)
+    # still resolves through the shared registry.
+    assert _project_from_root_path("/realm/project/lynchpin/src") == "sinity-lynchpin"
     assert _project_from_root_path("/home/sinity/scratch") is None
     assert _project_from_root_path("") is None
+    # A syntactically valid /realm/project/<name> path for a directory that
+    # isn't a real, registered repository must not be treated as one:
+    # Polylogue's own repository-edge writer requires a discoverable Git
+    # root or explicit remote before asserting that edge.
+    assert _project_from_root_path("/realm/project/fictional-directory") is None
 
 
 def test_session_repo_intervals_reports_missing_archive(tmp_path):
