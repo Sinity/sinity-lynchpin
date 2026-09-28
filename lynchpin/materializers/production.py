@@ -387,20 +387,6 @@ def plan_materializations(
                 added = True
         if not added:
             break
-    if maintenance:
-        materialized_windows = [step.effective_window for step in steps if step.action == "materialize" and step.effective_window is not None]
-        if materialized_windows:
-            graph_tail_start = min(item[0] for item in materialized_windows)
-            steps = [
-                replace(
-                    step,
-                    effective_window=(graph_tail_start, step.effective_window[1]),
-                    reason=f"{step.reason}; widened to the shared graph tail so downstream keybind attribution reuses this artifact instead of rescanning raw keylog",
-                )
-                if step.product == "keylog_analysis" and step.action == "materialize" and step.effective_window is not None and step.effective_window[0] > graph_tail_start
-                else step
-                for step in steps
-            ]
     return steps
 
 

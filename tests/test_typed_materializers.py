@@ -290,6 +290,35 @@ def test_nightly_maintenance_does_not_rebuild_chisel(monkeypatch) -> None:
     assert [(step.product, step.action) for step in explicit] == [("code_snapshots", "materialize")]
 
 
+def test_lagging_source_does_not_widen_independent_keylog_tail(monkeypatch) -> None:
+    from lynchpin.materializers import production
+
+    end = date(2026, 5, 1)
+    rows = [
+        SimpleNamespace(
+            name=name, status="partial", reason="stale tail",
+            first_date=date(2026, 1, 1), last_date=last_date,
+            materialized_paths=(), repair_required=False, tail_stale=True,
+        )
+        for name, last_date in (
+            ("atuin", date(2026, 1, 2)),
+            ("keylog_analysis", date(2026, 4, 20)),
+        )
+    ]
+    monkeypatch.setattr(production, "_audit", lambda: SimpleNamespace(
+        audit_materialization=lambda **_kwargs: rows,
+        _dataset_fingerprint=lambda row: row.name,
+        source_contract=lambda _name: SimpleNamespace(materialization_hint="fixture"),
+    ))
+
+    steps = {step.product: step for step in production.plan_materializations(
+        cfg=object(), maintenance=True, maintenance_end=end,
+    )}
+
+    assert steps["atuin"].effective_window == (date(2026, 1, 2), date(2026, 2, 2))
+    assert steps["keylog_analysis"].effective_window == (date(2026, 4, 20), end)
+
+
 def test_live_machine_source_does_not_rebuild_offline_fallback_on_read_or_maintenance(monkeypatch) -> None:
     from lynchpin import materialization
     from lynchpin.core.source_contracts import source_contract
