@@ -197,6 +197,41 @@ def test_project_from_root_path_resolves_repo_name_not_working_directory_basenam
     assert _project_from_root_path("/realm/project/polylogue-not-a-repo/src") is None
 
 
+def test_session_spanning_two_checkouts_attributes_no_span(monkeypatch, tmp_path):
+    """Fails if a multi-checkout session yields an interval per checkout, so a
+    fully overlapping span is claimed by whichever directory came last."""
+    (tmp_path / "index.db").touch()
+    polylogue_session_attribution._session_repo_intervals_cached.cache_clear()
+    start = datetime.fromtimestamp(1_776_000_000, tz=timezone.utc)
+    end = datetime.fromtimestamp(1_776_003_600, tz=timezone.utc)
+    summaries = [
+        SimpleNamespace(
+            id="claude-code-session:both",
+            working_directories=("/realm/project/sinnix", "/realm/project/polylogue/src"),
+            created_at=start,
+            updated_at=end,
+        ),
+        SimpleNamespace(
+            id="claude-code-session:same",
+            working_directories=("/realm/project/sinnix", "/realm/project/sinnix/modules"),
+            created_at=start,
+            updated_at=end,
+        ),
+    ]
+    monkeypatch.setattr(
+        polylogue_session_attribution,
+        "_polylogue_client",
+        lambda: SimpleNamespace(list_summaries=lambda *, limit: summaries),
+    )
+
+    intervals = session_repo_intervals(str(tmp_path / "index.db"))
+
+    assert [(interval.session_id, interval.project) for interval in intervals] == [
+        ("claude-code-session:same", "sinnix"),
+    ]
+    polylogue_session_attribution._session_repo_intervals_cached.cache_clear()
+
+
 def test_session_repo_intervals_reports_missing_archive(tmp_path):
     with pytest.raises(SourceUnavailableError):
         session_repo_intervals(str(tmp_path / "missing.db"))

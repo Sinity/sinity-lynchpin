@@ -131,14 +131,17 @@ def _session_repo_intervals_cached(
         start, end = summary.created_at, summary.updated_at
         if start is None or end is None or end <= start:
             continue
-        for root_path in summary.working_directories:
-            if not root_path.startswith("/realm/project/"):
-                continue
-            project = _project_from_root_path(root_path)
-            if project:
-                out.append(SessionRepoInterval(
-                    session_id=str(summary.id), project=project, start=start, end=end,
-                ))
+        projects = {
+            project
+            for root_path in summary.working_directories
+            if (project := _project_from_root_path(root_path))
+        }
+        # A session that worked in several checkouts gives no evidence which
+        # one a given span belongs to; its interval would claim all of them.
+        if len(projects) == 1:
+            out.append(SessionRepoInterval(
+                session_id=str(summary.id), project=projects.pop(), start=start, end=end,
+            ))
     return tuple(out)
 
 
