@@ -22,7 +22,7 @@ from ._manifest import atomic_write_ndjson, atomic_write_text, write_manifest
 SPOTIFY_STREAMS_SCHEMA_VERSION = 1
 REDDIT_CANONICAL_SCHEMA_VERSION = 2
 RAINDROP_BOOKMARKS_SCHEMA_VERSION = 1
-MESSENGER_CANONICAL_SCHEMA_VERSION = 1
+MESSENGER_CANONICAL_SCHEMA_VERSION = 2
 
 
 def spotify_streams_path() -> Path:
@@ -177,24 +177,27 @@ def materialize_messenger() -> dict[str, Any]:
 
     thread_rows: dict[str, dict[str, Any]] = {}
     for thread in iter_fbmessenger_threads(paths=inputs):
-        thread_rows[thread.thread_name] = {
+        identity = thread.thread_id or thread.source
+        thread_rows[identity] = {
             "thread_name": thread.thread_name,
+            "thread_id": identity,
             "participants": thread.participants,
             "source": thread.source,
         }
 
-    message_rows: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    message_rows: dict[tuple[str, str], dict[str, Any]] = {}
     for message in iter_fbmessenger_messages(paths=inputs):
         stamp = message.timestamp.isoformat() if message.timestamp else ""
-        key = (
-            message.thread_name,
-            stamp,
-            message.sender,
-            message.text or "",
-            message.kind,
-        )
+        thread_identity = getattr(message, "thread_id", "") or message.source
+        locator = getattr(message, "source_locator", "")
+        native_id = getattr(message, "message_id", "")
+        identity = f"native:{native_id}" if native_id else f"locator:{locator or message.source}"
+        key = (thread_identity, identity)
         message_rows[key] = {
             "thread_name": message.thread_name,
+            "thread_id": thread_identity,
+            "message_id": native_id or None,
+            "source_locator": locator or message.source,
             "participants": message.participants,
             "sender": message.sender,
             "timestamp": stamp,

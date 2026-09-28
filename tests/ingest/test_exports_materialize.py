@@ -228,6 +228,66 @@ def test_export_manifest_records_input_high_water(tmp_path: Path) -> None:
     assert manifest_path.exists()
 
 
+def test_messenger_materialization_preserves_native_occurrences_and_reads_them(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    from lynchpin.ingest import exports_materialize
+    from lynchpin.sources.exports_messenger import iter_fbmessenger_messages
+
+    raw = tmp_path / "gdpr"
+    sources = []
+    for folder, thread_id, body in (
+        ("one", "conversation-1", "same title"),
+        ("two", "conversation-2", "same title"),
+        ("duplicate", "conversation-1", "same title"),
+    ):
+        directory = raw / folder / "messages"
+        directory.mkdir(parents=True)
+        source = directory / "message_1.json"
+        source.write_text(
+            json.dumps({
+                "threadId": thread_id,
+                "threadName": body,
+                "participants": [{"name": "Alice"}],
+                "messages": [
+                    {"senderName": "Alice", "timestamp": 1770000000000, "text": "repeat"},
+                    {"senderName": "Alice", "timestamp": 1770000000000, "text": "repeat"},
+                    {"senderName": "Alice", "timestamp": 1770000001000, "photos": [{}]},
+                ],
+            }),
+            encoding="utf-8",
+        )
+        if folder == "one":
+            sources.append(source)
+    accounts = tmp_path / "accounts"
+    monkeypatch.setattr(exports_materialize, "get_config", lambda: SimpleNamespace(
+        accounts_root=accounts, fbmessenger_gdpr_root=raw
+    ))
+
+    exports_materialize.materialize_messenger()
+    threads = [json.loads(row) for row in (accounts / "facebook-messenger/processed/canonical/threads.ndjson").read_text().splitlines()]
+    messages_path = accounts / "facebook-messenger/processed/canonical/messages.ndjson"
+    messages = list(iter_fbmessenger_messages(paths=[messages_path], ensure=False))
+    before = messages_path.read_text(encoding="utf-8")
+    exports_materialize.materialize_messenger()
+
+    assert len(threads) == 2, "same display title must not merge native conversations"
+    assert len(messages) == 6, "identical text and media-only source positions must remain occurrences"
+    assert {thread["thread_id"] for thread in threads} == {"conversation-1", "conversation-2"}
+    assert len({message.source_locator for message in messages}) == 6
+    assert messages_path.read_text(encoding="utf-8") == before, "unchanged reimport must be idempotent"
+
+    revised = json.loads(sources[0].read_text(encoding="utf-8"))
+    revised["messages"][0]["text"] = "revised"
+    sources[0].write_text(json.dumps(revised), encoding="utf-8")
+    exports_materialize.materialize_messenger()
+    revised_messages = list(iter_fbmessenger_messages(paths=[messages_path], ensure=False))
+    assert len(revised_messages) == 6, "a revised occurrence must replace its prior locator"
+    assert sum(message.text == "revised" for message in revised_messages) == 1
+
+
 def test_reddit_manifest_records_aggregate_bounds(tmp_path: Path) -> None:
     source = tmp_path / "source.csv"
     source.write_text("date\n2026-01-01\n", encoding="utf-8")

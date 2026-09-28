@@ -50,6 +50,7 @@ class MessengerThread:
     thread_name: str
     participants: list[str]
     source: str
+    thread_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,9 @@ class MessengerMessage:
     media_count: int
     reaction_count: int
     source: str
+    message_id: str = ""
+    source_locator: str = ""
+    thread_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -204,11 +208,16 @@ def _load_threads(paths: Optional[list[Path]] = None) -> list[MessengerThread]:
             continue
         participants = [_clean_text(p) for p in list(data.get("participants", []) or [])]
         thread_name = _clean_text(data.get("threadName") or path.stem)
+        thread_id = _clean_text(
+            data.get("threadId") or data.get("thread_id") or data.get("thread_fbid")
+            or data.get("id") or _clean_path(path)
+        )
         threads.append(
             MessengerThread(
                 thread_name=thread_name,
                 participants=participants,
                 source=_clean_path(path),
+                thread_id=thread_id,
             )
         )
     return threads
@@ -227,7 +236,11 @@ def _load_messages(paths: Optional[list[Path]] = None) -> list[MessengerMessage]
             continue
         participants = [_clean_text(p) for p in list(data.get("participants", []) or [])]
         thread_name = _clean_text(data.get("threadName") or path.stem)
-        for message in data.get("messages", []) or []:
+        thread_id = _clean_text(
+            data.get("threadId") or data.get("thread_id") or data.get("thread_fbid")
+            or data.get("id") or _clean_path(path)
+        )
+        for index, message in enumerate(data.get("messages", []) or []):
             ts_raw = message.get("timestamp")
             timestamp = None
             if isinstance(ts_raw, (int, float)):
@@ -244,6 +257,9 @@ def _load_messages(paths: Optional[list[Path]] = None) -> list[MessengerMessage]
                     media_count=len(message.get("media") or []),
                     reaction_count=len(message.get("reactions") or []),
                     source=_clean_path(path),
+                    message_id=_clean_text(message.get("messageId") or message.get("message_id") or message.get("id") or ""),
+                    source_locator=f"{thread_id}:{path.name}:message:{index}",
+                    thread_id=thread_id,
                 )
             )
     return messages
@@ -264,6 +280,7 @@ def _read_canonical_threads(path: Path) -> list[MessengerThread]:
                     thread_name=str(payload.get("thread_name") or ""),
                     participants=[str(item) for item in participants],
                     source=str(payload.get("source") or path),
+                    thread_id=str(payload.get("thread_id") or ""),
                 )
             )
     return rows
@@ -295,6 +312,9 @@ def _read_canonical_messages(path: Path) -> list[MessengerMessage]:
                     media_count=int(payload.get("media_count") or 0),
                     reaction_count=int(payload.get("reaction_count") or 0),
                     source=str(payload.get("source") or path),
+                    message_id=str(payload.get("message_id") or ""),
+                    source_locator=str(payload.get("source_locator") or ""),
+                    thread_id=str(payload.get("thread_id") or ""),
                 )
             )
     return rows
