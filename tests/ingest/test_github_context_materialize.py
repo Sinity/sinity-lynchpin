@@ -275,6 +275,15 @@ def test_materialize_github_context_refreshes_open_lists_without_gh_cache(
     assert manifest["detail_decision_reasons"] == {"missing_detail": 4}
     assert manifest["project_detail_refreshes"] == {"lynchpin": 4}
     assert manifest["row_count"] == 4
+    timings = manifest["timings_seconds"]
+    assert set(timings) == {
+        "provider_inventory_fetch", "provider_detail_fetch",
+        "provider_missing_ref_fetch", "product_write",
+        "substrate_promotion", "total",
+    }
+    assert all(value >= 0 for value in timings.values())
+    saved_manifest = json.loads(output.with_suffix(".manifest.json").read_text())
+    assert saved_manifest["timings_seconds"] == timings
     rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
     assert {row["kind"] for row in rows} == {"issue", "pr"}
 

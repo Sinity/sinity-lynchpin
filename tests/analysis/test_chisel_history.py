@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 
 from lynchpin.sources import chisel_cache
-from lynchpin.sources.chisel_history import _coherence_reasons, build_history
+from lynchpin.sources.chisel_history import _coherence_reasons, build_history, freeze_refs
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -120,6 +120,42 @@ def test_history_cache_reuses_commit_rows_without_patch_copies(tmp_path: Path) -
     assert third["immutable_commit_cache_rows_reused"] == 1
     commit_rows = [json.loads(line) for line in (tmp_path / "three" / "history" / "commits.jsonl").read_text().splitlines()]
     assert "lynchpin-c00" in next(row for row in commit_rows if row["sha"] == next_head)["references"]
+
+
+def test_frozen_history_product_cache_restores_complete_products(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "a.py").write_text("print('evidence')\n", encoding="utf-8")
+    head = _commit(repo, "complete history")
+    cache = tmp_path / "cache"
+
+    with freeze_refs(repo, tmp_path) as frozen:
+        first = build_history(
+            Path(frozen), tmp_path / "first", project="fixture",
+            revision=head, cache_dir=cache, frozen=True,
+        )
+        second = build_history(
+            Path(frozen), tmp_path / "second", project="fixture",
+            revision=head, cache_dir=cache, frozen=True,
+        )
+
+    assert first["product_cache_hit"] is False
+    assert second["product_cache_hit"] is True
+    assert second["immutable_commit_cache_rows_reused"] == second["commit_count"]
+    assert second["product_cache_validation_seconds"] >= 0
+    assert second["product_cache_restore_seconds"] >= 0
+    assert second["product_cache_artifact_bytes"] > 0
+    for relative in (
+        "history/commits.jsonl", "history/changes.jsonl", "history/refs.jsonl",
+        "fixture-growth.json", "fixture-growth.md",
+        "fixture-growth-daily.csv", "fixture-growth-weekly.csv",
+        "fixture-growth-monthly.csv", "fixture-growth-buckets.csv",
+    ):
+        assert (tmp_path / "first" / relative).read_bytes() == (
+            tmp_path / "second" / relative
+        ).read_bytes()
+    restored = json.loads((tmp_path / "second/history/coverage.json").read_text())
+    assert restored["product_cache_hit"] is True
 
 
 def test_concurrent_cache_publication_uses_independent_atomic_temporaries(
