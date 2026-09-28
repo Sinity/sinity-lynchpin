@@ -79,6 +79,13 @@ def merge_manifest_covered_dates(
         if lower > upper:
             lower, upper = upper, lower
         existing = {day for day in existing if lower <= day <= upper}
+    elif verified_bounds is None and input_versions is not None and not same_input:
+        # The caller opted into input-version verification but observed no
+        # rows at all this run, so there is no bound to clip stale coverage
+        # against. With the input also changed, nothing carried forward from
+        # the old manifest can still be trusted, so drop it rather than
+        # silently re-affirming a stale claim forever.
+        existing = set()
     existing.update(day for day in observed_dates if not (start <= day < end))
     existing.update(half_open_dates(start, end))
     return tuple(sorted(existing))
