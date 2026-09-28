@@ -81,6 +81,7 @@ class GitFileChangeFact:
     lines_added: int
     lines_deleted: int
     lines_changed: int
+    old_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.lines_added < 0:
@@ -125,7 +126,7 @@ class GitDayActivity:
     net_loc: int
     ai_coauthored: int
     ai_ratio: float
-    human_only: int
+    unmarked: int
     dominant_prefix: str
     commit_burst_count: int
     authors: tuple[str, ...]
@@ -155,9 +156,9 @@ class GitDayActivity:
             raise ValueError(
                 f"GitDayActivity.ai_ratio ({self.ai_ratio}) must be in [0.0, 1.0]"
             )
-        if self.human_only < 0:
+        if self.unmarked < 0:
             raise ValueError(
-                f"GitDayActivity.human_only ({self.human_only}) must be >= 0"
+                f"GitDayActivity.unmarked ({self.unmarked}) must be >= 0"
             )
         if self.commit_burst_count < 0:
             raise ValueError(
@@ -273,4 +274,4 @@ class _RepoCommitRecord:
     authored_at: datetime
     author: str
     subject: str
-    path_changes: tuple[tuple[str, int, int], ...]
+    path_changes: tuple[tuple[str, int, int, str | None], ...]

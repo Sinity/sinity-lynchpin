@@ -348,6 +348,7 @@ def test_iter_repo_commit_records_closes_git_process_when_consumer_stops(
 
     fake = FakeProcess()
     monkeypatch.setattr("lynchpin.sources.git._is_git_repo_root", lambda _repo: True)
+    monkeypatch.setattr("lynchpin.sources.git._repo_identity", lambda _repo: "repo")
     monkeypatch.setattr(
         "lynchpin.sources.git._default_history_ref", lambda _repo: "master"
     )
@@ -395,6 +396,7 @@ def test_linked_worktree_reads_the_same_history_as_its_primary(tmp_path):
     linked_rows = [r.commit for r in git_source._iter_repo_commit_records(linked, **window)]
     assert primary_rows
     assert linked_rows == primary_rows
+    assert [r.repo for r in git_source._iter_repo_commit_records(linked, **window)] == ["primary"]
 
 
 def test_dangling_declared_default_ref_is_a_typed_failure(tmp_path):
@@ -470,8 +472,8 @@ def test_numstat_paths_are_exact_including_unicode_spaces_and_renames(tmp_path):
         r.subject: r
         for r in git_source._iter_repo_commit_records(repo, start=day, end=day)
     }
-    assert {p for p, _, _ in rows["feat: add"].path_changes} == {"żółć.txt", " note.txt"}
-    assert [p for p, _, _ in rows["feat: move"].path_changes] == ["dir name/renamed.txt"]
+    assert {p for p, _, _, _ in rows["feat: add"].path_changes} == {"żółć.txt", " note.txt"}
+    assert rows["feat: move"].path_changes == (("dir name/renamed.txt", 0, 0, " note.txt"),)
 
 
 def test_only_explicit_ai_coauthor_trailers_count_as_ai():
@@ -483,3 +485,19 @@ def test_only_explicit_ai_coauthor_trailers_count_as_ai():
     assert git_source._extract_coauthor(agent) == "Claude Opus 5.5"
     by_address = "Co-authored-by: Helper <noreply@anthropic.com>"
     assert git_source._extract_coauthor(by_address) == "Helper"
+
+
+def test_human_coauthor_is_unmarked_not_human_only(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    stamp = "2026-01-02T12:00:00+00:00"
+    _commit_at(repo, "a.txt", "feat: base\n\nCo-authored-by: Audit Collaborator <person@example.com>", stamp)
+    monkeypatch.setattr(git_source, "active_repo_paths", lambda names=None: [repo])
+    monkeypatch.setattr(git_source, "_repo_path", lambda _repo: repo)
+    day = logical_date(datetime.fromisoformat(stamp))
+    rows = git_source.daily_activity(start=day, end=day)
+    assert len(rows) == 1
+    assert rows[0].ai_coauthored == 0
+    assert rows[0].ai_ratio == 0
+    assert rows[0].unmarked == 1
+    assert not hasattr(rows[0], "human_only")

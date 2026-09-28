@@ -63,7 +63,7 @@ class _MutableRepoCommit(TypedDict):
     authored_at: str
     author: str
     subject: str
-    path_changes: list[tuple[str, int, int]]
+    path_changes: list[tuple[str, int, int, str | None]]
 
 
 @dataclass(frozen=True)
@@ -252,8 +252,8 @@ def commits_in_range(*, start: date, end: date) -> Iterator[GitCommit]:
                 date=logical_date(rec.authored_at),
                 repo=rec.repo,
                 commit=rec.commit,
-                lines_added=sum(a for _, a, _ in rec.path_changes),
-                lines_deleted=sum(d for _, _, d in rec.path_changes),
+                lines_added=sum(a for _, a, _, _ in rec.path_changes),
+                lines_deleted=sum(d for _, _, d, _ in rec.path_changes),
                 subject=rec.subject,
             )
     # Fallback: baseline JSONL for historical data not covered by live repos
@@ -306,12 +306,13 @@ def file_change_facts(
         for record in _iter_repo_commit_records(
             repo_path, start=start, end=end, all_refs=all_refs
         ):
-            for path, added, deleted in record.path_changes:
+            for path, added, deleted, old_path in record.path_changes:
                 yield GitFileChangeFact(
                     repo=record.repo,
                     commit=record.commit,
                     authored_at=record.authored_at,
                     path=path,
+                    old_path=old_path,
                     path_root=_path_root(path),
                     lines_added=added,
                     lines_deleted=deleted,
@@ -384,7 +385,7 @@ def daily_activity(*, start: date, end: date) -> list[GitDayActivity]:
                 net_loc=added - deleted,
                 ai_coauthored=ai_count,
                 ai_ratio=ai_count / total if total else 0,
-                human_only=total - ai_count,
+                unmarked=total - ai_count,
                 dominant_prefix=prefix_counts.most_common(1)[0][0]
                 if prefix_counts
                 else "other",
@@ -786,10 +787,8 @@ def _iter_repo_commit_records(
 ) -> Iterator[_RepoCommitRecord]:
     if not _is_git_repo_root(repo_path):
         return
-    # The result contract is author time, but git can only prefilter by
-    # committer time. A commit is committed at or after it is authored, so the
-    # committer lower bound is safe; an upper bound would drop commits authored
-    # in the window and committed (rebased, amended, merged) after it.
+    # Git date options filter by committer time. Filter author time below,
+    # without a committer prefilter that could omit valid author dates.
     cmd = [
         "git",
         "-C",
@@ -798,7 +797,6 @@ def _iter_repo_commit_records(
         "-z",
         "--date=iso-strict",
         "--pretty=format:COMMIT%x1f%H%x1f%aI%x1f%aN%x1f%s",
-        f"--since={(start - timedelta(days=1)).isoformat()}",
     ]
     if include_paths:
         cmd.append("--numstat")
@@ -809,13 +807,14 @@ def _iter_repo_commit_records(
         if ref is None:
             return
         cmd.append(ref)
+    repo_identity = _repo_identity(repo_path)
     with tempfile.TemporaryFile() as stderr_sink:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr_sink)
         assert proc.stdout is not None
         completed = False
         try:
             for record in _parse_log_z(proc.stdout):
-                rec = _finalize_record(repo_path.name, record)
+                rec = _finalize_record(repo_identity, record)
                 if rec and in_date_range(logical_date(rec.authored_at), start, end):
                     yield rec
             completed = True
@@ -857,7 +856,7 @@ def _parse_log_z(stream: Any) -> Iterator[_MutableRepoCommit]:
         added = int(added_s) if added_s.isdigit() else 0
         deleted = int(deleted_s) if deleted_s.isdigit() else 0
         if path:
-            current["path_changes"].append((_decode_path(path), added, deleted))
+            current["path_changes"].append((_decode_path(path), added, deleted, None))
         else:
             rename = [added, deleted, None]
 
@@ -870,7 +869,7 @@ def _parse_log_z(stream: Any) -> Iterator[_MutableRepoCommit]:
             assert current is not None
             # Identity is the destination path; the source is carried in
             # the rename, not counted as a second file.
-            current["path_changes"].append((_decode_path(token), rename[0], rename[1]))
+            current["path_changes"].append((_decode_path(token), rename[0], rename[1], _decode_path(rename[2])))
             rename = None
             return
         if not token:
@@ -891,7 +890,7 @@ def _parse_log_z(stream: Any) -> Iterator[_MutableRepoCommit]:
                 stat_entry(first)
             return
         if current is not None:
-            stat_entry(token.lstrip(b"\n"))
+            stat_entry(token[1:] if token.startswith(b"\n") else token)
 
     while chunk := stream.read(65536):
         tokens = (carry + chunk).split(b"\0")
@@ -906,6 +905,16 @@ def _parse_log_z(stream: Any) -> Iterator[_MutableRepoCommit]:
 
 def _decode_path(raw: bytes) -> str:
     return raw.decode("utf-8", errors="surrogateescape")
+
+
+def _repo_identity(repo_path: Path) -> str:
+    """Identify a repository through its shared Git directory, across worktrees."""
+    common = _run_git_checked(repo_path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).strip()
+    common_path = Path(common).resolve()
+    for name, spec in PROJECT_SPECS.items():
+        if (spec.path.resolve() / ".git") == common_path:
+            return name
+    return common_path.parent.name
 
 
 def _default_history_ref(repo_path: Path) -> str | None:
@@ -958,10 +967,10 @@ def _finalize_record(
 
 
 def _commit_fact_from_record(record: _RepoCommitRecord) -> GitCommitFact:
-    paths = tuple(sorted({p for p, _, _ in record.path_changes}))
+    paths = tuple(sorted({p for p, _, _, _ in record.path_changes}))
     path_roots = tuple(sorted({_path_root(p) for p in paths} - {""}))
-    added = sum(a for _, a, _ in record.path_changes)
-    deleted = sum(d for _, _, d in record.path_changes)
+    added = sum(a for _, a, _, _ in record.path_changes)
+    deleted = sum(d for _, _, d, _ in record.path_changes)
     return GitCommitFact(
         repo=record.repo,
         commit=record.commit,
@@ -1044,13 +1053,12 @@ def _fetch_coauthor_info(repo: str, after: date, before: date) -> dict[str, list
     ref = _default_history_ref(repo_path)
     if ref is None:
         return {}
-    # Committer-time lower bound only; see _iter_repo_commit_records.
+    # Collect trailers for the selected ref, then match only returned facts.
     stdout = _run_git_checked(
         repo_path,
         [
             "log",
             "--format=%H%n%b%n---END---",
-            f"--since={(after - timedelta(days=1)).isoformat()}",
             ref,
         ],
     )
