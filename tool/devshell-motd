@@ -35,6 +35,21 @@ mark_path() {
   fi
 }
 
+# Report the Polylogue archive the way lynchpin.sources.polylogue_archive
+# resolves it: a directory holding the durable source.db and derived index.db.
+polylogue_mark() {
+  local root="$1"
+  if [[ ! -d "$root" ]]; then
+    printf 'polylogue: no archive yet (%s)' "$root"
+  elif [[ ! -f "$root/source.db" ]]; then
+    printf 'polylogue: source.db missing (%s)' "$root"
+  elif [[ ! -f "$root/index.db" ]]; then
+    printf 'polylogue: not indexed yet (%s)' "$root"
+  else
+    printf 'polylogue:ok'
+  fi
+}
+
 size_mb() {
   local path="$1"
   if [[ -f "$path" ]]; then
@@ -112,7 +127,7 @@ readiness_json="${analysis_root}/machine_analysis_readiness.json"
 context_md="${analysis_root}/current_state_context_pack.md"
 aw_db="${LYNCHPIN_ACTIVITYWATCH_DB:-$HOME/.local/share/activitywatch/aw-server-rust/sqlite.db}"
 atuin_db="${LYNCHPIN_ATUIN_DB:-$HOME/.local/share/atuin/history.db}"
-polylogue_db="${POLYLOGUE_DB_PATH:-${XDG_DATA_HOME:-$HOME/.local/share}/polylogue/polylogue.db}"
+polylogue_archive="${POLYLOGUE_ARCHIVE_ROOT:-${LYNCHPIN_POLYLOGUE_ARCHIVE_ROOT:-${LYNCHPIN_DATA_ROOT:-/realm}/state/polylogue}}"
 
 printf 'lynchpin dev | branch %s | py %s\n' "$branch" "${LYNCHPIN_DEV_PYTHON:-3.12}"
 printf 'worktree    | staged %d | unstaged %d | untracked %d\n' "$staged" "$unstaged" "$untracked"
@@ -124,7 +139,7 @@ printf 'substrate   | %s | %s\n' "$substrate" "$(size_mb "$substrate")"
 printf 'sources     | %s | %s | %s\n' \
   "$(mark_path aw "$aw_db")" \
   "$(mark_path atuin "$atuin_db")" \
-  "$(mark_path polylogue "$polylogue_db")"
+  "$(polylogue_mark "$polylogue_archive")"
 printf 'analysis    | status:%s | machine:%s | context:%s\n' \
   "$(age "$status_json")" \
   "$(readiness_statuses "$readiness_json")" \
