@@ -127,6 +127,7 @@ def iter_member_bytes(
     root: Path | None = None,
     products: set[str] | None = None,
     suffixes: set[str] | None = None,
+    on_error: Callable[[Exception], None] | None = None,
 ) -> Iterator[tuple[TakeoutMember, bytes]]:
     """Yield selected Takeout member payloads from raw archives.
 
@@ -137,9 +138,9 @@ def iter_member_bytes(
     normalized_suffixes = {suffix.lower() for suffix in suffixes or ()}
     for archive in discover_takeout_archives(root):
         if archive.suffix.lower() == ".zip":
-            yield from _zip_member_bytes(archive, products=products, suffixes=normalized_suffixes)
+            yield from _zip_member_bytes(archive, products=products, suffixes=normalized_suffixes, on_error=on_error)
         else:
-            yield from _tar_member_bytes(archive, products=products, suffixes=normalized_suffixes)
+            yield from _tar_member_bytes(archive, products=products, suffixes=normalized_suffixes, on_error=on_error)
 
 
 def _selected_member(member: TakeoutMember, *, products: set[str] | None, suffixes: set[str]) -> bool:
@@ -155,6 +156,7 @@ def _zip_member_bytes(
     *,
     products: set[str] | None,
     suffixes: set[str],
+    on_error: Callable[[Exception], None] | None = None,
 ) -> Iterator[tuple[TakeoutMember, bytes]]:
     try:
         with zipfile.ZipFile(archive) as zf:
@@ -170,7 +172,9 @@ def _zip_member_bytes(
                 )
                 if _selected_member(member, products=products, suffixes=suffixes):
                     yield member, zf.read(info)
-    except (OSError, zipfile.BadZipFile):
+    except (OSError, zipfile.BadZipFile) as exc:
+        if on_error is not None:
+            on_error(exc)
         return
 
 
@@ -179,6 +183,7 @@ def _tar_member_bytes(
     *,
     products: set[str] | None,
     suffixes: set[str],
+    on_error: Callable[[Exception], None] | None = None,
 ) -> Iterator[tuple[TakeoutMember, bytes]]:
     try:
         with tarfile.open(archive, mode="r:*") as tf:
@@ -197,7 +202,9 @@ def _tar_member_bytes(
                 handle = tf.extractfile(item)
                 if handle is not None:
                     yield member, handle.read()
-    except (OSError, tarfile.TarError):
+    except (OSError, tarfile.TarError) as exc:
+        if on_error is not None:
+            on_error(exc)
         return
 
 

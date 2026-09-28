@@ -25,9 +25,12 @@ availability, coverage, provenance, iterators, and source-local summaries.
 | Machine state | `machine`, `machine_experiments`, `service_health`, `sinnix_generations` | Metrics, pressure, services, experiments, backups, generations. |
 | Web and reading | `web`, `takeout_chrome`, `bookmarks`, `raindrop_live` | Visits, domains, bookmarks, content metadata, daily activity. |
 | Communications | `communications`, `gmail_takeout`, `irc`, `outlook`, `sms`, export adapters | Events, threads, daily counts, provenance. |
+
 | Health and daily signals | `health`, `sleep`, `personal_signals`, `weather` | Measurements, coverage-aware daily products, longitudinal signals. |
 | Media and libraries | `spotify`, `substack`, `spotify_genres`, `audio_features`, export adapters | Streams, sessions, downloaded publication archives, library records, daily media signals. |
 | Generated evidence | `analysis_artifacts`, `source_observations`, `observability_catalog` | Artifact inventory, extracted claims, source/role definitions. |
+
+Gmail Takeout materialization retains full message bodies, headers, MIME data and encoded message content alongside summary previews. `find_materialized_gmail_messages` searches the retained body and headers. Undated messages remain in the canonical product with an explicit date status; date-bounded activity excludes them. An unreadable archive prevents replacement of the last complete Gmail product.
 
 Canonical communication event IDs hash the versioned semantic fields, including
 the complete message text, normalized timestamp, recipients, media count, and

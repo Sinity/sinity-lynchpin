@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import mailbox
 import tempfile
+import base64
+import hashlib
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -27,6 +29,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from ..core.config import get_config
+from ..core.errors import SourceUnavailableError
 from .google_takeout import iter_member_bytes
 
 __all__ = [
@@ -37,6 +40,7 @@ __all__ = [
     "iter_gmail_messages",
     "iter_gmail_messages_deduped",
     "iter_materialized_gmail_messages",
+    "find_materialized_gmail_messages",
     "daily_gmail_activity",
 ]
 
@@ -56,6 +60,15 @@ class GmailMessage:
     label: str  # Takeout archive label name (e.g. "Mail", "Important")
     archive_source: str
     size_bytes: int
+    native_message_id: str | None = None
+    date_status: str = "known"
+    native_labels: tuple[str, ...] = ()
+    archive_member: str = ""
+    occurrence_index: int = 0
+    headers: tuple[tuple[str, str], ...] = ()
+    mime_parts: tuple[dict[str, str | None], ...] = ()
+    body: str | None = None
+    raw_message_base64: str | None = None
 
     @property
     def date(self) -> date | None:
@@ -116,20 +129,20 @@ def _parse_date(value: str | None) -> datetime | None:
 
 
 def _parse_mbox_bytes(
-    member_bytes: bytes, label: str, archive_source: str
+    member_bytes: bytes, label: str, archive_source: str, archive_member: str = ""
 ) -> Iterator[GmailMessage]:
     """Parse Gmail messages from a .mbox byte payload."""
     with tempfile.NamedTemporaryFile(suffix=".mbox", delete=True) as tmp:
         tmp.write(member_bytes)
         tmp.flush()
-        try:
-            mbox = mailbox.mbox(tmp.name)
-        except Exception:
-            return
-        for _key, msg in mbox.items():
-            message_id = _header_str(msg.get("Message-ID", "")).strip()
-            if not message_id:
-                continue
+        if member_bytes.strip() and not member_bytes.startswith(b"From "):
+            raise SourceUnavailableError("gmail_takeout", path=archive_source, reason="invalid mbox envelope")
+        mbox = mailbox.mbox(tmp.name)
+        for occurrence_index, (_key, msg) in enumerate(mbox.items()):
+            raw_message = msg.as_bytes()
+            native_message_id = _header_str(msg.get("Message-ID", "")).strip() or None
+            fallback_bytes = f"{archive_source}\0{archive_member}\0{occurrence_index}\0".encode() + raw_message
+            message_id = native_message_id or f"sha256:{hashlib.sha256(fallback_bytes).hexdigest()}"
             sender = _header_str(msg.get("From", ""))
             to_raw = _header_str(msg.get("To", ""))
             cc_raw = _header_str(msg.get("Cc", ""))
@@ -139,6 +152,29 @@ def _parse_mbox_bytes(
             cc = tuple(
                 addr.strip() for addr in (cc_raw or "").split(",") if addr.strip()
             )
+            raw_date = _header_str(msg.get("Date"))
+            timestamp = _parse_date(raw_date)
+            parts = tuple(
+                {
+                    "content_type": part.get_content_type(),
+                    "charset": part.get_content_charset(),
+                    "disposition": part.get_content_disposition(),
+                    "filename": part.get_filename(),
+                    "content_id": part.get("Content-ID"),
+                }
+                for part in (msg.walk() if msg.is_multipart() else (msg,))
+            )
+            body_parts = []
+            for part in (msg.walk() if msg.is_multipart() else (msg,)):
+                if part.get_content_type() != "text/plain" or part.get_content_disposition() == "attachment":
+                    continue
+                payload = part.get_payload(decode=True)
+                if payload is not None:
+                    charset = part.get_content_charset() or "utf-8"
+                    try:
+                        body_parts.append(payload.decode(charset, errors="replace"))
+                    except LookupError:
+                        body_parts.append(payload.decode("utf-8", errors="replace"))
             yield GmailMessage(
                 message_id=message_id,
                 thread_id=_normalize_thread_id(
@@ -148,14 +184,21 @@ def _parse_mbox_bytes(
                 sender=sender,
                 recipients=recipients,
                 cc=cc,
-                timestamp=_parse_date(_header_str(msg.get("Date"))),
+                timestamp=timestamp,
                 subject=_header_str(msg.get("Subject", "")),
                 body_preview=_extract_body_preview(msg),
                 label=label,
                 archive_source=archive_source,
-                size_bytes=len(
-                    msg.as_bytes() if hasattr(msg, "as_bytes") else str(msg).encode()
-                ),
+                size_bytes=len(raw_message),
+                native_message_id=native_message_id,
+                date_status="known" if timestamp is not None else ("invalid" if raw_date else "missing"),
+                native_labels=tuple(label.strip() for label in _header_str(msg.get("X-Gmail-Labels")).split(",") if label.strip()),
+                archive_member=archive_member,
+                occurrence_index=occurrence_index,
+                headers=tuple((name, value) for name, value in msg.items()),
+                mime_parts=parts,
+                body="\n".join(body_parts) if body_parts else None,
+                raw_message_base64=base64.b64encode(raw_message).decode("ascii"),
             )
 
 
@@ -208,6 +251,8 @@ def iter_materialized_gmail_messages(
             payload = json.loads(line)
             ts_raw = payload.get("timestamp")
             ts = datetime.fromisoformat(ts_raw) if ts_raw else None
+            if ts is None and (start is not None or end is not None):
+                continue
             if ts is not None and (start is not None or end is not None):
                 d = ts.date()
                 if start is not None and d < start:
@@ -226,7 +271,26 @@ def iter_materialized_gmail_messages(
                 label=str(payload.get("label") or ""),
                 archive_source=str(payload.get("archive_source") or ""),
                 size_bytes=int(payload.get("size_bytes") or 0),
+                native_message_id=payload.get("native_message_id"),
+                date_status=str(payload.get("date_status") or ("known" if ts else "missing")),
+                native_labels=tuple(payload.get("native_labels") or ()),
+                archive_member=str(payload.get("archive_member") or ""),
+                occurrence_index=int(payload.get("occurrence_index") or 0),
+                headers=tuple(tuple(pair) for pair in payload.get("headers") or ()),
+                mime_parts=tuple(payload.get("mime_parts") or ()),
+                body=payload.get("body"),
+                raw_message_base64=payload.get("raw_message_base64"),
             )
+
+
+def find_materialized_gmail_messages(
+    query: str, *, path: Path | None = None, ensure: bool = True
+) -> Iterator[GmailMessage]:
+    """Search retained subject, headers and full body without a preview limit."""
+    needle = query.casefold()
+    for message in iter_materialized_gmail_messages(path=path, ensure=ensure):
+        if needle in "\n".join((message.subject, message.body or "", str(message.headers))).casefold():
+            yield message
 
 
 def iter_gmail_messages(
@@ -249,11 +313,13 @@ def iter_gmail_messages(
         root=archive_root,
         products={"Mail"},
         suffixes={".mbox"},
+        on_error=lambda exc: _raise_archive_error(exc),
     ):
         for msg in _parse_mbox_bytes(
             payload,
             label=member.product,
             archive_source=str(member.archive),
+            archive_member=member.path,
         ):
             if msg.timestamp is not None and (start is not None or end is not None):
                 d = msg.timestamp.date()
@@ -273,10 +339,15 @@ def iter_gmail_messages_deduped(
     """Yield deduplicated Gmail messages (by Message-ID, first-wins)."""
     seen: set[str] = set()
     for msg in iter_gmail_messages(root=root, start=start, end=end):
-        if msg.message_id in seen:
+        identity = msg.native_message_id or f"{msg.archive_source}:{msg.archive_member}:{msg.occurrence_index}"
+        if identity in seen:
             continue
-        seen.add(msg.message_id)
+        seen.add(identity)
         yield msg
+
+
+def _raise_archive_error(exc: Exception) -> None:
+    raise SourceUnavailableError("gmail_takeout", reason=f"archive read failed: {exc}") from exc
 
 
 def daily_gmail_activity(
