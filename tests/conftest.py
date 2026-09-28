@@ -60,6 +60,8 @@ def isolate_operator_data(
         monkeypatch.setenv(name, str(path))
     monkeypatch.setenv("LYNCHPIN_CLIPBOARD_EXPORT_FILES", "")
     monkeypatch.setenv("LYNCHPIN_XTASK_HISTORY_ARCHIVE_DBS", "")
+    # Live Chromium profiles are discovered under $HOME, not a data root.
+    monkeypatch.setenv("LYNCHPIN_CHROME_PROFILE_DBS", "")
 
     import lynchpin.core.config as config_module
 

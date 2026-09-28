@@ -15,9 +15,10 @@ the webhistory raw inbox) so visits survive Chrome's retention horizon.
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import tempfile
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, NamedTuple, Optional
@@ -27,6 +28,9 @@ CHROME_PROFILE_DBS_ENV = "LYNCHPIN_CHROME_PROFILE_DBS"
 
 #: Chrome stores timestamps as microseconds since 1601-01-01 UTC.
 _CHROME_EPOCH_OFFSET_S = 11644473600
+
+#: SQLite sidecars that carry committed (WAL) or rollback (journal) state.
+_SIDECAR_SUFFIXES = ("-wal", "-journal")
 
 
 def discover_profile_history_dbs() -> list[tuple[Path, str]]:
@@ -51,11 +55,26 @@ def discover_profile_history_dbs() -> list[tuple[Path, str]]:
 
 @contextmanager
 def snapshot_history_db(path: Path) -> Iterator[Path]:
-    """Create a coherent SQLite backup, including committed WAL transactions."""
+    """Snapshot a live History DB, including committed WAL transactions.
+
+    A running Chrome holds its History database under an exclusive lock, and
+    ``sqlite3.Connection.backup`` retries a busy source forever, so the live
+    file is never opened through SQLite. Its bytes and any ``-wal`` or
+    ``-journal`` sidecar are copied instead; SQLite then recovers that
+    unlocked copy, and the backup folds it into one self-contained file.
+    """
     with tempfile.TemporaryDirectory(prefix="lynchpin-chrome-") as tmp:
+        staged = Path(tmp) / "staged"
+        staged.mkdir()
+        copy = staged / path.name
+        shutil.copyfile(path, copy)
+        for suffix in _SIDECAR_SUFFIXES:
+            sidecar = path.with_name(path.name + suffix)
+            if sidecar.is_file():
+                shutil.copyfile(sidecar, staged / sidecar.name)
         dst = Path(tmp) / "History"
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as source:
-            with sqlite3.connect(dst) as target:
+        with closing(sqlite3.connect(copy)) as source:
+            with closing(sqlite3.connect(dst)) as target:
                 source.backup(target)
         yield dst
 
