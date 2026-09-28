@@ -631,6 +631,8 @@ def _window_spans(
 
     raw_spans: list[_WindowSpan] = []
     iv_idx = 0
+    # The sequential intersection cursor consumes one immutable timeline.
+    active = merge_intervals(active) if active is not None else None
     start_local = as_local(start)
     end_local = as_local(end)
     classification_cache: dict[
@@ -954,12 +956,14 @@ def _app_sessions_from_spans(
         compatible=lambda a, b: a.app == b.app
         and logical_date(a.start) == logical_date(b.start),
     ):
-        wall = duration_s((g.start, g.end))
-        if wall < min_duration_s:
+        observed = [s for s in g.items if s.app == g.items[0].app]
+        observed_intervals = tuple(merge_intervals((s.start, s.end) for s in observed))
+        active_s = sum(duration_s(iv) for iv in observed_intervals)
+        if active_s < min_duration_s:
             continue
         modes, projects = TopN(1), TopN(1)
         title_dur: dict[str, float] = {}
-        for s in g.items:
+        for s in observed:
             d = s.duration_s
             if s.mode:
                 modes.add(s.mode, d)
@@ -975,7 +979,7 @@ def _app_sessions_from_spans(
                 app=g.items[0].app or "",
                 start=g.start,
                 end=g.end,
-                duration_s=round(wall, 3),
+                duration_s=round(active_s, 3),
                 title_dominant=top_title,
                 titles=tuple(
                     sorted(title_dur, key=lambda title: title_dur[title], reverse=True)
@@ -983,6 +987,7 @@ def _app_sessions_from_spans(
                 mode=modes.dominant,
                 project=projects.dominant,
                 interruptions=g.interruptions,
+                observed_intervals=observed_intervals,
             )
         )
     return sessions
@@ -1027,9 +1032,14 @@ def _deep_work_from_sessions(
         compatible=_deep_compatible,
     ):
         wall = duration_s((g.start, g.end))
-        productive_s = sum(s.duration_s for s in g.items)
+        intervals = [iv for s in g.items for iv in s.observed_intervals]
+        productive_s = (
+            sum(duration_s(iv) for iv in merge_intervals(intervals))
+            if all(s.observed_intervals for s in g.items)
+            else min(sum(s.duration_s for s in g.items), wall)
+        )
         ratio = productive_s / wall if wall > 0 else 0
-        if wall / 60 >= min_minutes and ratio >= (1 - max_interruption_ratio):
+        if productive_s / 60 >= min_minutes and ratio >= (1 - max_interruption_ratio):
             modes, projects = TopN(1), TopN(1)
             for s in g.items:
                 if s.mode:
@@ -1041,7 +1051,7 @@ def _deep_work_from_sessions(
                 DeepWorkBlock(
                     start=g.start,
                     end=g.end,
-                    duration_min=round(wall / 60, 1),
+                    duration_min=round(productive_s / 60, 1),
                     project=projects.dominant,
                     mode=modes.dominant or "unknown",
                     focus_ratio=round(ratio, 3),

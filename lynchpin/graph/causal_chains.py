@@ -1,7 +1,9 @@
 """Cross-source temporal evidence chain detection over evidence graph nodes.
 
-Scans the evidence timeline for temporal sequences. These are temporal
-proximity chains with type filtering, not causal inference.
+Scans the evidence timeline for temporal sequences. A relation names adjacent
+observations among the kinds in its template, within the template's gap bound.
+Other node kinds do not interrupt that sequence. These are temporal proximity
+chains with type filtering, not causal inference.
 """
 
 from __future__ import annotations
@@ -9,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from hashlib import sha256
 from typing import Any
 
 from ..core.evidence import EvidenceCaveat, degrade_confidence, propagate_caveats
@@ -104,7 +107,7 @@ _TIER_ORDER: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
 def detect_chains(
     nodes: Sequence[EvidenceNode],
     *,
-    max_gap_minutes: int = 60,
+    max_gap_minutes: int | None = None,
 ) -> tuple[CausalChain, ...]:
     """Detect temporal evidence chains from evidence graph nodes."""
     timed_nodes = sorted(
@@ -124,19 +127,14 @@ def detect_chains(
 def _node_time(node: EvidenceNode) -> datetime | None:
     """Return a comparable, tz-aware datetime for the node, or None.
 
-    Sources mix tz-aware (real archive data) and tz-naive (`datetime.combine(date, ...)`)
-    timestamps. The chain detector sorts nodes by time, which raises TypeError
-    when comparing naive vs aware. Anchor everything to UTC so the sort is
-    well-defined; naive values are interpreted as UTC for the purposes of
-    chain ordering only.
+    Date-only observations have unknown time and cannot support a gap claim.
+    Naive timestamps are interpreted as UTC for ordering.
     """
     candidate: datetime | None = None
     if hasattr(node, "start") and isinstance(node.start, datetime):
         candidate = node.start
     elif hasattr(node, "timestamp") and isinstance(getattr(node, "timestamp", None), datetime):
         candidate = node.timestamp  # type: ignore[attr-defined]
-    elif node.date:
-        candidate = datetime.combine(node.date, datetime.min.time())
     if candidate is None:
         return None
     if candidate.tzinfo is None:
@@ -147,15 +145,19 @@ def _node_time(node: EvidenceNode) -> datetime | None:
 def _match_template(
     nodes: list[EvidenceNode],
     template: dict,
-    global_max_gap: int,
+    global_max_gap: int | None,
 ) -> list[CausalChain]:
     seq = template["sequence"]
     seq_len = len(seq)
-    max_gap = template.get("max_gap_minutes", global_max_gap)
+    template_max_gap = template["max_gap_minutes"]
+    max_gap = min(template_max_gap, global_max_gap) if global_max_gap is not None else template_max_gap
     chains: list[CausalChain] = []
 
-    for i in range(len(nodes) - seq_len + 1):
-        window = nodes[i : i + seq_len]
+    # Match adjacent observations of the required kinds. Other kinds do not
+    # change the relation between the observations named by a chain.
+    relevant = [n for n in nodes if n.kind in seq]
+    for i in range(len(relevant) - seq_len + 1):
+        window = relevant[i : i + seq_len]
         kinds = tuple(n.kind for n in window)
 
         if kinds != seq:
@@ -168,6 +170,12 @@ def _match_template(
         if any(g is None or g > max_gap for g in gaps):
             continue
 
+        if template["type"] == "error_burst_resolution":
+            first_errors = (window[0].payload or {}).get("error_count")
+            second_errors = (window[1].payload or {}).get("error_count")
+            if not isinstance(first_errors, int) or not isinstance(second_errors, int) or first_errors <= second_errors or first_errors <= 0:
+                continue
+
         avg_gap = sum(g for g in gaps if g is not None) / len(gaps) if gaps else 0
         base_confidence = max(0.3, 0.85 - (avg_gap / max_gap) * 0.4)
 
@@ -179,8 +187,9 @@ def _match_template(
         chain_caveats = propagate_caveats(*(node.caveats for node in window))
         confidence = round(degrade_confidence(base_confidence, chain_caveats), 2)
 
+        support = "\0".join((template["type"], *(n.id for n in window)))
         chains.append(CausalChain(
-            id=f"chain:{template['type']}:{window[0].date.isoformat()}:{i}",
+            id=f"chain:{template['type']}:{sha256(support.encode()).hexdigest()[:20]}",
             chain_type=template["type"],
             date=window[0].date,
             node_ids=tuple(n.id for n in window),
@@ -188,7 +197,11 @@ def _match_template(
             summaries=tuple(n.summary for n in window),
             time_gaps_minutes=tuple(round(g, 1) for g in gaps),
             confidence=confidence,
-            summary=template["label"],
+            summary=(
+                f"terminal errors {first_errors} → {second_errors} → commit"
+                if template["type"] == "error_burst_resolution"
+                else template["label"]
+            ),
             payload={
                 "template_type": template["type"],
                 "node_count": seq_len,
@@ -289,10 +302,14 @@ def _node_file_paths(node: EvidenceNode) -> set[str]:
     """Pull file_paths from an ai_work_event payload or commit.payload.paths."""
     payload = getattr(node, "payload", None) or {}
     if node.kind == "ai_work_event":
-        return {str(p) for p in payload.get("file_paths", []) if p}
-    if node.kind == "commit":
-        return {str(p) for p in payload.get("paths", []) if p}
-    return set()
+        paths = payload.get("file_paths", [])
+    elif node.kind == "commit":
+        paths = payload.get("paths", [])
+    else:
+        return set()
+    if not node.project:
+        return set()
+    return {f"{node.project}:{p}" for p in paths if p}
 
 
 def _time_gaps(nodes: list[EvidenceNode]) -> list[float | None]:

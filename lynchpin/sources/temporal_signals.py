@@ -13,7 +13,7 @@ from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from functools import lru_cache
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Iterator, TextIO
 
@@ -24,6 +24,11 @@ from ..core.analytics import (
     detect_trend,
 )
 from ..core.config import get_config
+
+
+_observation: ContextVar[dict[tuple[object, ...], tuple[Any, ...]] | None] = ContextVar(
+    "temporal_signal_observation", default=None
+)
 
 
 @dataclass(frozen=True)
@@ -170,14 +175,18 @@ def detect_temporal_signals(
     events: list[TemporalEvent] = []
 
     history_start = start - timedelta(days=ANOMALY_BASELINE_DAYS)
-    for spec in specs:
-        try:
-            series_full = spec.loader(history_start, end)
-        except Exception:
-            continue
-        if not series_full:
-            continue
-        events.extend(_detect_for_signal(spec, series_full, start=start, end=end))
+    token = _observation.set({})
+    try:
+        for spec in specs:
+            try:
+                series_full = spec.loader(history_start, end)
+            except Exception:
+                continue
+            if not series_full:
+                continue
+            events.extend(_detect_for_signal(spec, series_full, start=start, end=end))
+    finally:
+        _observation.reset(token)
 
     return tuple(events)
 
@@ -524,25 +533,32 @@ def _load_resting_hr(start: date, end: date) -> dict[date, float]:
     return out
 
 
-@lru_cache(maxsize=16)
 def _terminal_daily_rows(start: date, end: date, ensure: bool = True) -> tuple[Any, ...]:
     from .terminal import daily_terminal_activity
 
-    return tuple(daily_terminal_activity(start=start, end=end, ensure=ensure))
+    return _observed_rows(("terminal", start, end, ensure), lambda: daily_terminal_activity(start=start, end=end, ensure=ensure))
 
 
-@lru_cache(maxsize=16)
 def _polylogue_daily_rows(start: date, end: date) -> tuple[Any, ...]:
     from .polylogue import daily_activity
 
-    return tuple(daily_activity(start=start, end=end))
+    return _observed_rows(("polylogue", start, end), lambda: daily_activity(start=start, end=end))
 
 
-@lru_cache(maxsize=16)
 def _health_daily_rows(start: date, end: date) -> tuple[Any, ...]:
     from .health import daily_health_summary
 
-    return tuple(daily_health_summary(start=start, end=end))
+    return _observed_rows(("health", start, end), lambda: daily_health_summary(start=start, end=end))
+
+
+def _observed_rows(key: tuple[object, ...], loader: Callable[[], Sequence[Any]]) -> tuple[Any, ...]:
+    observation = _observation.get()
+    if observation is not None and key in observation:
+        return observation[key]
+    rows = tuple(loader())
+    if observation is not None:
+        observation[key] = rows
+    return rows
 
 
 def _start_dt(day: date) -> datetime:

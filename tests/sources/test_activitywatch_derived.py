@@ -15,6 +15,21 @@ from lynchpin.sources.activitywatch_derived import (
 )
 
 
+def test_app_session_counts_observed_union_not_wall_gap():
+    from lynchpin.sources.activitywatch import _app_sessions_from_spans
+    from lynchpin.sources.activitywatch_models import FocusSpan
+
+    start = datetime(2026, 6, 6, 10, tzinfo=timezone.utc)
+    spans = [FocusSpan(start=start, end=start + timedelta(seconds=60), kind="focused",
+                       app="editor", title="A", mode="coding", project="demo"),
+             FocusSpan(start=start + timedelta(seconds=120), end=start + timedelta(seconds=180),
+                       kind="focused", app="editor", title="A", mode="coding", project="demo")]
+    sessions = _app_sessions_from_spans(spans, min_duration_s=60)
+    assert len(sessions) == 1
+    assert sessions[0].duration_s == 120
+    assert (sessions[0].end - sessions[0].start).total_seconds() == 180
+
+
 def test_partition_paths_follow_relocated_derived_root(tmp_path):
     from lynchpin.ingest.activitywatch_derived_materialize import _existing_partitions
 

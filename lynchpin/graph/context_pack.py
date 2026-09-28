@@ -730,7 +730,7 @@ def render_context_pack(pack: ContextPack) -> str:
         if pack.salient_chains:
             lines.append("**Temporal evidence chains:**")
             for c in pack.salient_chains:
-                lines.append(f"- {c.date.isoformat()} — {c.summary} (confidence {c.confidence:.0%})")
+                lines.append(f"- {c.date.isoformat()} — {c.summary} (temporal proximity score {c.confidence:.0%})")
             lines.append("")
     if pack.physiology is not None:
         lines.extend(

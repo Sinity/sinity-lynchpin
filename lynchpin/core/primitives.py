@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, date
+from datetime import datetime, time, timedelta, date, timezone
 from typing import Callable, Generic, Iterable, Iterator, Sequence, TypeVar
 
 from lynchpin.core.parse import as_local
@@ -98,12 +98,13 @@ def group_by_gap(
     backward, silently corrupting group boundaries. The stable sort preserves the
     relative order of equal-start items, so ties keep their incoming sequence.
     """
-    ordered = sorted(items, key=start_of)
+    ordered = sorted(items, key=lambda item: as_local(start_of(item)).astimezone(timezone.utc))
 
     current: list[T] = []
     current_start: datetime | None = None
     current_end: datetime | None = None
     interruptions = 0
+    anchor: T | None = None
 
     for item in ordered:
         item_start = start_of(item)
@@ -114,17 +115,20 @@ def group_by_gap(
             current_start = item_start
             current_end = item_end
             interruptions = 0
+            anchor = item
             continue
 
-        gap = (item_start - current_end).total_seconds() if current_end else 0.0
+        gap = duration_s((current_end, item_start)) if current_end else 0.0
 
-        if gap <= max_gap and compatible(current[-1], item):
+        if gap <= max_gap and anchor is not None and compatible(anchor, item):
             current.append(item)
+            anchor = item
             if current_end is None or item_end > current_end:
                 current_end = item_end
         elif (
-            absorb_interruption > 0
-            and (item_end - item_start).total_seconds() <= absorb_interruption
+            gap <= max_gap
+            and absorb_interruption > 0
+            and duration_s((item_start, item_end)) <= absorb_interruption
         ):
             current.append(item)
             interruptions += 1
@@ -138,6 +142,7 @@ def group_by_gap(
             current_start = item_start
             current_end = item_end
             interruptions = 0
+            anchor = item
 
     if current:
         if current_start is None or current_end is None:
@@ -170,14 +175,14 @@ def merge_intervals(intervals: Iterable[Interval]) -> list[Interval]:
     a mix of naive and tz-aware inputs is safe.
     """
     normalized = (_normalize_interval(iv) for iv in intervals)
-    sorted_ivs = sorted(normalized, key=lambda iv: (iv[0], iv[1]))
+    sorted_ivs = sorted(normalized, key=lambda iv: (_instant(iv[0]), _instant(iv[1])))
     if not sorted_ivs:
         return []
     merged: list[list[datetime]] = [[sorted_ivs[0][0], sorted_ivs[0][1]]]
     for start, end in sorted_ivs[1:]:
         last = merged[-1]
-        if start <= last[1]:
-            if end > last[1]:
+        if _instant(start) <= _instant(last[1]):
+            if _instant(end) > _instant(last[1]):
                 last[1] = end
         else:
             merged.append([start, end])
@@ -194,26 +199,24 @@ def intersect_intervals(
 
     Returns (overlaps, new_start_index) for efficient sequential calls.
 
-    The span bounds and every timeline bound are normalized to local tz on
-    entry (see ``_normalize_interval``), so a mix of naive (``date_to_dt_range``)
-    and tz-aware (``as_local``) inputs compares cleanly instead of raising
-    ``TypeError``.
+    Span bounds are normalized on entry. The timeline is already normalized
+    by its sequential consumer, so repeated calls do not revisit every bound.
+    Instant comparisons still support mixed naive and aware inputs.
     """
     span_start, span_end = _normalize_interval((span_start, span_end))
-    timeline = [_normalize_interval(iv) for iv in timeline]
     idx = start_index
-    while idx < len(timeline) and timeline[idx][1] <= span_start:
+    while idx < len(timeline) and _instant(timeline[idx][1]) <= _instant(span_start):
         idx += 1
 
     overlaps: list[Interval] = []
     cur = idx
-    while cur < len(timeline) and timeline[cur][0] < span_end:
+    while cur < len(timeline) and _instant(timeline[cur][0]) < _instant(span_end):
         active_start, active_end = timeline[cur]
-        overlap_start = max(span_start, active_start)
-        overlap_end = min(span_end, active_end)
-        if overlap_end > overlap_start:
+        overlap_start = max((span_start, active_start), key=_instant)
+        overlap_end = min((span_end, active_end), key=_instant)
+        if _instant(overlap_end) > _instant(overlap_start):
             overlaps.append((overlap_start, overlap_end))
-        if active_end >= span_end:
+        if _instant(active_end) >= _instant(span_end):
             break
         cur += 1
     return overlaps, idx
@@ -258,15 +261,15 @@ def split_by_day(start: datetime, end: datetime) -> Iterator[tuple[date, Interva
     start = as_local(start)
     end = as_local(end)
     cursor = start
-    while cursor < end:
+    while _instant(cursor) < _instant(end):
         # Next boundary: today's boundary if before it, else tomorrow's
         today_boundary = datetime.combine(cursor.date(), boundary, tzinfo=cursor.tzinfo)
-        if cursor >= today_boundary:
+        if _instant(cursor) >= _instant(today_boundary):
             next_boundary = datetime.combine(cursor.date() + timedelta(days=1), boundary, tzinfo=cursor.tzinfo)
         else:
             next_boundary = today_boundary
-        segment_end = min(end, next_boundary)
-        if segment_end > cursor:
+        segment_end = min((end, next_boundary), key=_instant)
+        if _instant(segment_end) > _instant(cursor):
             yield logical_date(cursor), (cursor, segment_end)
         cursor = segment_end
 
@@ -283,7 +286,11 @@ def split_by_hour(start: datetime, end: datetime) -> Iterator[tuple[int, Interva
 
 
 def duration_s(interval: Interval) -> float:
-    return max((interval[1] - interval[0]).total_seconds(), 0.0)
+    return max((_instant(interval[1]) - _instant(interval[0])).total_seconds(), 0.0)
+
+
+def _instant(value: datetime) -> datetime:
+    return as_local(value).astimezone(timezone.utc)
 
 
 
