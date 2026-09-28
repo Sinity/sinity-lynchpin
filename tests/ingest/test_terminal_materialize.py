@@ -36,6 +36,31 @@ def test_sparse_atuin_refresh_keeps_verified_empty_days_with_unchanged_input(mon
     assert len(output.read_text(encoding="utf-8").splitlines()) == 1
 
 
+def test_empty_atuin_refresh_on_changed_input_drops_unscanned_coverage(monkeypatch, tmp_path):
+    """Fails if a refresh with no rows (so no verified bounds) re-stamps prior days."""
+    from lynchpin.ingest import terminal_materialize
+
+    db = tmp_path / "history.db"
+    db.write_text("fixture", encoding="utf-8")
+    output = tmp_path / "history.ndjson"
+    monkeypatch.setattr(terminal_materialize, "get_config", lambda: SimpleNamespace(atuin_db=db))
+    monkeypatch.setattr(terminal_materialize, "commands_from_atuin_db", lambda _db, **_kw: iter(()))
+
+    first = terminal_materialize.materialize_atuin_history(
+        output=output, start=date(2026, 1, 1), end=date(2026, 1, 4),
+    )
+    assert first["covered_dates"] == ["2026-01-01", "2026-01-02", "2026-01-03"]
+
+    db.write_text("fixture with a newer Atuin snapshot", encoding="utf-8")
+    second = terminal_materialize.materialize_atuin_history(
+        output=output, start=date(2026, 1, 2), end=date(2026, 1, 3),
+    )
+
+    assert second["covered_dates"] == ["2026-01-02"]
+    assert second["input_versions"] != first["input_versions"]
+    assert output.read_text(encoding="utf-8") == ""
+
+
 def test_concurrent_disjoint_atuin_windows_both_publish(monkeypatch, tmp_path):
     from lynchpin.ingest import terminal_materialize
 
