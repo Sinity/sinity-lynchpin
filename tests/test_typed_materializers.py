@@ -178,6 +178,44 @@ def test_production_failure_skips_dependent_and_reports_reuse(monkeypatch) -> No
     assert calls == ["reused"]
 
 
+def test_unregistered_producer_fails_closed_and_reuses_successful_sibling_on_retry(monkeypatch) -> None:
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.materializers import production
+
+    calls: list[str] = []
+    receipts: list[tuple[str, str]] = []
+    plan = ConvergencePlanner((
+        spec("parent"), spec("child", dependencies=("parent",)), spec("sibling"),
+    )).plan(ConvergenceRequest(("child", "sibling")))
+    steps = tuple(replace_step(step, action="materialize") for step in plan.steps)
+    production_harness(monkeypatch, [
+        ("test:child", lambda _context: calls.append("child")),
+        ("test:sibling", lambda _context: calls.append("sibling")),
+    ], receipts)
+
+    with pytest.raises(MaterializationError, match="parent, child|child, parent"):
+        production.run_materialization_plan(steps, continue_on_error=True)
+    assert calls == ["sibling"]
+    assert ("parent", "error") in receipts
+    assert ("child", "skipped") in receipts
+    assert ("sibling", "ok") in receipts
+
+    calls.clear()
+    receipts.clear()
+    production_harness(monkeypatch, [
+        ("test:parent", lambda _context: calls.append("parent")),
+        ("test:child", lambda _context: calls.append("child")),
+        ("test:sibling", lambda _context: calls.append("sibling")),
+    ], receipts)
+    retry = tuple(
+        replace_step(step, action="skip", status="ready") if step.product == "sibling" else step
+        for step in steps
+    )
+    assert {step.product for step in production.run_materialization_plan(retry, continue_on_error=True)} == {"parent", "child"}
+    assert calls == ["parent", "child"]
+    assert ("sibling", "ok") not in receipts
+
+
 def test_progress_callback_failure_does_not_change_materialization_result(monkeypatch) -> None:
     from lynchpin.materializers import production
 

@@ -485,13 +485,13 @@ def run_materialization_plan(
     }
 
     def run_one(step: PlanStep, dependencies: dict[str, StepResult], queued_at: datetime) -> StepResult:
-        definition = registry.resolve(step.spec.handler)
-        validate_step_contract(step, definition)
         effective_window = step.effective_window if step.effective_window is not None else window
         started = datetime.now(timezone.utc)
         emit(step, "started", queue_wait_seconds=round((started - queued_at).total_seconds(), 3), effective_window=audit._window_payload(effective_window))
         audit._record_materialization_step(refresh_id, step.product, "started", step.reason, started_at=started)
         try:
+            definition = registry.resolve(step.spec.handler)
+            validate_step_contract(step, definition)
             value = definition.handler(
                 StepContext(
                     step,
