@@ -148,12 +148,12 @@ def readiness(root: Optional[Path] = None) -> SourceReadiness:
         return SourceReadiness(
             status="empty", reason="day files present but no envelopes yet", path=base, row_count=0,
         )
+    # The writer appends each pass's data/failure envelopes and then its
+    # vendor_sync_pass receipt. Append order is authoritative when fetchedAt
+    # ties; a trailing non-receipt means the newest pass did not complete.
     latest: XiaomiEnvelope | None = None
     for envelope in xiaomi_envelopes(root=base):
-        if envelope.fetched_at is not None and (
-            latest is None or latest.fetched_at is None or envelope.fetched_at > latest.fetched_at
-        ):
-            latest = envelope
+        latest = envelope
     if latest is not None and latest.kind == "vendor_sync_pass":
         failures = latest.payload.get("failures")
         if isinstance(failures, int) and failures > 0:
@@ -168,6 +168,13 @@ def readiness(root: Optional[Path] = None) -> SourceReadiness:
         return SourceReadiness(
             status="error",
             reason=f"latest Xiaomi capture envelope is a fetch failure: {reason}",
+            path=base,
+            row_count=total,
+        )
+    elif latest is not None:
+        return SourceReadiness(
+            status="partial",
+            reason="latest Xiaomi synchronization pass has no completion receipt",
             path=base,
             row_count=total,
         )
