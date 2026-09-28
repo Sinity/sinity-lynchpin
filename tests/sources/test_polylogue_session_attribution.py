@@ -191,6 +191,10 @@ def test_project_from_root_path_resolves_repo_name_not_working_directory_basenam
     # Polylogue's own repository-edge writer requires a discoverable Git
     # root or explicit remote before asserting that edge.
     assert _project_from_root_path("/realm/project/fictional-directory") is None
+    # A directory that only starts with, or contains, a project's name is a
+    # different checkout, not that project.
+    assert _project_from_root_path("/realm/project/sinnix-unrelated") is None
+    assert _project_from_root_path("/realm/project/polylogue-not-a-repo/src") is None
 
 
 def test_session_repo_intervals_reports_missing_archive(tmp_path):

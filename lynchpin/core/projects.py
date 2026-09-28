@@ -208,6 +208,19 @@ def canonical_project_name(value: object, *, include_inactive: bool = False) -> 
     return None
 
 
+def project_for_checkout_name(name: str) -> str | None:
+    """Return the active project whose checkout directory is exactly ``name``.
+
+    Unlike :func:`canonical_project_name`, no prefix or substring alias
+    applies: ``sinnix-unrelated`` is not ``sinnix``. Only a registered name or
+    an exact alias (a former checkout name) identifies a checkout.
+    """
+    lowered = name.strip().lower()
+    if lowered in ALL_PROJECTS and ALL_PROJECTS[lowered].active:
+        return lowered
+    return _PROJECT_ALIASES.get(lowered)
+
+
 def project_path(name: str) -> Path:
     """Return the canonical local checkout path for a registered project."""
     entry = ALL_PROJECTS[name]
