@@ -474,6 +474,10 @@ def test_numstat_paths_are_exact_including_unicode_spaces_and_renames(tmp_path):
     }
     assert {p for p, _, _, _ in rows["feat: add"].path_changes} == {"żółć.txt", " note.txt"}
     assert rows["feat: move"].path_changes == (("dir name/renamed.txt", 0, 0, " note.txt"),)
+    changes = list(git_source.file_change_facts(start=day, end=day, repo_paths=(repo,)))
+    moved = [change for change in changes if change.path == "dir name/renamed.txt"]
+    assert len(moved) == 1
+    assert moved[0].old_path == " note.txt"
 
 
 def test_only_explicit_ai_coauthor_trailers_count_as_ai():
