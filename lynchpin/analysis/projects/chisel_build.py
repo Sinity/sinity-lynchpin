@@ -54,7 +54,6 @@ from lynchpin.sources.chisel import (
     _sanitize_xml,
     _validate_xml,
     _fmt_bytes,
-    _print_scope,
     RepoPlan,
     REPO_PLANS,
     _record_substage_duration,
@@ -69,6 +68,8 @@ from lynchpin.sources.chisel import (
     _collect_tokei_stats,
 )
 from lynchpin.sources.chisel import _console
+from lynchpin.sources.chisel_warnings import captured_warnings
+from . import chisel_terminal
 
 if _console is not None:
     from rich.table import Table
@@ -793,65 +794,16 @@ def _ensure_github_context_for_chisel(projects: set[str] | None = None) -> None:
         _github_context_ready = True
 
 
-def _github_context_summary() -> str:
-    manifest = _github_context_manifest or {}
-    if not manifest:
-        return "existing product"
-    if manifest.get("refresh_status") == "stale_fallback":
-        return "stale existing product; refresh failed"
-    inventory = int(manifest.get("inventory_items_seen") or 0)
-    refreshed = int(manifest.get("detail_refreshes") or 0)
-    reused = int(manifest.get("detail_reuses") or 0)
-    missed = int(manifest.get("detail_misses") or 0)
-    stale_open = sum(
-        int(value or 0)
-        for value in (manifest.get("project_stale_open_removed") or {}).values()
-    )
-    fetched_refs = int(manifest.get("missing_commit_refs_fetched") or 0)
-    deferred_refs = int(manifest.get("missing_commit_refs_deferred") or 0)
-    parts = [
-        f"{inventory} inventory",
-        f"{refreshed} detail refresh",
-        f"{reused} reused",
-    ]
-    if missed:
-        parts.append(f"{missed} missed")
-    if stale_open:
-        parts.append(f"{stale_open} stale open removed")
-    if fetched_refs or deferred_refs:
-        parts.append(f"{fetched_refs} commit refs fetched")
-    if deferred_refs:
-        parts.append(f"{deferred_refs} deferred")
-    reasons = manifest.get("detail_decision_reasons") or {}
-    noisy_reasons = {
-        str(key): int(value)
-        for key, value in reasons.items()
-        if key != "unchanged_inventory" and int(value or 0)
-    }
-    if noisy_reasons:
-        parts.append(
-            "hydrate reasons "
-            + ", ".join(
-                f"{key}={value}" for key, value in sorted(noisy_reasons.items())
-            )
-        )
-    substrate_status = str(manifest.get("substrate_status") or "unknown")
-    if substrate_status == "degraded":
-        attempts = int(manifest.get("substrate_attempts") or 1)
-        parts.append(f"substrate promotion degraded after {attempts} attempt(s)")
-    return "; ".join(parts)
-
-
 def _ensure_chisel_prerequisites(plans: Sequence[RepoPlan]) -> None:
     if not any(plan.github_slug for plan in plans):
         return
     if "trackers" not in chisel_options.active_options.datasets:
         return
-    _print_live("GitHub context: refreshing..." if chisel_options.active_options.refresh else "GitHub context: reading local product; remote freshness unknown...")
-    t0 = dt.datetime.now()
+    if chisel_options.active_options.refresh:
+        _print_live("GitHub: refreshing the mirror from the remote…")
+    t0 = time.perf_counter()
     _ensure_github_context_for_chisel({plan.name for plan in plans})
-    elapsed = (dt.datetime.now() - t0).total_seconds()
-    _print_live(f"GitHub context: ready ({elapsed:.1f}s; {_github_context_summary()})")
+    _print_live(chisel_terminal.github_context_line(_github_context_manifest, time.perf_counter() - t0))
 
 
 def _build_github_context_index() -> dict[tuple[str, str, str, str], list[Any]]:
@@ -3665,17 +3617,6 @@ def _github_open_index_count(counts: Mapping[str, Any], kind: str) -> str:
     return f"unknown (local {observed})"
 
 
-def _github_summary_count(counts: Mapping[str, Any], kind: str) -> str:
-    observed = counts.get(f"{kind}_open", 0)
-    completed = counts.get("issues_closed" if kind == "issues" else "prs_merged", 0)
-    suffix = "c" if kind == "issues" else "m"
-    values = f"{observed}o/{completed}{suffix}"
-    if counts.get(f"{kind}_open_current") is not None:
-        return values
-    marker = "≥" if counts.get(f"{kind}_open_count_coverage") == "possibly_truncated" else ""
-    return f"?{marker}{values}"
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Per-repo builder (parallel slices within repo)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4146,7 +4087,9 @@ def build_chisel_bundles(
     max_workers: int = DEFAULT_MAX_WORKERS,
     options: chisel_options.BuildOptions | None = None,
     report_builder: Callable[..., Any] | None = None,
+    verbose: bool = False,
 ) -> dict[str, Any]:
+    """Build and publish packages; ``verbose`` also prints library warnings."""
     # GitHub materialization and subprocess cancellation retain process-wide
     # state. Different output roots must not race on those shared resources.
     if not _build_chisel_lock.acquire(blocking=False):
@@ -4159,6 +4102,7 @@ def build_chisel_bundles(
             output_root=output_root,
             max_workers=max_workers,
             report_builder=report_builder,
+            verbose=verbose,
         )
     finally:
         chisel_options.active_options = previous_options
@@ -4171,8 +4115,13 @@ def _publish_chisel_bundles(
     output_root: Path | None = None,
     max_workers: int = DEFAULT_MAX_WORKERS,
     report_builder: Callable[..., Any] | None = None,
+    verbose: bool = False,
 ) -> dict[str, Any]:
-    """Publish one complete selected generation, preserving the last good one."""
+    """Publish one complete selected generation, preserving the last good one.
+
+    Warnings raised during the build go to a log beside the output root, never
+    inside the published packages.
+    """
     from .chisel_package import build_portfolio
     from lynchpin.sources.chisel_publication import publish_candidate, staged_publication
 
@@ -4182,7 +4131,9 @@ def _publish_chisel_bundles(
     unknown = set(names) - REPO_PLANS.keys()
     if unknown:
         raise ValueError(f"unknown projects: {', '.join(sorted(unknown))}")
-    with staged_publication(root) as candidate:
+    warning_log = root.parent / f".{root.name}.chisel-warnings.log"
+    echo = (lambda line: _print_live(f"warning: {line}", markup=False)) if verbose else None
+    with captured_warnings(warning_log, echo=echo) as warnings_seen, staged_publication(root) as candidate:
         for name in names:
             (candidate / f"{name}-all.tar.gz").unlink(missing_ok=True)
         result = _build_chisel_candidate(
@@ -4198,28 +4149,31 @@ def _publish_chisel_bundles(
         if successful:
             plans = [REPO_PLANS[name] for name in names]
             (candidate / "portfolio-all.tar.gz").unlink(missing_ok=True)
-            _print_live("→ portfolio attachment archive")
-            portfolio_started = time.perf_counter()
-            result["portfolio"] = build_portfolio(
-                candidate,
-                plans,
-                result["projects"],
-                result["generated_at"],
-            )
-            _print_live(f"✓ portfolio attachment archive ({time.perf_counter() - portfolio_started:.1f}s)")
-            _print_live("→ publication validation")
-            validation_started = time.perf_counter()
-            publish_candidate(candidate, root, names)
-            _print_live(f"✓ publication validation ({time.perf_counter() - validation_started:.1f}s)")
-        else:
-            _print(
-                "[yellow]Candidate incomplete; previous published packages retained.[/yellow]"
-            )
+            _print_live(f"Publishing to {root}")
+            with chisel_terminal.timed_step("portfolio attachment archive"):
+                result["portfolio"] = build_portfolio(
+                    candidate,
+                    plans,
+                    result["projects"],
+                    result["generated_at"],
+                )
+            with chisel_terminal.timed_step("publication validation"):
+                publish_candidate(candidate, root, names)
         result["published"] = successful
         result["output_root"] = str(root)
         result["total_elapsed_s"] = round(time.perf_counter() - started, 1)
-        _print_live(f"Chisel {'published' if successful else 'not published'}: "
-                    f"{result['total_elapsed_s']:.1f}s total; {root}")
+        if warnings_seen.count:
+            _print_live(
+                f"[dim]Library warnings: {warnings_seen.count} written to {warning_log}"
+                f"{'' if verbose else ' (--verbose prints them)'}[/dim]"
+            )
+        if successful:
+            _print_live(f"[green]Published[/green] in {result['total_elapsed_s']:.1f}s: {root}")
+        else:
+            _print_live(
+                f"[yellow]Not published[/yellow] ({result['total_elapsed_s']:.1f}s): candidate incomplete; "
+                f"previous packages retained at {root}"
+            )
         for row in result["projects"].values():
             row["published"] = successful
         return result
@@ -4264,14 +4218,15 @@ def _build_chisel_candidate(
     repo_workers = min(max(1, max_workers), max(1, len(plans)))
     slice_workers = DEFAULT_SLICE_WORKERS
 
-    _print(f"[bold]Chisel evidence packages[/bold]  (XML: {repomix_ver})")
-    _print(f"Output: {display_root or output_root}")
-    _print(f"Repos:  {len(plans)} selected — {', '.join(p.name for p in plans)}")
-    _print(
-        f"Pools:  {repo_workers} across repos × {slice_workers} within each; "
-        f"{DEFAULT_REPOMIX_WORKERS} global repomix slots"
-    )
-    _print_scope(plans, display_root or output_root)
+    for line in chisel_terminal.header_lines(
+        plans,
+        output_root=display_root or output_root,
+        xml_version=repomix_ver,
+        repo_workers=repo_workers,
+        slice_workers=slice_workers,
+        repomix_slots=DEFAULT_REPOMIX_WORKERS,
+    ):
+        _print(line)
     _print()
     preflight_started = time.perf_counter()
     _ensure_chisel_prerequisites(plans)
@@ -4288,17 +4243,16 @@ def _build_chisel_candidate(
         ): plan.name
         for plan in plans
     }
+    progress = chisel_terminal.ProgressLine()
     try:
         completed = 0
         pending = set(futures)
         while pending:
-            done, pending = wait(pending, timeout=20, return_when=FIRST_COMPLETED)
+            done, pending = wait(pending, timeout=progress.poll_seconds, return_when=FIRST_COMPLETED)
             if not done:
                 with _progress_lock:
-                    running = [f"{name} ({', '.join(sorted(stages)) or 'waiting'})"
-                               for name, stages in _active_stages.items()]
-                _print_live(f"Progress: {completed}/{len(plans)} complete; "
-                            + ("; ".join(running) if running else "waiting for workers"))
+                    active = {name: set(stages) for name, stages in _active_stages.items()}
+                progress.update(chisel_terminal.progress_text(completed, len(plans), active))
                 continue
             for future in done:
                 name = futures[future]
@@ -4318,6 +4272,7 @@ def _build_chisel_candidate(
                 results[name]["log"] = f"logs/{name}.log"
                 _print_project_summary(completed, len(plans), results[name])
     except KeyboardInterrupt:
+        progress.close()
         _abort_event.set()
         _terminate_active_processes()
         for future in futures:
@@ -4331,120 +4286,51 @@ def _build_chisel_candidate(
         os._exit(130)
     else:
         ex.shutdown(wait=True)
+    finally:
+        progress.close()
 
     growth_portfolio = _write_growth_portfolio(output_root, plans, generated_at)
     total_elapsed = round(time.perf_counter() - build_started, 1)
-    _print(
-        f"[green]Wrote growth portfolio:[/green] growth/README.md "
-        f"({len(growth_portfolio['files'])} artifacts)"
-    )
+    _print(f"Wrote growth/README.md ({len(growth_portfolio['files'])} artifacts)")
 
-    # ── Summary table ──
-    github_counts_unknown = False
-    if _console is not None:
+    counts_by_project = {
+        plan.name: _read_json_file(output_root / plan.name / f"{plan.name}-overview.json").get("counts") or {}
+        for plan in plans
+        if results.get(plan.name, {}).get("status") in chisel_terminal.MEASURED_STATUSES
+    }
+    rows, total_row, statuses = chisel_terminal.summary_rows(
+        plans, results, counts_by_project,
+        xml_requested=chisel_options.active_options.xml, total_elapsed=total_elapsed,
+    )
+    total_bytes = sum(int(results.get(plan.name, {}).get("total_bytes", 0) or 0) for plan in plans)
+    _print()
+    if chisel_terminal.interactive():
         table = Table(
-            title=f"Chisel — {generated_at}", title_style="bold",
+            title=f"Chisel {generated_at}", title_style="bold", title_justify="left",
             box=None, padding=(0, 1), pad_edge=False,
         )
-        table.add_column("Repo", style="bold", no_wrap=True)
-        table.add_column("St", no_wrap=True)
-        table.add_column("Snap", justify="right", no_wrap=True)
-        table.add_column("Issues", justify="right", no_wrap=True)
-        table.add_column("PRs", justify="right", no_wrap=True)
-        table.add_column("Git", justify="right", no_wrap=True)
-        table.add_column("Size", justify="right", no_wrap=True)
-        table.add_column("Time", justify="right", no_wrap=True)
-
-        total_bytes = 0
-        for plan in plans:
-            r = results.get(plan.name, {})
-            status = r.get("status", "?")
-            color = (
-                "green"
-                if status == "generated"
-                else "yellow"
-                if status == "partial"
-                else "red"
+        for column in chisel_terminal.SUMMARY_COLUMNS:
+            table.add_column(
+                column,
+                justify="right" if column in chisel_terminal.SUMMARY_RIGHT_ALIGNED else "left",
+                # A narrow terminal wraps the count phrases instead of eliding digits.
+                no_wrap=column not in {"Issues", "PRs"},
+                style="bold" if column == "Project" else None,
             )
-            status_label = (
-                "OK"
-                if status == "generated"
-                else "PART"
-                if status == "partial"
-                else "FAIL"
-            )
-            configured_slices = len(plan.slices)
-            xml_snapshots = r.get("slices", 0)
-            snapshots = f"{configured_slices}/{xml_snapshots}" if status != "failed" else "?"
-            counts = _read_json_file(output_root / plan.name / f"{plan.name}-overview.json").get("counts") or {}
-            github_counts_unknown |= status != "failed" and (
-                counts.get("issues_open_current") is None or counts.get("prs_open_current") is None
-            )
-            issues = _github_summary_count(counts, "issues") if status != "failed" else "?"
-            prs = _github_summary_count(counts, "prs") if status != "failed" else "?"
-            commits = str(r.get("gitlog_commits", 0)) if status != "failed" else "?"
-            size = r.get("total_bytes", 0)
-            total_bytes += size
-            elapsed = f"{r.get('elapsed_s', 0):.1f}s"
-            table.add_row(
-                plan.name,
-                f"[{color}]{status_label}[/{color}]",
-                snapshots,
-                issues,
-                prs,
-                commits,
-                _fmt_bytes(size),
-                elapsed,
-            )
-
+        for row, status in zip(rows, statuses):
+            style = chisel_terminal.status_style(status)
+            table.add_row(row[0], f"[{style}]{row[1]}[/{style}]", *row[2:])
         table.add_section()
-        table.add_row(
-            "[bold]TOTAL[/bold]",
-            "",
-            "",
-            "",
-            "",
-            "",
-            _fmt_bytes(total_bytes),
-            f"{total_elapsed:.1f}s",
-        )
+        table.add_row(f"[bold]{total_row[0]}[/bold]", *total_row[1:])
         _console.print(table)  # type: ignore[possibly-undefined]  # Table imported with rich
     else:
-        _print(
-            f"\n{'Repo':<22} {'St':<5} {'Snap':>7} {'Issues':>12} {'PRs':>12} {'Git':>8} {'Size':>12} {'Time':>8}"
-        )
-        _print("-" * 100)
-        total_bytes = 0
-        for plan in plans:
-            r = results.get(plan.name, {})
-            status = r.get("status", "?")
-            status_label = (
-                "OK"
-                if status == "generated"
-                else "PART"
-                if status == "partial"
-                else "FAIL"
-            )
-            configured_slices = len(plan.slices)
-            xml_snapshots = r.get("slices", 0)
-            snapshots = f"{configured_slices}/{xml_snapshots}" if status != "failed" else "?"
-            counts = _read_json_file(output_root / plan.name / f"{plan.name}-overview.json").get("counts") or {}
-            github_counts_unknown |= status != "failed" and (
-                counts.get("issues_open_current") is None or counts.get("prs_open_current") is None
-            )
-            issues = _github_summary_count(counts, "issues") if status != "failed" else "?"
-            prs = _github_summary_count(counts, "prs") if status != "failed" else "?"
-            commits = str(r.get("gitlog_commits", 0)) if status != "failed" else "?"
-            size = r.get("total_bytes", 0)
-            total_bytes += size
-            elapsed = f"{r.get('elapsed_s', 0)}s"
-            _print(
-                f"{plan.name:<22} {status_label:<5} {snapshots:>7} {issues:>12} {prs:>12} {commits:>8} {_fmt_bytes(size):>12} {elapsed:>8}"
-            )
-        _print("-" * 100)
-
-    if github_counts_unknown:
-        _print("? = current GitHub count unknown; following numbers are local observations. ≥ = inventory may be truncated.")
+        # Logs and pipes get fixed-width text: rich would fit the table to 80
+        # columns and elide cells.
+        _print(f"Chisel {generated_at}", markup=False)
+        for line in chisel_terminal.render_plain_table(rows, total_row):
+            _print(line, markup=False)
+    for line in chisel_terminal.summary_legend(counts_by_project, _github_context_manifest):
+        _print(f"[dim]{line}[/dim]")
 
     # ── Validation summary ──
     all_xml_errors: list[str] = []
@@ -4470,11 +4356,9 @@ def _build_chisel_candidate(
         total_elapsed,
         preflight_elapsed=preflight_elapsed,
     )
-    _print(f"[green]Wrote root index:[/green] {index_json}, {index_md}")
+    _print(f"Wrote {index_json} and {index_md}")
     if display_root is None:
-        _print(f"[dim]Done. {output_root}[/dim]")
-    else:
-        _print(f"[dim]Build complete; publication pending at {display_root}[/dim]")
+        _print(f"[dim]Done: {output_root}[/dim]")
 
     return {
         "generated_at": generated_at,

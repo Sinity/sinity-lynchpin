@@ -12,6 +12,8 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
+from lynchpin.sources.chisel_warnings import parse_python_source
+
 
 def rows(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line] if path.exists() else []
@@ -79,7 +81,8 @@ def declarations(root: Path, snapshot: str) -> tuple[list[dict[str, Any]], list[
     output, references = [], []
     for path in root.rglob("*.py"):
         try:
-            tree = ast.parse(path.read_text())
+            # Structure metrics record this file's parse warnings.
+            tree, _warnings = parse_python_source(path.read_text(), path.relative_to(root).as_posix())
         except (UnicodeError, SyntaxError):
             continue
         relative = path.relative_to(root).as_posix()
@@ -155,7 +158,7 @@ def changed_symbols(old: Path, new: Path) -> list[dict[str, Any]]:
         if not path.exists() or path.suffix != ".py":
             return {}
         try:
-            tree = ast.parse(path.read_text())
+            tree, _warnings = parse_python_source(path.read_text(), path.name)
         except (UnicodeError, SyntaxError):
             return {}
         result = {}

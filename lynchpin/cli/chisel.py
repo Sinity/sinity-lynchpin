@@ -40,7 +40,8 @@ def main(argv: list[str] | None = None) -> int:
             choices = [*REPO_PLANS, *PROFILES, *DATASETS, "list", "inspect", "validate", "render",
                        "--all", "--exclude", "--ref", "--task-root", "--target", "--profile", "--dataset",
                        "--exclude-dataset", "--output", "--workers", "--refresh", "--plan", "--xml", "--sqlite",
-                       "--context-days", "--context-limit", "--context-bytes", "--attachment-bytes", "--attachment-layout"]
+                       "--context-days", "--context-limit", "--context-bytes", "--attachment-bytes", "--attachment-layout",
+                       "--verbose"]
             print("\n".join(value for value in choices if value.startswith(word)))
         return 0
     if argv and argv[0] in {"inspect", "validate", "render"}:
@@ -114,6 +115,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--events", help="Append machine-readable stage events to this JSONL file")
     parser.add_argument("--xml", action="store_true")
     parser.add_argument("--sqlite", action="store_true")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Also print library warnings, which are otherwise only logged")
     args = parser.parse_args(argv)
     if args.list or args.selection == ["list"]:
         print("\n".join(f"{name}\t{plan.path}" for name, plan in REPO_PLANS.items()))
@@ -163,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"options": asdict(options), "projects": rows}, indent=2))
         return 0
     result = build_chisel_bundles(project_names=names, output_root=args.output_root,
-                                  max_workers=args.max_workers, options=options)
+                                  max_workers=args.max_workers, options=options, verbose=args.verbose)
     return int(not result.get("published", all(p.get("status") == "generated" for p in result.get("projects", {}).values())))
 
 

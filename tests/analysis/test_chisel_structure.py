@@ -311,3 +311,21 @@ def test_portfolio_links_use_explicit_local_paths_not_dependency_names(
     assert links[0]["target_project"] == "target"
     assert links[0]["target_snapshot_id"] == "target-snap"
     assert links[0]["source_line"] == 6
+
+
+def test_source_warning_is_recorded_on_its_file_and_not_printed(tmp_path: Path, capfd) -> None:
+    """A captured file's SyntaxWarning is evidence on that file, not terminal text.
+
+    Fails if the parse lets the warning reach stderr or drops it from the
+    file's metrics row.
+    """
+    source = 'import re\nPATTERN = re.compile("blockers=\\(\\)")\n'
+    inventory = _inventory(tmp_path, {"tests/test_escape.py": (source, "tests")})
+    output = tmp_path / "package"
+    coverage = build_structure(inventory, output)
+    rows = list(__import__("csv").DictReader((output / "structure/file_metrics.csv").open()))
+
+    assert rows[0]["parse_status"] == "parsed"
+    assert rows[0]["parse_warnings"] == "line 2: SyntaxWarning: invalid escape sequence '\\('"
+    assert coverage["inventory"]["source_files_with_parse_warnings"] == 1
+    assert "SyntaxWarning" not in capfd.readouterr().err

@@ -25,6 +25,8 @@ The default selection is Sinex, Sinnix, Polylogue, and Sinity-Lynchpin. Knowledg
 
 Ordinary builds read local inputs. GitHub materialization and hosted checks require `--refresh`. A remote-tracking ref is a local observation, not evidence of a fresh fetch. Owner export failures remain explicit coverage gaps. `--events FILE` appends project and stage events in JSONL. The index retains elapsed times and queue waits.
 
+On a terminal, progress is one line redrawn in place; in a log or pipe, each progress change prints one line. Library warnings raised during a build go to `.<output>.chisel-warnings.log` beside the output root, never into a package, and `--verbose` also prints them. A warning raised while parsing a captured Python file is recorded on that file as `parse_warnings` in `structure/file_metrics.csv`, and `structure/coverage.json` counts the affected files.
+
 XML rendering, duplicate source archives, and SQLite indexing are optional (`--xml`, `--sqlite`). Source, JSONL evidence, and the standard-library reader are the normal inspection surfaces. Completion definitions are in `completions/`: source `_chisel` after Zsh completion initialization for both commands, `chisel.bash` for Bash, or install `chisel.fish` in Fish's completion directory. The Zsh wrapper delegates other Just recipes to `_just`. Ref completion reads local Git refs.
 
 ## Snapshot identity and source

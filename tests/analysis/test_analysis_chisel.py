@@ -1475,10 +1475,10 @@ def test_build_chisel_bundles_reports_scope_and_grouped_repo_logs(
     )
 
     output = "\n".join(printed)
-    assert "Repos:  2 selected — alpha, beta" in output
-    assert "Pools:  2 across repos × 2 within each; 4 global repomix slots" in output
-    assert "1. alpha: 1 configured slices, compressed=True" in output
-    assert "2. beta: 2 configured slices, compressed=False" in output
+    assert "Projects  2 selected; completion order may differ" in output
+    assert "Workers   2 projects at a time × 2 slices each · 4 repomix slots" in output
+    assert "1. alpha  1 slice · compressed whole-repo XML" in output
+    assert "2. beta  2 slices · no compressed XML" in output
     assert "Completed 1/2:" in output and "Completed 2/2:" in output
     assert "grouped header" in output
     assert "worker output with 2 slice workers" in output

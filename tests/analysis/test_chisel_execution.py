@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from lynchpin.analysis.projects import chisel_build as chisel
+from lynchpin.analysis.projects import chisel_terminal
 from lynchpin.sources import chisel as source_chisel
 
 
@@ -73,16 +74,17 @@ def test_index_and_terminal_counts_mark_local_github_observations(tmp_path: Path
     index_text = (tmp_path / "out" / markdown).read_text(encoding="utf-8")
     assert "unknown (local 0)" in index_text
     assert "unknown (at least 2 observed)" in index_text
-    assert chisel._github_summary_count(
+    assert chisel_terminal.github_count_cell(
         {"issues_open": 0, "issues_closed": 8, "issues_open_current": None}, "issues"
-    ) == "?0o/8c"
-    assert chisel._github_summary_count(
-        {"prs_open": 2, "prs_merged": 10, "prs_open_current": None,
+    ) == "0 open · 8 closed"
+    assert chisel_terminal.github_count_cell(
+        {"prs_open": 2, "prs_merged": 4504, "prs_open_current": None,
          "prs_open_count_coverage": "possibly_truncated"}, "prs"
-    ) == "?≥2o/10m"
-    assert chisel._github_summary_count(
-        {"prs_open": 2, "prs_merged": 10, "prs_open_current": 2}, "prs"
-    ) == "2o/10m"
+    ) == "≥2 open · 4,504 merged"
+    assert chisel_terminal.github_count_cell(
+        {"prs_open": 2, "prs_merged": 10, "prs_open_current": 2,
+         "prs_open_count_coverage": "possibly_truncated"}, "prs"
+    ) == "2 open · 10 merged"
 
 
 @pytest.mark.parametrize("detailed", [False, True])

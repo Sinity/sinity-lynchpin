@@ -24,8 +24,9 @@ from lynchpin.sources.chisel_cache import atomic_write_text, copy_file
 from lynchpin.sources.chisel_compact import open_text, resolved_stream
 
 from lynchpin.sources.chisel_inventory import CapturedInventory
+from lynchpin.sources.chisel_warnings import parse_python_source
 
-_TOOL_VERSION = "chisel-structure-v5"
+_TOOL_VERSION = "chisel-structure-v6"
 _SOURCE_ROLES = {"implementation", "tests", "tooling"}
 _SOURCE_EXTENSIONS = {".py": "python", ".rs": "rust"}
 _SYMBOL_CACHE_VERSION = _TOOL_VERSION
@@ -184,12 +185,14 @@ def build_structure(
         parser_unavailable = False
         if lang == "python":
             try:
-                tree = ast.parse(text, filename=path)
+                tree, parse_warnings = parse_python_source(text, path)
             except SyntaxError as exc:
                 metric["parse_status"] = "parse_error"
                 metric["parse_error"] = f"line {exc.lineno}: {exc.msg}"
             else:
                 metric["parse_status"] = "parsed"
+                if parse_warnings:
+                    metric["parse_warnings"] = list(parse_warnings)
                 metric["function_complexity_sum"] = 0
                 metric["complexity_method"] = "decision-count approximation"
                 file_symbols, complexities = _python_symbols(
@@ -326,6 +329,7 @@ def build_structure(
             "role_counts": dict(sorted(role_counts.items())),
             "source_role_files": len(source_rows),
             "source_parsed_files": sum(m["parse_status"] == "parsed" for m in metrics),
+            "source_files_with_parse_warnings": sum(bool(m.get("parse_warnings")) for m in metrics),
             "source_hash_errors": source_hash_errors,
             "excluded_files": len(records) - len(included),
             "unclassified_files": role_counts.get("unclassified", 0),
@@ -1155,11 +1159,14 @@ def _write_metrics_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "complexity_method",
         "parse_status",
         "parse_error",
+        "parse_warnings",
     ]
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(
+            {**row, "parse_warnings": "; ".join(row.get("parse_warnings") or ())} for row in rows
+        )
 
 
 def _write_graph_csv(path: Path, rows: list[dict[str, Any]]) -> None:

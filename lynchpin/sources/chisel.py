@@ -33,6 +33,8 @@ try:
     from rich.console import Console
 
     _console = Console(highlight=False)
+    # A log or pipe keeps each message on one line instead of wrapping at 80.
+    _console.soft_wrap = not _console.is_terminal
     _has_rich = True
 except ImportError:
     _console = None
