@@ -147,9 +147,13 @@ def _is_git_repo_root(path: Path) -> bool:
             text=True,
             timeout=30,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        if (path / ".git").exists():
+            raise GitSourceError(path, f"git rev-parse failed: {exc}") from exc
         return False
     if result.returncode != 0:
+        if (path / ".git").exists():
+            raise GitSourceError(path, f"git rev-parse exited {result.returncode}: {result.stderr.strip()[:300]}")
         return False
     return Path(result.stdout.strip()).resolve() == path.resolve()
 
@@ -786,7 +790,7 @@ def _iter_repo_commit_records(
     include_paths: bool = True,
 ) -> Iterator[_RepoCommitRecord]:
     if not _is_git_repo_root(repo_path):
-        return
+        raise GitSourceError(repo_path, "path is not a Git worktree root")
     # Git date options filter by committer time. Filter author time below,
     # without a committer prefilter that could omit valid author dates.
     cmd = [
@@ -809,7 +813,10 @@ def _iter_repo_commit_records(
         cmd.append(ref)
     repo_identity = _repo_identity(repo_path)
     with tempfile.TemporaryFile() as stderr_sink:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr_sink)
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr_sink)
+        except OSError as exc:
+            raise GitSourceError(repo_path, f"git log could not start: {exc}") from exc
         assert proc.stdout is not None
         completed = False
         try:

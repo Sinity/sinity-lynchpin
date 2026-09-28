@@ -501,3 +501,9 @@ def test_human_coauthor_is_unmarked_not_human_only(tmp_path, monkeypatch):
     assert rows[0].ai_ratio == 0
     assert rows[0].unmarked == 1
     assert not hasattr(rows[0], "human_only")
+
+
+def test_explicit_non_repo_is_typed_unavailable(tmp_path):
+    path = tmp_path / "missing"
+    with pytest.raises(git_source.GitSourceError, match="not a Git worktree root"):
+        list(git_source._iter_repo_commit_records(path, start=date(2026, 1, 1), end=date(2026, 1, 2)))
