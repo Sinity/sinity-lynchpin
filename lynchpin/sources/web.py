@@ -547,7 +547,8 @@ def _visit_from_dict(obj: dict[str, Any], source: str) -> Optional[WebHistoryVis
     raw_title = obj.get("title")
     url = raw_url if isinstance(raw_url, str) else ""
     title = raw_title if isinstance(raw_title, str) else ""
-    return WebHistoryVisit(timestamp=dt, url=url, title=title, source=source)
+    native_source = obj.get("source")
+    return WebHistoryVisit(timestamp=dt, url=url, title=title, source=native_source if isinstance(native_source, str) and native_source else source)
 
 
 def _parse_csv_dt(row: dict[str, str | None]) -> Optional[datetime]:

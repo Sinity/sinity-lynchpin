@@ -142,7 +142,7 @@ def extract_browser_data(
                 )
             )
         report = _write_raw_batch(
-            raw_dir, f"live_{profile_label}_history", visits, dry_run=dry_run
+            raw_dir, f"live_{profile_label.replace('/', '_')}_history", visits, dry_run=dry_run
         )
         report["kind"] = "live_profile"
         report["profile"] = profile_label

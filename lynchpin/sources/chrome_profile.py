@@ -15,7 +15,6 @@ the webhistory raw inbox) so visits survive Chrome's retention horizon.
 from __future__ import annotations
 
 import os
-import shutil
 import sqlite3
 import tempfile
 from contextlib import contextmanager
@@ -45,18 +44,19 @@ def discover_profile_history_dbs() -> list[tuple[Path, str]]:
     out: list[tuple[Path, str]] = []
     for path in candidates:
         if path.is_file():
-            # e.g. ~/.config/chrome-ws/Default/History → "chrome-ws"
-            label = path.parent.parent.name or "chrome"
+            label = f"{path.parent.parent.name or 'chrome'}/{path.parent.name}"
             out.append((path, label))
     return out
 
 
 @contextmanager
 def snapshot_history_db(path: Path) -> Iterator[Path]:
-    """Copy the (possibly locked) History DB to a temp file and yield the copy."""
+    """Create a coherent SQLite backup, including committed WAL transactions."""
     with tempfile.TemporaryDirectory(prefix="lynchpin-chrome-") as tmp:
         dst = Path(tmp) / "History"
-        shutil.copy2(path, dst)
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as source:
+            with sqlite3.connect(dst) as target:
+                source.backup(target)
         yield dst
 
 

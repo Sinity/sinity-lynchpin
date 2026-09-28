@@ -55,6 +55,24 @@ def test_phone_events_date_filter_bounds_by_parsed_date(tmp_path):
     assert events[0].date == date(2026, 8, 14)
 
 
+def test_phone_local_day_selects_only_intersecting_utc_carriers(tmp_path, monkeypatch):
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setattr(pe, "local_tz", lambda: ZoneInfo("Europe/Warsaw"))
+    monkeypatch.setattr("lynchpin.core.parse.local_tz", lambda: ZoneInfo("Europe/Warsaw"))
+    before = _write_day(tmp_path, "20260812", [{"kind": "outside-carrier", "ts": "2026-08-12T23:00:00Z"}])
+    preceding = _write_day(tmp_path, "20260813", [
+        {"kind": "inside-preceding", "ts": "2026-08-13T22:30:00Z"},
+        {"kind": "outside-row", "ts": "2026-08-13T21:30:00Z"},
+    ])
+    selected = _write_day(tmp_path, "20260814", [{"kind": "inside-selected", "ts": "2026-08-14T20:00:00Z"}])
+    after = _write_day(tmp_path, "20260815", [{"kind": "outside-carrier", "ts": "2026-08-15T00:00:00Z"}])
+
+    assert pe._day_files(tmp_path, date(2026, 8, 14), date(2026, 8, 14)) == [preceding, selected]
+    assert {row.kind for row in pe.phone_events(root=tmp_path, start=date(2026, 8, 14), end=date(2026, 8, 14))} == {"inside-preceding", "inside-selected"}
+    assert before.exists() and after.exists()
+
+
 def test_instrument_runs_extracts_covariates_and_metrics(tmp_path):
     _write_day(tmp_path, "20260814", [
         {

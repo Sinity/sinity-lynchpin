@@ -1556,3 +1556,20 @@ def test_bookmark_search_reports_unavailable_source_instead_of_empty_complete(
     assert page["complete"] is False
     assert page["coverage"]["browser"]["available"] is True
     assert page["coverage"]["raindrop"]["available"] is False
+
+
+def test_public_bookmark_daily_includes_selected_end_day(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import json
+
+    from lynchpin.mcp.tools import personal
+    from lynchpin.sources import bookmarks as source
+
+    path = tmp_path / "bookmarks.ndjson"
+    path.write_text("\n".join(json.dumps({"bookmark_id": str(day), "added_at": f"2026-05-{day:02d}T12:00:00+00:00", "domain": "example.test"}) for day in (1, 2, 3)) + "\n")
+    monkeypatch.setattr(source, "bookmarks_path", lambda root=None: path)
+    bounds = []
+    monkeypatch.setattr(personal, "_ensure_source_materialized_for_read", lambda _name, *, start, end: bounds.append((start, end)))
+    rows = personal.bookmark_daily(start="2026-05-02", end="2026-05-02")
+    assert [row["date"] for row in rows] == ["2026-05-02"]
+    assert rows[0]["bookmark_count"] == 1
+    assert bounds == [(date(2026, 5, 2), date(2026, 5, 3))]

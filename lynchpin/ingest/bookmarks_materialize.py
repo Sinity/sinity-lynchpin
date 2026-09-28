@@ -16,8 +16,10 @@ from typing import Any, Iterator
 from urllib.parse import urlparse
 
 from ..core.config import get_config
+from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
 from ..sources.bookmarks import BookmarkEvent, bookmarks_manifest_path, bookmarks_path
+from ..sources.chrome_profile import discover_profile_history_dbs
 from ..sources.web import normalize_url
 from ._manifest import atomic_write_ndjson, write_manifest
 
@@ -30,7 +32,7 @@ _BOOKMARK_SQL = """
     WHERE b.type = 1
     ORDER BY b.dateAdded
 """
-BOOKMARK_EVENTS_SCHEMA_VERSION = 1
+BOOKMARK_EVENTS_SCHEMA_VERSION = 2
 
 
 def materialize_bookmarks(*, root: Path | None = None, output: Path | None = None) -> dict[str, Any]:
@@ -38,8 +40,9 @@ def materialize_bookmarks(*, root: Path | None = None, output: Path | None = Non
     root = root or cfg.browser_bookmarks_root
     output = output or bookmarks_path(root)
     raw_roots = _bookmark_roots(root)
-    rows = list(_dedupe(_iter_all_bookmarks(raw_roots)))
-    rows.sort(key=lambda row: (row.added_at or datetime.min.replace(tzinfo=timezone.utc), row.normalized_url, row.title))
+    input_files = _discover_bookmark_files(raw_roots)
+    rows = list(_dedupe(_iter_all_bookmarks(input_files)))
+    rows.sort(key=lambda row: (row.added_at or datetime.min.replace(tzinfo=timezone.utc), row.url, row.source_path, row.bookmark_id))
     output.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_ndjson(
         output,
@@ -55,7 +58,6 @@ def materialize_bookmarks(*, root: Path | None = None, output: Path | None = Non
 
     first = next((row.added_at for row in rows if row.added_at), None)
     last = next((row.added_at for row in reversed(rows) if row.added_at), None)
-    input_files = _discover_bookmark_files(raw_roots)
     manifest = {
         "dataset": "browser.bookmarks",
         "schema_version": BOOKMARK_EVENTS_SCHEMA_VERSION,
@@ -94,6 +96,11 @@ def _discover_bookmark_files(roots: tuple[Path, ...]) -> list[Path]:
                             continue
             except OSError:
                 continue
+    for history, _label in discover_profile_history_dbs():
+        active = history.parent / "Bookmarks"
+        if not active.is_file():
+            raise MaterializationError("browser_bookmarks", reason=f"active profile bookmarks missing: {active}")
+        files.add(active)
     return sorted(files)
 
 
@@ -108,8 +115,9 @@ def _is_bookmark_file(name: str) -> bool:
     )
 
 
-def _iter_all_bookmarks(roots: tuple[Path, ...]) -> Iterator[BookmarkEvent]:
-    for path in _discover_bookmark_files(roots):
+def _iter_all_bookmarks(paths: list[Path]) -> Iterator[BookmarkEvent]:
+    active_paths = {history.parent / "Bookmarks" for history, _ in discover_profile_history_dbs()}
+    for path in paths:
         lower = path.name.lower()
         try:
             if lower == "places.sqlite":
@@ -119,23 +127,25 @@ def _iter_all_bookmarks(roots: tuple[Path, ...]) -> Iterator[BookmarkEvent]:
             elif lower == "bookmarks.html":
                 yield from _bookmarks_html(path)
             else:
-                yield from _chromium_json(path)
-        except (OSError, sqlite3.Error, json.JSONDecodeError, UnicodeDecodeError):
-            continue
+                yield from _chromium_json(path, active=path in active_paths)
+        except (OSError, sqlite3.Error, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            if path in active_paths:
+                raise MaterializationError("browser_bookmarks", reason=f"active profile bookmarks unreadable: {path}") from exc
+            raise MaterializationError("browser_bookmarks", reason=f"bookmark export unreadable: {path}") from exc
 
 
-def _chromium_json(path: Path) -> Iterator[BookmarkEvent]:
+def _chromium_json(path: Path, *, active: bool = False) -> Iterator[BookmarkEvent]:
     payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     roots = payload.get("roots")
     if not isinstance(roots, dict):
-        return
+        raise MaterializationError("browser_bookmarks", reason=f"bookmark roots missing: {path}")
     browser = _browser_from_path(path)
     profile = _profile_from_path(path)
     for name, node in roots.items():
-        yield from _chromium_node(browser, profile, str(name), node, path)
+        yield from _chromium_node(browser, profile, str(name), node, path, active=active)
 
 
-def _chromium_node(browser: str, profile: str, folder: str, node: object, path: Path) -> Iterator[BookmarkEvent]:
+def _chromium_node(browser: str, profile: str, folder: str, node: object, path: Path, *, active: bool = False) -> Iterator[BookmarkEvent]:
     if not isinstance(node, dict):
         return
     if node.get("type") == "url":
@@ -147,7 +157,8 @@ def _chromium_node(browser: str, profile: str, folder: str, node: object, path: 
             folder=folder,
             added_at=_chrome_time(node.get("date_added")),
             source_path=path,
-            source="chromium_bookmarks",
+            source="active_chromium_bookmarks" if active else "chromium_bookmarks",
+            native_id=str(node.get("id") or ""),
         )
         return
     children = node.get("children")
@@ -156,7 +167,7 @@ def _chromium_node(browser: str, profile: str, folder: str, node: object, path: 
     name = str(node.get("name") or folder)
     child_folder = folder if name == folder else f"{folder}/{name}"
     for child in children:
-        yield from _chromium_node(browser, profile, child_folder, child, path)
+        yield from _chromium_node(browser, profile, child_folder, child, path, active=active)
 
 
 def _firefox_places(path: Path) -> Iterator[BookmarkEvent]:
@@ -172,6 +183,7 @@ def _firefox_places(path: Path) -> Iterator[BookmarkEvent]:
                 added_at=_unix_micros(date_added),
                 source_path=path,
                 source=f"firefox_places:{bookmark_id}",
+                native_id=str(bookmark_id),
             )
     finally:
         conn.close()
@@ -203,6 +215,7 @@ def _firefox_backup_node(profile: str, folder: str, node: object, path: Path) ->
             added_at=_unix_micros(node.get("dateAdded")),
             source_path=path,
             source="firefox_jsonlz4",
+            native_id=str(node.get("guid") or node.get("id") or ""),
         )
         return
     name = str(node.get("title") or folder)
@@ -250,11 +263,11 @@ def _bookmarks_html(path: Path) -> Iterator[BookmarkEvent]:
 
 
 def _dedupe(rows: Iterator[BookmarkEvent]) -> Iterator[BookmarkEvent]:
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[str] = set()
     for row in rows:
         if not row.url:
             continue
-        key = (row.normalized_url, row.title, row.added_at.isoformat() if row.added_at else "")
+        key = row.bookmark_id
         if key in seen:
             continue
         seen.add(key)
@@ -271,10 +284,15 @@ def _event(
     added_at: datetime | None,
     source_path: Path,
     source: str,
+    native_id: str = "",
 ) -> BookmarkEvent:
     norm = normalize_url(url)
-    domain = urlparse(url).netloc.lower()
-    digest = hashlib.sha1(f"{norm}\0{title}\0{added_at}".encode("utf-8", errors="replace")).hexdigest()
+    try:
+        domain = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        domain = ""
+    identity = (source, str(source_path), browser, profile, folder, native_id or f"{url}\0{title}\0{added_at}", url)
+    digest = hashlib.sha1(json.dumps(identity, ensure_ascii=False).encode("utf-8")).hexdigest()
     caveats = () if added_at else ("missing_added_at",)
     return BookmarkEvent(
         bookmark_id=digest,

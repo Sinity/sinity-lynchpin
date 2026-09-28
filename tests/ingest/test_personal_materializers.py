@@ -73,6 +73,7 @@ def test_materialize_bookmarks_reads_chromium_and_firefox(monkeypatch, tmp_path)
     cfg = type("Cfg", (), {"browser_bookmarks_root": root, "libraries_root": tmp_path / "libraries"})()
     monkeypatch.setattr("lynchpin.ingest.bookmarks_materialize.get_config", lambda: cfg)
     monkeypatch.setattr("lynchpin.sources.bookmarks.get_config", lambda: cfg)
+    monkeypatch.setattr("lynchpin.ingest.bookmarks_materialize.discover_profile_history_dbs", lambda: [])
 
     manifest = materialize_bookmarks(root=root)
     rows = list(iter_bookmarks(root / "processed/bookmarks.ndjson"))
@@ -83,6 +84,52 @@ def test_materialize_bookmarks_reads_chromium_and_firefox(monkeypatch, tmp_path)
     assert manifest["input_latest_mtime"] is not None
     assert {row.browser for row in rows} == {"chrome", "firefox"}
     assert {row.domain for row in rows} == {"example.com", "mozilla.org"}
+
+
+def test_bookmark_native_identity_and_occurrences_survive_replay(monkeypatch, tmp_path):
+    from lynchpin.mcp.tools import personal
+
+    root = tmp_path / "exports"
+    exported = root / "profile-a" / "Bookmarks"
+    exported.parent.mkdir(parents=True)
+    urls = [
+        "http://example.test:8080/a?keep=1#one",
+        "https://example.test:8080/a?keep=1#one",
+        "https://example.test:8081/a?keep=1#one",
+        "https://example.test:8080/a?keep=1#two",
+        "https://example.test:8080/a?keep=2#one",
+        "https://[::1/a",
+    ]
+    children = [
+        {"type": "folder", "name": folder, "children": [
+            {"type": "url", "id": str(index), "name": "same", "url": url, "date_added": "13228166792370662"}
+        ]}
+        for index, (folder, url) in enumerate(
+            [("first", urls[0]), ("second", urls[0])] + [("first", url) for url in urls[1:]], 1
+        )
+    ]
+    exported.write_text(json.dumps({"roots": {"bookmark_bar": {"type": "folder", "children": children}}}))
+    archived = root / "profile-b" / "Bookmarks"
+    archived.parent.mkdir()
+    archived.write_text(exported.read_text())
+    monkeypatch.setattr("lynchpin.ingest.bookmarks_materialize.discover_profile_history_dbs", lambda: [])
+    monkeypatch.setattr(personal, "_ensure_source_materialized_for_read", lambda _name: {"status": "ready"})
+    monkeypatch.setattr("lynchpin.sources.bookmarks.bookmarks_path", lambda root=None: root_path)
+    root_path = root / "processed/bookmarks.ndjson"
+
+    first = materialize_bookmarks(root=root)
+    ids = [row.bookmark_id for row in iter_bookmarks(root_path)]
+    second = materialize_bookmarks(root=root)
+    page = personal.bookmarks_search(source="browser", limit=100)
+    rows = page["rows"]
+
+    assert first["row_count"] == second["row_count"] == 14
+    assert len(ids) == len(set(ids)) == 14
+    assert {row["url"] for row in rows} == set(urls)
+    assert len([row for row in rows if row["url"] == urls[0]]) == 4
+    assert {row["folder"] for row in rows if row["url"] == urls[0]} == {"bookmark_bar/first", "bookmark_bar/second"}
+    assert {row["profile"] for row in rows} == {"profile-a", "profile-b"}
+    assert all(row["source_path"] and row["bookmark_id"] for row in rows)
 
 
 def test_discover_bookmark_files_finds_supported_names_once(tmp_path):
@@ -100,7 +147,39 @@ def test_discover_bookmark_files_finds_supported_names_once(tmp_path):
     for path in expected | {nested / "not-bookmarks.json", nested / "Bookmarks.txt"}:
         path.write_text("fixture", encoding="utf-8")
 
-    assert set(_discover_bookmark_files((root,))) == expected
+    from unittest.mock import patch
+    with patch("lynchpin.ingest.bookmarks_materialize.discover_profile_history_dbs", return_value=[]):
+        assert set(_discover_bookmark_files((root,))) == expected
+
+
+def test_active_profile_bookmark_is_queryable_and_unreadable_snapshot_refuses(monkeypatch, tmp_path):
+    from lynchpin.mcp.tools import personal
+
+    root = tmp_path / "exports"
+    root.mkdir()
+    profile = tmp_path / "chrome" / "Default"
+    profile.mkdir(parents=True)
+    history = profile / "History"
+    history.touch()
+    active = profile / "Bookmarks"
+    active.write_text(json.dumps({"roots": {"bookmark_bar": {"type": "folder", "children": [
+        {"type": "url", "id": "41", "name": "Native title", "url": "https://active.example/a#fragment", "date_added": "13228166792370662"}
+    ]}}}))
+    monkeypatch.setattr("lynchpin.ingest.bookmarks_materialize.discover_profile_history_dbs", lambda: [(history, "chrome/Default")])
+    target = root / "processed/bookmarks.ndjson"
+    monkeypatch.setattr("lynchpin.sources.bookmarks.bookmarks_path", lambda root=None: target)
+    monkeypatch.setattr(personal, "_ensure_source_materialized_for_read", lambda _name: {"status": "ready"})
+    assert materialize_bookmarks(root=root)["row_count"] == 1
+    row = personal.bookmarks_search(source="browser")["rows"][0]
+    assert (row["source"], row["url"], row["title"], row["folder"], row["profile"]) == (
+        "active_chromium_bookmarks", "https://active.example/a#fragment", "Native title", "bookmark_bar", "Default"
+    )
+    original = target.read_bytes()
+    active.write_text("{")
+    with pytest.raises(MaterializationError, match="active profile bookmarks unreadable"):
+        materialize_bookmarks(root=root)
+    assert target.read_bytes() == original
+
 
 
 def test_materialize_communications_reads_outlook_csv(monkeypatch, tmp_path):

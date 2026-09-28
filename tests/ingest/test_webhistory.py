@@ -1,9 +1,59 @@
 from __future__ import annotations
 
 import json
+import shutil
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from lynchpin.ingest import webhistory
+
+
+def test_live_profile_wal_visit_reaches_ordinary_history_reader(monkeypatch, tmp_path) -> None:
+    from lynchpin.sources import chrome_profile, web
+
+    profile = tmp_path / "chrome" / "Default"
+    profile.mkdir(parents=True)
+    history = profile / "History"
+    conn = sqlite3.connect(history)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript("CREATE TABLE urls(id INTEGER PRIMARY KEY, url TEXT, title TEXT); CREATE TABLE visits(id INTEGER PRIMARY KEY, url INTEGER, visit_time INTEGER);")
+    conn.commit()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.execute("INSERT INTO urls VALUES(1, 'https://wal.example/seen', 'WAL')")
+    conn.execute("INSERT INTO visits VALUES(1, 1, 13400000000000000)")
+    conn.commit()
+    main_only = tmp_path / "main-only.sqlite"
+    shutil.copy2(history, main_only)
+    assert sqlite3.connect(main_only).execute("SELECT count(*) FROM visits").fetchone()[0] == 0
+    monkeypatch.setattr(chrome_profile, "discover_profile_history_dbs", lambda: [(history, "chrome/Default")])
+    monkeypatch.setattr(webhistory, "discover_profile_history_dbs", lambda: [(history, "chrome/Default")], raising=False)
+    monkeypatch.setattr(webhistory, "_discover_browser_dbs", lambda: [])
+    monkeypatch.setattr(webhistory, "_discover_manual_history_exports", lambda: [])
+    monkeypatch.setattr(webhistory, "iter_chrome_history_batches", lambda: [])
+    raw = tmp_path / "raw"
+    reports = webhistory.extract_browser_data(raw_dir=raw)
+    visits = list(web.iter_file_visits(next(raw.glob("*.ndjson"))))
+    assert reports[0]["kind"] == "live_profile"
+    assert [(v.url, v.title, v.source) for v in visits] == [("https://wal.example/seen", "WAL", "live_profile:chrome/Default")]
+    archived = tmp_path / "archived.ndjson"
+    archived.write_text('{"iso_time":"2025-08-19T00:00:00+00:00","url":"https://archive.example/","source":"takeout:export"}\n')
+    assert {v.source for v in [*visits, *web.iter_file_visits(archived)]} == {"live_profile:chrome/Default", "takeout:export"}
+    conn.close()
+
+
+def test_live_profile_snapshot_failure_keeps_prior_raw_batch(monkeypatch, tmp_path) -> None:
+    from lynchpin.sources import chrome_profile
+
+    history = tmp_path / "History"
+    history.write_bytes(b"invalid sqlite")
+    prior = tmp_path / "raw" / "live_chrome_history_2026-01-01_to_2026-01-01.ndjson"
+    prior.parent.mkdir()
+    prior.write_text('{"iso_time":"2026-01-01T00:00:00+00:00","url":"https://prior.example/"}\n')
+    monkeypatch.setattr(chrome_profile, "discover_profile_history_dbs", lambda: [(history, "chrome")])
+    monkeypatch.setattr(webhistory, "_discover_browser_dbs", lambda: [])
+    with __import__("pytest").raises(sqlite3.DatabaseError):
+        webhistory.extract_browser_data(raw_dir=prior.parent)
+    assert "prior.example" in prior.read_text()
 
 
 def test_build_full_history_streams_deduplicated_rows_in_order(monkeypatch, tmp_path) -> None:
