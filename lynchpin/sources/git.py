@@ -18,6 +18,7 @@ import logging
 import re
 import shutil
 import subprocess
+import tempfile
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,6 +29,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, TypedDict
 
 from ..core.cache import file_signature, persistent_cache
 from ..core.config import get_config
+from ..core.errors import SourceUnavailableError
 from ..core.coverage import CoverageBounds
 from ..core.parse import in_date_range, parse_date_from_any
 from ..core.primitives import logical_date
@@ -110,6 +112,68 @@ _GIT_SHORTSTAT_RE = re.compile(r"(\d+)\s+files?\s+changed")
 _GIT_INSERT_RE = re.compile(r"(\d+)\s+insertions?\(\+\)")
 _GIT_DELETE_RE = re.compile(r"(\d+)\s+deletions?\(-\)")
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+_COMMIT_MARK = b"COMMIT\x1f"
+# A co-author trailer is AI attribution only when it names an AI agent. A
+# generic human co-author is not evidence of AI contribution.
+_AI_COAUTHOR_RE = re.compile(
+    r"\b(claude|anthropic|codex|openai|chatgpt|gpt-\d|copilot|gemini|cursor|devin|aider)\b",
+    re.IGNORECASE,
+)
+
+
+class GitSourceError(SourceUnavailableError):
+    """A git command failed or a declared ref does not resolve.
+
+    Distinct from a genuinely empty history: callers must not read this as
+    "no commits".
+    """
+
+    def __init__(self, path: Path, reason: str) -> None:
+        super().__init__("git", path=str(path), reason=reason)
+
+
+def _is_git_repo_root(path: Path) -> bool:
+    """True when ``path`` is the top level of a git work tree.
+
+    Asks git instead of testing ``.git``'s file type, so linked worktrees
+    (whose ``.git`` is a file) are recognised like primary checkouts.
+    """
+    if not path.is_dir():
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    return Path(result.stdout.strip()).resolve() == path.resolve()
+
+
+def _run_git_checked(path: Path, args: List[str], *, timeout: int = 60) -> str:
+    """Run git and return stdout; any failure is a typed ``GitSourceError``."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), *args],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+        )
+    except FileNotFoundError as exc:
+        raise GitSourceError(path, "git executable not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitSourceError(path, f"git {' '.join(args[:2])} timed out after {timeout}s") from exc
+    if result.returncode != 0:
+        raise GitSourceError(
+            path,
+            f"git {' '.join(args[:2])} exited {result.returncode}: {result.stderr.strip()[:300]}",
+        )
+    return result.stdout
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -201,7 +265,7 @@ def commits_in_range(*, start: date, end: date) -> Iterator[GitCommit]:
 
 def active_repo_paths(names: Optional[Sequence[str]] = None) -> List[Path]:
     return [
-        r.path for r in repos(names=names) if r.exists and (r.path / ".git").is_dir()
+        r.path for r in repos(names=names) if r.exists and _is_git_repo_root(r.path)
     ]
 
 
@@ -258,21 +322,10 @@ def file_change_facts(
 def patch_excerpt(
     *, repo_path: Path, commit: str, max_lines: int = 120
 ) -> GitPatchExcerpt:
-    cmd = [
-        "git",
-        "-C",
-        str(repo_path),
-        "show",
-        "--no-color",
-        "--format=",
-        "--unified=3",
-        commit,
-    ]
-    try:
-        raw = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-    except Exception:
-        return GitPatchExcerpt(line_count=0, truncated=False, patch_excerpt="")
-    output = raw.decode("utf-8", errors="replace")
+    # A failed `git show` is a typed failure, never an empty patch.
+    output = _run_git_checked(
+        repo_path, ["show", "--no-color", "--format=", "--unified=3", commit]
+    )
     lines = output.splitlines()
     truncated = len(lines) > max_lines
     return GitPatchExcerpt(
@@ -447,7 +500,7 @@ def repos(names: Optional[Sequence[str]] = None) -> list[RepoInfo]:
         exists = path.exists()
         branch = head = None
         last_commit_at = None
-        if exists and (path / ".git").is_dir():
+        if exists and _is_git_repo_root(path):
             branch = _git_output(path, ["rev-parse", "--abbrev-ref", "HEAD"])
             head_output = _git_output(path, ["rev-parse", "HEAD"])
             head = head_output[:12] if head_output else None
@@ -663,7 +716,7 @@ def iter_numstat(
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
 ) -> Iterator[Dict[str, object]]:
-    valid = [p.expanduser() for p in repos_seq if (p.expanduser() / ".git").exists()]
+    valid = [p.expanduser() for p in repos_seq if _is_git_repo_root(p.expanduser())]
     if not valid:
         return
     with ThreadPoolExecutor(max_workers=min(len(valid), 8)) as pool:
@@ -682,18 +735,14 @@ def iter_commit_activity(
     until_str = f"{_month_after(end_month)}-01" if end_month else None
     for repo in repos_seq:
         repo = repo.expanduser()
-        if not (repo / ".git").is_dir():
+        if not _is_git_repo_root(repo):
             continue
-        cmd = ["git", "-C", str(repo), "log", "--all", "--format=%cI"]
+        args = ["log", "--all", "--format=%cI"]
         if since:
-            cmd.append(f"--since={since}")
+            args.append(f"--since={since}")
         if until_str:
-            cmd.append(f"--until={until_str}")
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
-        assert proc.stdout is not None
-        for raw in proc.stdout:
+            args.append(f"--until={until_str}")
+        for raw in _run_git_checked(repo, args, timeout=300).splitlines():
             stamp = raw.strip()
             if not stamp:
                 continue
@@ -704,7 +753,6 @@ def iter_commit_activity(
             except ValueError:
                 continue
             yield GitCommitActivity(repo=repo.name, timestamp=dt)
-        proc.communicate()
 
 
 def summarize_commit_activity(
@@ -736,17 +784,21 @@ def _iter_repo_commit_records(
     all_refs: bool = False,
     include_paths: bool = True,
 ) -> Iterator[_RepoCommitRecord]:
-    if not (repo_path / ".git").is_dir():
+    if not _is_git_repo_root(repo_path):
         return
+    # The result contract is author time, but git can only prefilter by
+    # committer time. A commit is committed at or after it is authored, so the
+    # committer lower bound is safe; an upper bound would drop commits authored
+    # in the window and committed (rebased, amended, merged) after it.
     cmd = [
         "git",
         "-C",
         str(repo_path),
         "log",
+        "-z",
         "--date=iso-strict",
-        "--pretty=format:COMMIT|%H|%aI|%aN|%s",
-        f"--after={(start - timedelta(days=1)).isoformat()}",
-        f"--before={(end + timedelta(days=1)).isoformat()}",
+        "--pretty=format:COMMIT%x1f%H%x1f%aI%x1f%aN%x1f%s",
+        f"--since={(start - timedelta(days=1)).isoformat()}",
     ]
     if include_paths:
         cmd.append("--numstat")
@@ -757,67 +809,133 @@ def _iter_repo_commit_records(
         if ref is None:
             return
         cmd.append(ref)
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
-    )
-    assert proc.stdout is not None
-    current: _MutableRepoCommit | None = None
-    try:
-        for raw in proc.stdout:
-            line = raw.rstrip("\n")
-            if not line:
-                continue
-            if line.startswith("COMMIT|"):
-                if current is not None:
-                    rec = _finalize_record(repo_path.name, current)
-                    if rec and in_date_range(logical_date(rec.authored_at), start, end):
-                        yield rec
-                parts = line.split("|", 4)
-                current = {
-                    "commit": parts[1],
-                    "authored_at": parts[2],
-                    "author": parts[3],
-                    "subject": parts[4] if len(parts) > 4 else "",
-                    "path_changes": [],
-                }
-                continue
-            if current is None or "\t" not in line:
-                continue
-            cols = (line.split("\t", 2) + ["", "", ""])[:3]
-            path = cols[2].strip()
-            if path:
-                current["path_changes"].append(
-                    (
-                        path,
-                        int(cols[0]) if cols[0].isdigit() else 0,
-                        int(cols[1]) if cols[1].isdigit() else 0,
-                    )
-                )
-        if current:
-            rec = _finalize_record(repo_path.name, current)
-            if rec and in_date_range(logical_date(rec.authored_at), start, end):
-                yield rec
-    finally:
-        proc.stdout.close()
-        if proc.poll() is None:
-            proc.terminate()
+    with tempfile.TemporaryFile() as stderr_sink:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr_sink)
+        assert proc.stdout is not None
+        completed = False
         try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
+            for record in _parse_log_z(proc.stdout):
+                rec = _finalize_record(repo_path.name, record)
+                if rec and in_date_range(logical_date(rec.authored_at), start, end):
+                    yield rec
+            completed = True
+        finally:
+            proc.stdout.close()
+            if proc.poll() is None:
+                proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        # Only a fully consumed stream is judged: an early-closed consumer
+        # terminates git on purpose.
+        if completed and proc.returncode != 0:
+            stderr_sink.seek(0)
+            detail = stderr_sink.read().decode("utf-8", errors="replace").strip()
+            raise GitSourceError(
+                repo_path, f"git log exited {proc.returncode}: {detail[:300]}"
+            )
+
+
+def _parse_log_z(stream: Any) -> Iterator[_MutableRepoCommit]:
+    """Parse ``git log -z --numstat`` output with exact, unquoted paths.
+
+    Records are NUL-framed: a ``COMMIT`` header line, then numstat entries
+    ``added\\tdeleted\\tpath`` or, for a rename, ``added\\tdeleted\\t`` followed
+    by the old and new path as two NUL-separated tokens. Paths are kept byte
+    exact (surrogate-escaped), never display-quoted or whitespace-stripped.
+    """
+    current: _MutableRepoCommit | None = None
+    rename: list[Any] | None = None  # [added, deleted, old or None]
+    carry = b""
+
+    def stat_entry(token: bytes) -> None:
+        nonlocal rename
+        assert current is not None
+        added_s, deleted_s, path = (token.split(b"\t", 2) + [b"", b""])[:3]
+        added = int(added_s) if added_s.isdigit() else 0
+        deleted = int(deleted_s) if deleted_s.isdigit() else 0
+        if path:
+            current["path_changes"].append((_decode_path(path), added, deleted))
+        else:
+            rename = [added, deleted, None]
+
+    def token_done(token: bytes) -> Iterator[_MutableRepoCommit]:
+        nonlocal current, rename
+        if rename is not None:
+            if rename[2] is None:
+                rename[2] = token
+                return
+            assert current is not None
+            # Identity is the destination path; the source is carried in
+            # the rename, not counted as a second file.
+            current["path_changes"].append((_decode_path(token), rename[0], rename[1]))
+            rename = None
+            return
+        if not token:
+            return
+        if token.startswith(_COMMIT_MARK):
+            if current is not None:
+                yield current
+            header, _, first = token.partition(b"\n")
+            fields = header.decode("utf-8", errors="replace").split("\x1f", 4)
+            current = {
+                "commit": fields[1] if len(fields) > 1 else "",
+                "authored_at": fields[2] if len(fields) > 2 else "",
+                "author": fields[3] if len(fields) > 3 else "",
+                "subject": fields[4] if len(fields) > 4 else "",
+                "path_changes": [],
+            }
+            if first:
+                stat_entry(first)
+            return
+        if current is not None:
+            stat_entry(token.lstrip(b"\n"))
+
+    while chunk := stream.read(65536):
+        tokens = (carry + chunk).split(b"\0")
+        carry = tokens.pop()
+        for token in tokens:
+            yield from token_done(token)
+    if carry:
+        yield from token_done(carry)
+    if current is not None:
+        yield current
+
+
+def _decode_path(raw: bytes) -> str:
+    return raw.decode("utf-8", errors="surrogateescape")
 
 
 def _default_history_ref(repo_path: Path) -> str | None:
+    """The history ref to read, verified to resolve to a commit.
+
+    A declared ``origin/HEAD`` that does not resolve is a typed failure, not a
+    silent substitution or an empty history. ``None`` means the repository has
+    no commits yet, which is a genuinely empty history.
+    """
     remote_head = _git_output(
         repo_path, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]
     )
     if remote_head:
+        if not _ref_resolves(repo_path, remote_head):
+            raise GitSourceError(
+                repo_path,
+                f"declared default ref {remote_head} (origin/HEAD) does not resolve",
+            )
         return remote_head
     for candidate in ("master", "main"):
-        if _git_output(repo_path, ["rev-parse", "--verify", candidate]):
+        if _ref_resolves(repo_path, candidate):
             return candidate
-    return _git_output(repo_path, ["branch", "--show-current"]) or "HEAD"
+    current = _git_output(repo_path, ["branch", "--show-current"])
+    if current and _ref_resolves(repo_path, current):
+        return current
+    return "HEAD" if _ref_resolves(repo_path, "HEAD") else None
+
+
+def _ref_resolves(repo_path: Path, ref: str) -> bool:
+    return _git_output(repo_path, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"]) is not None
 
 
 def _finalize_record(
@@ -903,7 +1021,11 @@ def _numstat_one_repo(
             current.update(_parse_git_shortstat(line))
     if current:
         records.append(current)
-    proc.communicate()
+    _, stderr = proc.communicate()
+    if proc.returncode != 0:
+        raise GitSourceError(
+            repo_path, f"git log exited {proc.returncode}: {stderr.strip()[:300]}"
+        )
     return records
 
 
@@ -915,28 +1037,27 @@ def _parse_git_shortstat(line: str) -> Dict[str, int]:
 
 
 def _fetch_coauthor_info(repo: str, after: date, before: date) -> dict[str, list[str]]:
+    """AI co-authors per commit, from explicit AI co-author trailers only."""
     repo_path = _repo_path(repo)
-    if not (repo_path / ".git").is_dir():
+    if not _is_git_repo_root(repo_path):
         return {}
-    cmd = [
-        "git",
-        "-C",
-        str(repo_path),
-        "log",
-        "--format=%H%n%b%n---END---",
-        f"--after={(after - timedelta(days=1)).isoformat()}",
-        f"--before={(before + timedelta(days=1)).isoformat()}",
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    except subprocess.TimeoutExpired:
+    ref = _default_history_ref(repo_path)
+    if ref is None:
         return {}
-    if result.returncode != 0:
-        return {}
+    # Committer-time lower bound only; see _iter_repo_commit_records.
+    stdout = _run_git_checked(
+        repo_path,
+        [
+            "log",
+            "--format=%H%n%b%n---END---",
+            f"--since={(after - timedelta(days=1)).isoformat()}",
+            ref,
+        ],
+    )
     coauthors: dict[str, list[str]] = {}
     current_sha: str | None = None
     body: list[str] = []
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines():
         if line == "---END---":
             if current_sha:
                 names = [
@@ -965,17 +1086,11 @@ def _fetch_commit_timestamps(repo: str, hashes: set[str]) -> dict[str, datetime]
     if not hashes:
         return {}
     repo_path = _repo_path(repo)
-    if not (repo_path / ".git").is_dir():
+    if not _is_git_repo_root(repo_path):
         return {}
-    cmd = ["git", "-C", str(repo_path), "log", "--format=%H %aI", "--all"]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    except subprocess.TimeoutExpired:
-        return {}
-    if result.returncode != 0:
-        return {}
+    stdout = _run_git_checked(repo_path, ["log", "--format=%H %aI", "--all"])
     timestamps: dict[str, datetime] = {}
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines():
         parts = line.strip().split(" ", 1)
         if len(parts) == 2 and parts[0] in hashes:
             try:
@@ -988,8 +1103,19 @@ def _fetch_commit_timestamps(repo: str, hashes: set[str]) -> dict[str, datetime]
 
 
 def _extract_coauthor(line: str) -> str | None:
-    match = re.search(r"Co-Authored-By:\s*(.+?)(?:\s*<|$)", line, re.IGNORECASE)
-    return match.group(1).strip() if match else None
+    """The co-author's name when the trailer names an AI agent, else None.
+
+    Name and address are both matched: agent trailers often carry a generic
+    display name with an agent address (``noreply@anthropic.com``).
+    """
+    match = re.search(r"Co-Authored-By:\s*(.+?)\s*(?:<([^>]*)>|$)", line, re.IGNORECASE)
+    if not match:
+        return None
+    name = match.group(1).strip()
+    address = match.group(2) or ""
+    if not (_AI_COAUTHOR_RE.search(name) or _AI_COAUTHOR_RE.search(address)):
+        return None
+    return name
 
 
 def _repo_path(repo: str) -> Path:
