@@ -1,7 +1,7 @@
 """Tests for the lynchpin Polylogue adapter contract."""
 
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 from lynchpin.core.parse import parse_datetime
@@ -40,29 +40,33 @@ def _ready_client(
     )
 
 
-def test_coverage_bounds_uses_day_product(monkeypatch):
-    queries = []
-    def coverage(query):
-        queries.append(query)
+def test_coverage_bounds_uses_created_at_not_updated_at(monkeypatch):
+    # A session created early but updated later must still contribute its
+    # creation day to the bound (lynchpin regression: day-bucketed coverage
+    # keyed off sort_key_ms, which prefers updated_at_ms, silently dropped
+    # the creation day).
+    calls = []
+
+    def list_summaries(*, limit):
+        calls.append(limit)
         return [
-            SimpleNamespace(bucket="2026-04-23", session_count=2),
-            SimpleNamespace(bucket="2026-04-21", session_count=1),
-            SimpleNamespace(bucket="2026-04-22", session_count=0),
+            SimpleNamespace(created_at=datetime(2026, 4, 23, tzinfo=timezone.utc)),
+            SimpleNamespace(created_at=datetime(2026, 4, 21, tzinfo=timezone.utc), updated_at=datetime(2026, 5, 1, tzinfo=timezone.utc)),
+            SimpleNamespace(created_at=None),
         ]
-    monkeypatch.setattr(polylogue, "_polylogue_client", lambda: SimpleNamespace(list_archive_coverage_insights=coverage))
+    monkeypatch.setattr(polylogue, "_polylogue_client", lambda: SimpleNamespace(list_summaries=list_summaries))
 
     bounds = polylogue.coverage_bounds()
 
     assert bounds is not None
     assert (bounds.first, bounds.last) == (date(2026, 4, 21), date(2026, 4, 23))
-    assert queries[0].group_by == "day"
-    assert queries[0].limit is None
+    assert calls == [polylogue._SUMMARY_LIMIT]
 
 
 def test_coverage_bounds_reports_unavailable_product(monkeypatch, caplog):
-    def unavailable(query):
+    def unavailable(*, limit):
         raise RuntimeError("product absent")
-    monkeypatch.setattr(polylogue, "_polylogue_client", lambda: SimpleNamespace(list_archive_coverage_insights=unavailable))
+    monkeypatch.setattr(polylogue, "_polylogue_client", lambda: SimpleNamespace(list_summaries=unavailable))
 
     assert polylogue.coverage_bounds() is None
     assert "coverage unavailable" in caplog.text

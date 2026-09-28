@@ -40,6 +40,11 @@ from .polylogue_models import (
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on session summaries read for a single min/max coverage pass;
+# past this, bounds are treated as potentially incomplete rather than
+# silently returned wrong.
+_SUMMARY_LIMIT = 1_000_000
+
 
 class PolylogueMaterializationError(MaterializationError):
     """Raised when required Polylogue insight products are unavailable."""
@@ -1360,22 +1365,23 @@ def daily_activity(*, start: date, end: date) -> list[ChatDayActivity]:
 
 
 def coverage_bounds() -> CoverageBounds | None:
+    # Deliberately not list_archive_coverage_insights(group_by="day"): its
+    # day buckets key off sort_key_ms, which prefers updated_at_ms over
+    # created_at_ms, so a session created on one day and later updated loses
+    # its creation day from the bound. Read summaries directly and take the
+    # true min/max of created_at, matching this function's pre-facade
+    # behavior (MIN/MAX(created_at) over conversations).
     try:
-        from polylogue.insights.archive import ArchiveCoverageInsightQuery
-
-        rows = _polylogue_client().list_archive_coverage_insights(
-            ArchiveCoverageInsightQuery(group_by="day", limit=None)
-        )
+        summaries = _polylogue_client().list_summaries(limit=_SUMMARY_LIMIT)
     except Exception as exc:
         logger.warning("polylogue coverage unavailable: %s", exc)
         return None
+    if len(summaries) >= _SUMMARY_LIMIT:
+        logger.warning("polylogue coverage summary limit reached; bounds may be incomplete")
     days = []
-    for row in rows:
-        try:
-            if row.session_count:
-                days.append(date.fromisoformat(str(row.bucket)))
-        except (TypeError, ValueError):
-            logger.warning("polylogue coverage has invalid day bucket: %r", row.bucket)
+    for summary in summaries:
+        if summary.created_at is not None:
+            days.append(summary.created_at.date())
     if not days:
         return None
     return CoverageBounds(source="polylogue", first=min(days), last=max(days), kind="capture")
