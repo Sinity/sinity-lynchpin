@@ -498,7 +498,10 @@ def _project_git_facts(
 ) -> ActiveProjectGitFacts:
     path = profile.path
     exists = path.exists()
-    is_git = (path / ".git").exists()
+    # A linked worktree stores a ``gitdir: ...`` file at .git rather than a
+    # directory.  Checking the filesystem shape silently classified those
+    # repositories as non-Git projects and emitted valid-looking empty facts.
+    is_git = git_output(path, ("rev-parse", "--is-inside-work-tree")) == "true"
     branch = default_branch(path) if is_git else None
     head = git_output(path, ("rev-parse", "--short", "HEAD")) if is_git else None
     commits = (
