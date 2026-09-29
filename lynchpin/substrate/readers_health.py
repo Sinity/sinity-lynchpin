@@ -228,56 +228,6 @@ def load_ai_work_event_per_kind_confidence(
     ).fetchall()
 
 
-# ── work_package_durability ───────────────────────────────────────────────────
-
-
-def load_symbol_change_count(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-) -> int:
-    """Return total symbol_change row count."""
-    row = conn.execute(
-        "SELECT COUNT(*) FROM symbol_change WHERE refresh_id = ?",
-        [refresh_id],
-    ).fetchone()
-    return row[0] if row else 0
-
-
-def load_symbol_survival_by_project_day(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-    min_symbols: int,
-) -> list[tuple[Any, ...]]:
-    """Return (project, date, total_syms, surviving) per project-day."""
-    return conn.execute(
-        """
-        WITH ranked AS (
-            SELECT project, date, qualified_name, change_type,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY qualified_name
-                       ORDER BY date DESC, sha DESC
-                   ) AS rn
-            FROM symbol_change
-            WHERE refresh_id = ?
-        ),
-        latest AS (
-            SELECT project, date, qualified_name, change_type
-            FROM ranked WHERE rn = 1
-        )
-        SELECT project, date,
-               COUNT(*) AS total_syms,
-               SUM(CASE WHEN change_type != 'DELETED' THEN 1 ELSE 0 END) AS surviving
-        FROM latest
-        GROUP BY project, date
-        HAVING COUNT(*) >= ?
-        ORDER BY date, project
-        """,
-        [refresh_id, int(min_symbols)],
-    ).fetchall()
-
-
 # ── evidence_confidence ───────────────────────────────────────────────────────
 
 
@@ -429,8 +379,6 @@ __all__ = [
     "load_ai_work_event_source_distribution",
     "load_ai_work_event_disagreements",
     "load_ai_work_event_per_kind_confidence",
-    "load_symbol_change_count",
-    "load_symbol_survival_by_project_day",
     "load_evidence_node_source_caveats",
     "load_project_day_anomaly_rows",
     "load_ordered_refresh_ids",

@@ -158,16 +158,91 @@ def test_velocity_series_pinned_refresh_id_does_not_materialize(
 
     rows = velocity_tools.velocity_series(refresh_id="pinned")
 
+    # No build record: coverage is unknown, so no calendar average is claimed.
     assert rows == [
         {
             "project": "lynchpin",
             "date": "2026-05-04",
             "commit_count": 1,
-            "rolling_avg": 1.0,
+            "rolling_avg": None,
             "cumulative": 1,
             "source_count": 1,
+            "window_days_covered": None,
+            "active_days": 1,
+            "active_day_avg": 1.0,
         }
     ]
+
+
+def _insert_build(conn, *, refresh_id: str, start: date, end: date) -> None:
+    conn.execute(
+        "INSERT INTO evidence_graph_build "
+        "(refresh_id, start_date, end_date, mode, generated_at) "
+        "VALUES (?, ?, ?, 'materialized', ?)",
+        [refresh_id, start, end, dt(2026, 2, 1)],
+    )
+
+
+def _seed_january(conn) -> None:
+    """Coverage Jan 1-29 with 100 commits on Jan 1 and one on Jan 29."""
+    _insert_build(conn, refresh_id="jan", start=date(2026, 1, 1), end=date(2026, 1, 29))
+    for idx in range(100):
+        _insert_evidence_commit(
+            conn, node_id=f"git:lynchpin:a{idx}", project="lynchpin",
+            day=date(2026, 1, 1), refresh_id="jan",
+        )
+    _insert_evidence_commit(
+        conn, node_id="git:lynchpin:last", project="lynchpin",
+        day=date(2026, 1, 29), refresh_id="jan",
+    )
+
+
+def test_velocity_series_counts_covered_zero_days_in_calendar_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+    import lynchpin.mcp.tools.velocity as velocity_tools
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    with connect(substrate_path()) as conn:
+        _seed_january(conn)
+
+    rows = {row["date"]: row for row in velocity_tools.velocity_series(refresh_id="jan")}
+
+    last = rows["2026-01-29"]
+    assert last["rolling_avg"] == round(1 / 7, 3)
+    assert last["active_days"] == 1
+    assert last["active_day_avg"] == 1.0
+    assert last["window_days_covered"] == 7
+    assert last["cumulative"] == 101
+    # The first six days' windows reach before coverage: no calendar claim.
+    assert rows["2026-01-01"]["rolling_avg"] is None
+    assert rows["2026-01-01"]["window_days_covered"] == 1
+    # Known zeros inside the window are reported and averaged.
+    assert rows["2026-01-07"]["commit_count"] == 0
+    assert rows["2026-01-07"]["rolling_avg"] == round(100 / 7, 3)
+    # A day whose whole window is zero carries no series row.
+    assert "2026-01-08" not in rows
+
+
+def test_velocity_narrative_separates_calendar_pace_from_active_day_intensity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+    import lynchpin.mcp.tools.velocity as velocity_tools
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    with connect(substrate_path()) as conn:
+        _seed_january(conn)
+
+    monkeypatch.setattr(velocity_tools, "ensure_substrate_materialized_for_read", _fail_if_materialized)
+    result = velocity_tools.velocity_narrative(refresh_id="jan")
+
+    assert result["window"] == {"start": "2026-01-01", "end": "2026-01-29"}
+    (project,) = result["projects"]
+    assert project["active_days"] == 2
+    assert project["avg_per_active_day"] == 50.5
+    assert project["avg_per_calendar_day"] == round(101 / 29, 2)
 
 
 def test_velocity_narrative_pinned_refresh_id_does_not_materialize(

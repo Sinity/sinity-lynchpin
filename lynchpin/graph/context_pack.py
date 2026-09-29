@@ -948,7 +948,7 @@ def _render_issue_closure_chains(graph: EvidenceGraph, *, limit: int = 12) -> st
     table = render_issue_closure_chains(chains, limit=limit)
     counts = ", ".join(
         f"{status}×{summary['by_status'][status]}"
-        for status in ("broken", "orphaned", "partial", "complete")
+        for status in ("broken", "orphaned", "partial", "dispositioned", "complete")
         if summary["by_status"].get(status)
     )
     slos = compute_closure_slos(chains)

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Iterable
 
 from ..core.evidence import EvidenceProvenance
 from ..core.evidence_graph import EvidenceNode
@@ -147,22 +148,24 @@ def add_focus(
             )
         )
 
-    for profile in circadian(start=start, end=end, ensure=False):
-        project = normalize_project(profile.dominant_project)
+    for peak in _circadian_peaks(circadian(start=start, end=end, ensure=False)):
+        project = normalize_project(peak.dominant_project)
         if not include_project(project, selected):
             continue
         nodes.append(
             EvidenceNode(
-                id=f"aw-circadian:{profile.date.isoformat()}:{project}",
+                id=f"aw-circadian:{peak.date.isoformat()}",
                 kind="circadian_profile",
                 source="activitywatch",
-                date=profile.date,
+                date=peak.date,
                 project=project,
-                summary=f"circadian: peak hour={profile.hour}, dominant={profile.dominant_mode}",
+                summary=f"circadian: peak hour={peak.hour}, dominant={peak.dominant_mode}",
                 payload={
-                    "peak_hour": profile.hour,
-                    "active_min": profile.active_min,
-                    "dominant_mode": profile.dominant_mode,
+                    "peak_hour": peak.hour,
+                    "peak_active_min": peak.active_min,
+                    "active_min": round(peak.day_active_min, 1),
+                    "hours_observed": peak.hours_observed,
+                    "dominant_mode": peak.dominant_mode,
                 },
                 provenance=EvidenceProvenance("activitywatch", "materialized"),
             )
@@ -233,6 +236,45 @@ def add_focus(
         )
     for focus in project_focus_days(start=start_dt, end=end_dt, ensure=False):
         _append_project_focus_day(nodes, focus=focus, selected=selected)
+
+
+@dataclass(frozen=True)
+class _CircadianPeak:
+    date: date
+    hour: int
+    active_min: float
+    dominant_mode: str | None
+    dominant_project: str | None
+    day_active_min: float
+    hours_observed: int
+
+
+def _circadian_peaks(profiles: Iterable[Any]) -> tuple[_CircadianPeak, ...]:
+    """Reduce hourly circadian rows to one computed peak per day.
+
+    The product holds one row per hour; the peak is the hour with the most
+    active minutes, ties broken by the earlier hour, so input order cannot
+    change it.
+    """
+    by_day: dict[date, list[Any]] = {}
+    for profile in profiles:
+        by_day.setdefault(profile.date, []).append(profile)
+    peaks = []
+    for day in sorted(by_day):
+        hours = by_day[day]
+        top = min(hours, key=lambda row: (-row.active_min, row.hour))
+        peaks.append(
+            _CircadianPeak(
+                date=day,
+                hour=top.hour,
+                active_min=top.active_min,
+                dominant_mode=top.dominant_mode,
+                dominant_project=top.dominant_project,
+                day_active_min=sum(row.active_min for row in hours),
+                hours_observed=len({row.hour for row in hours}),
+            )
+        )
+    return tuple(peaks)
 
 
 def _append_project_focus_day(

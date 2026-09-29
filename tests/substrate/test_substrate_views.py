@@ -193,6 +193,35 @@ class TestProjectDayCorrelation:
         assert row.terminal_count == 1
         assert row.ai_session_count == 0
 
+    def test_focus_rollup_does_not_add_to_its_spans(self, tmp_path: Path) -> None:
+        from lynchpin.substrate.connection import apply_schema, connect
+        from lynchpin.substrate.derived import load_project_day_correlations
+
+        with connect(tmp_path / "sub.duckdb") as conn:
+            apply_schema(conn)
+            _insert_build(conn, refresh_id="r1")
+            day = date(2026, 5, 3)
+            _insert_node(
+                conn, refresh_id="r1", node_id="span", kind="focus_span",
+                source="activitywatch", date_val=day, project="lynchpin",
+                payload={"duration_s": 1800},
+            )
+            _insert_node(
+                conn, refresh_id="r1", node_id="day", kind="focus_day",
+                source="activitywatch", date_val=day, project="lynchpin",
+                payload={"duration_s": 3600},
+            )
+            _insert_node(
+                conn, refresh_id="r1", node_id="span-only", kind="focus_span",
+                source="activitywatch", date_val=day, project="polylogue",
+                payload={"duration_s": 600},
+            )
+            rows = {row.project: row for row in load_project_day_correlations(conn, refresh_id="r1")}
+
+        assert rows["lynchpin"].focus_minutes == 60.0
+        assert rows["lynchpin"].focus_count == 2
+        assert rows["polylogue"].focus_minutes == 10.0
+
     def test_includes_direct_commit_and_ai_work_event_facts(
         self, tmp_path: Path
     ) -> None:

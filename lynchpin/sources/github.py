@@ -43,6 +43,8 @@ _PR_FIELDS = (
 )
 _ISSUE_REF_RE = re.compile(r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|ref(?:s)?)\s+#(\d+)", re.I)
 _PR_SUFFIX_RE = re.compile(r"\(#(\d+)\)")
+# GitHub's closing keywords. A bare ``#N`` or ``refs #N`` only mentions an item.
+_CLOSING_REF_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)(?!\d)", re.I)
 _CONSOLIDATED_RE = re.compile(r"\b(folded|consolidated|superseded|replaced|absorbed|umbrella|duplicate)\b", re.I)
 _RETIRED_RE = re.compile(r"\b(retired|stale|obsolete|no longer|not doing|wontfix|won't fix)\b", re.I)
 _TRACKING_RE = re.compile(r"\b(tracking|horizon|umbrella|roadmap|spine|epic|meta)\b", re.I)
@@ -366,6 +368,11 @@ def extract_issue_refs(text: str) -> tuple[int, ...]:
     refs = {int(match) for match in _ISSUE_REF_RE.findall(text or "")}
     refs.update(int(match) for match in _PR_SUFFIX_RE.findall(text or ""))
     return tuple(sorted(refs))
+
+
+def extract_closing_refs(text: str) -> frozenset[int]:
+    """Return issue numbers named with a GitHub closing keyword."""
+    return frozenset(int(match) for match in _CLOSING_REF_RE.findall(text or ""))
 
 
 def extract_commit_refs(text: str) -> dict[str, set[int]]:
@@ -759,6 +766,7 @@ __all__ = [
     "classify_lifecycle",
     "cached_issue",
     "cached_pr",
+    "extract_closing_refs",
     "extract_commit_refs",
     "extract_issue_refs",
     "fetch_issue",

@@ -11,10 +11,11 @@ across the closure stream:
   - count of ``broken`` and ``orphaned`` chains, since they're SLO
     violations even more than slow ones
 
-Intent is descriptive, not prescriptive. The closure stream is
-heuristic-linked (PR titles substring-match issue numbers), so the SLO
-numbers are best read as relative-shape signals rather than precise
-durations.
+Intent is descriptive, not prescriptive. Closure links come from closing
+keywords in same-repository PR titles and commit subjects (PR bodies are not
+in the graph), so the SLO numbers are best read as relative-shape signals
+rather than precise durations. ``dispositioned`` chains (closed as folded,
+retired or misframed) are neither completions nor violations.
 """
 
 from __future__ import annotations

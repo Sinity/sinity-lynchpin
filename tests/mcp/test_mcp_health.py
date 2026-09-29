@@ -229,32 +229,6 @@ def test_public_confidence_route_rejects_refresh_without_source_evidence(
     assert "no source coverage evidence" in response["reason"]
 
 
-def test_work_package_durability_uses_best_symbol_snapshot(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = []
-
-    monkeypatch.setattr(
-        "lynchpin.substrate.connection.substrate_path",
-        lambda: "fixture.duckdb",
-    )
-    monkeypatch.setattr(
-        "lynchpin.substrate.connection.connect",
-        lambda *_args, **_kwargs: _Conn(),
-    )
-    monkeypatch.setattr(
-        "lynchpin.mcp.tools.health.best_materialized_refresh_id",
-        lambda *_args, **_kwargs: calls.append(_args) or None,
-    )
-
-    from lynchpin.mcp.tools.health import work_package_durability
-
-    result = work_package_durability()
-
-    assert result == {"error": "no promote runs"}
-    assert calls[0][1] == "symbol_change"
-
-
 def test_health_trend_defaults_to_successful_promotion_runs(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
