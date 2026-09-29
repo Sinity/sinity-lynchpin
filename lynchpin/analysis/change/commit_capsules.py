@@ -9,7 +9,7 @@ from __future__ import annotations
 import ast
 import subprocess
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from os import PathLike
 from pathlib import Path
@@ -17,7 +17,7 @@ from typing import Any
 
 from ...substrate.work_commits import read_commit_facts
 from ...substrate.connection import connect, substrate_path
-from lynchpin.core.io import resolve_analysis_path, save_json
+from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 
 
 _OPERATION_LABELS = (
@@ -94,18 +94,20 @@ def build_active_commit_hunks(
     end: date | None = None,
     projects: Sequence[str] | None = None,
     max_commits: int = 80,
+    commit_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Extract structured diff hunks for top commits in the window."""
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    with connect(substrate_path()) as conn:
-        commit_payload = read_commit_facts(
-            conn,
-            start=start,
-            end=end,
-            projects=tuple(projects) if projects else None,
-        )
+    if commit_payload is None:
+        with connect(substrate_path(), read_only=True) as conn:
+            commit_payload = read_commit_facts(
+                conn,
+                start=start,
+                end=end,
+                projects=tuple(projects) if projects else None,
+            )
     commits = _list(commit_payload, "commits")
     selected = set(projects or ())
 
@@ -164,18 +166,20 @@ def build_active_commit_semantics(
     end: date | None = None,
     projects: Sequence[str] | None = None,
     max_commits: int = 40,
+    commit_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Classify heuristic operations for top commits in the window."""
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    with connect(substrate_path()) as conn:
-        commit_payload = read_commit_facts(
-            conn,
-            start=start,
-            end=end,
-            projects=tuple(projects) if projects else None,
-        )
+    if commit_payload is None:
+        with connect(substrate_path(), read_only=True) as conn:
+            commit_payload = read_commit_facts(
+                conn,
+                start=start,
+                end=end,
+                projects=tuple(projects) if projects else None,
+            )
     commits = _list(commit_payload, "commits")
     selected = set(projects or ())
 
@@ -273,8 +277,18 @@ def run_active_commit_semantics(
     start: date | None = None,
     end: date | None = None,
     projects: Sequence[str] | None = None,
+    commit_facts_file: str | PathLike[str] | None = None,
 ) -> dict[str, Any]:
-    payload = build_active_commit_semantics(start=start, end=end, projects=projects)
+    payload = build_active_commit_semantics(
+        start=start,
+        end=end,
+        projects=projects,
+        commit_payload=(
+            load_json_object(commit_facts_file, label="commit facts")
+            if commit_facts_file is not None
+            else None
+        ),
+    )
     save_json(resolve_analysis_path(out_file), payload, sort_keys=True)
     return payload
 
@@ -643,7 +657,7 @@ def _counter_dict(value: object) -> Counter[str]:
     return Counter()
 
 
-def _list(payload: dict[str, Any] | None, key: str) -> list[Any]:
+def _list(payload: Mapping[str, Any] | None, key: str) -> list[Any]:
     if payload is None:
         return []
     result = payload.get(key)

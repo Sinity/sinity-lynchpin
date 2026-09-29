@@ -55,7 +55,7 @@ def build_active_ai_assist_density(
     start = start or (end - timedelta(days=31))
 
     if commit_payload is None:
-        with connect(substrate_path()) as conn:
+        with connect(substrate_path(), read_only=True) as conn:
             commit_payload = read_commit_facts(
                 conn,
                 start=start,

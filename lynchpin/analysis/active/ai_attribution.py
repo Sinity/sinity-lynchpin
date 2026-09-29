@@ -19,14 +19,14 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from os import PathLike
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from ...core.parse import parse_datetime as _parse_dt
 from ...core.projects import canonical_project_name
 from ...sources.polylogue import SessionProfile, iter_session_profiles
 from ...substrate.work_commits import read_commit_facts
 from ...substrate.connection import connect, substrate_path
-from lynchpin.core.io import resolve_analysis_path, save_json
+from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 
 
 def build_active_ai_attribution(
@@ -34,18 +34,20 @@ def build_active_ai_attribution(
     start: date | None = None,
     end: date | None = None,
     projects: Sequence[str] | None = None,
+    commit_payload: Mapping[str, Any] | None = None,
     session_profiles: Iterable[SessionProfile] | None = None,
 ) -> dict[str, Any]:
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    with connect(substrate_path()) as conn:
-        commit_payload = read_commit_facts(
-            conn,
-            start=start,
-            end=end,
-            projects=tuple(projects) if projects else None,
-        )
+    if commit_payload is None:
+        with connect(substrate_path(), read_only=True) as conn:
+            commit_payload = read_commit_facts(
+                conn,
+                start=start,
+                end=end,
+                projects=tuple(projects) if projects else None,
+            )
     selected = set(projects or ())
 
     # Graceful-degrade: when polylogue is rematerializing or session_insights
@@ -171,11 +173,17 @@ def run_active_ai_attribution(
     start: date | None = None,
     end: date | None = None,
     projects: Sequence[str] | None = None,
+    commit_facts_file: str | PathLike[str] | None = None,
 ) -> dict[str, Any]:
     payload = build_active_ai_attribution(
         start=start,
         end=end,
         projects=projects,
+        commit_payload=(
+            load_json_object(commit_facts_file, label="commit facts")
+            if commit_facts_file is not None
+            else None
+        ),
     )
     save_json(resolve_analysis_path(out_file), payload, sort_keys=True)
     return payload
