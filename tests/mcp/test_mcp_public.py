@@ -71,14 +71,15 @@ def test_lynchpin_query_dsl_selects_entity(tmp_path: Path, monkeypatch: pytest.M
 
 
 @pytest.mark.parametrize(
-    ("mode", "query"),
+    ("mode", "query", "relevant", "others"),
     [
-        ("sql", {"sql": "SELECT 1 AS value"}),
-        ("dsl", {"table": "commit_fact", "select": ["sha"]}),
+        ("sql", {"sql": "SELECT 1 AS value", "detail": True}, [], {"ok": 1, "unavailable": 1}),
+        ("dsl", {"table": "commit_fact", "select": ["sha"]}, ["commits"], {"unavailable": 1}),
     ],
 )
 def test_lynchpin_query_reports_served_source_gaps(
-    mode: str, query: dict[str, object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    mode: str, query: dict[str, object], relevant: list[str], others: dict[str, int],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = setup_substrate(tmp_path, monkeypatch)
     import duckdb
@@ -112,7 +113,14 @@ def test_lynchpin_query_reports_served_source_gaps(
     assert result["data"]["serving"]["refresh_id"] == "retained"
     assert result["data"]["freshness"]["status"] == "blocked"
     assert result["data"]["freshness"]["serving_source_status_refresh_id"] == "retained"
-    statuses = result["data"]["freshness"]["serving_source_status"]
+    # Compact status keeps the sources the query reads and counts every other
+    # source, so an unrelated gap stays visible without its full row.
+    freshness = result["data"]["freshness"]
+    assert [row["source"] for row in freshness["relevant_source_status"]] == relevant
+    assert freshness["other_source_status_counts"] == others
+    if mode == "dsl":
+        return
+    statuses = freshness["serving_source_status"]
     assert all(
         datetime.fromisoformat(row["recorded_at"]).astimezone(timezone.utc)
         == datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc)

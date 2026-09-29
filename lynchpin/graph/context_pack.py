@@ -647,7 +647,9 @@ def project_graph_context(
     rows = work_day_correlations(start=start, end=end, graph=selected)
     return cast(dict[str, object], jsonable({
         "refresh_id": graph.refresh_id, "start": start, "end": end,
-        "projects": _project_slices(rows, projects=[project]),
+        # Nodes are already restricted to ``project``; the slice needs no
+        # second, registry-resolved selection.
+        "projects": _project_slices(rows, projects=None),
         "claims": supported_work_claims(rows, graph=selected, limit=24),
         "salient_chains": _select_top_chains(selected, limit=5),
         "salient_anomalies": _select_top_anomalies(selected, limit=5),

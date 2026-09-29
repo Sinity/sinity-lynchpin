@@ -325,7 +325,10 @@ def best_materialized_refresh_id(
                     # replaced; its resolved product includes every
                     # predecessor, so the newest eligible head is current and
                     # row count says nothing about coverage.
-                    if scoped or table in LINEAGE_PARTITION_TABLES:
+                    lineage_head = LINEAGE_PARTITION_TABLES.get(table, "").startswith(
+                        "substrate_product_lineage:"
+                    )
+                    if scoped or lineage_head:
                         selected = max(eligible, key=lambda item: item[2])
                     else:
                         selected = max(

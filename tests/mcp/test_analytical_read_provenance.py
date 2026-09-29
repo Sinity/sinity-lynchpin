@@ -409,3 +409,14 @@ def test_project_velocity_requires_a_project_instead_of_querying_a_placeholder()
     result = lynchpin_project(action="velocity", view="daily", start="2026-01-01", end="2026-01-02")
     assert result["ok"] is False
     assert result["error_code"] == "missing_argument"
+
+
+def test_unknown_project_selection_is_a_typed_boundary_error() -> None:
+    from lynchpin.mcp.tools.public import _internal_call
+
+    result = _internal_call(
+        "lynchpin.mcp.tools.velocity", "symbol_velocity", projects=["not-a-project"], refresh_id="pinned",
+    )
+    assert result["ok"] is False
+    assert result["error_code"] == "unknown_project"
+    assert result["details"] == {"values": ["not-a-project"]}
