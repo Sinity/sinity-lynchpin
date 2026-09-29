@@ -406,6 +406,12 @@ def audit_materialization(
     return [builders[name](cfg) for name in SOURCE_CONTRACT_NAMES]
 
 
+def audit_dataset(name: str, *, cfg: LynchpinConfig | None = None) -> MaterializedDataset | None:
+    """Return strict materialization status for one dataset, or None if unknown."""
+    builder = _dataset_builders().get(name)
+    return builder(cfg or get_config()) if builder is not None else None
+
+
 def _dataset_builders() -> dict[str, Any]:
     return {
         "asciinema": _asciinema_dataset,

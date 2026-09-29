@@ -39,6 +39,15 @@ observed zero remains zero. Per-event-day values must not be read as per-calenda
 day rates or abstinence evidence. The life-phase artifact uses schema version
 2 for this output contract.
 
+Category time from title classification describes the classified subset of
+focus time. A category summary reports classified seconds over focused seconds
+(the classification numerator and denominator), the unknown remainder, and
+each category's bounds `[classified, classified + unknown]`, with observed and
+missing days in the window. When classification coverage differs between two
+windows, a change in classified category time is not a change in total
+behavior; compare the bounds, and when they overlap the direction of change is
+not identified.
+
 ## Regeneration
 
 The normal command spine is:
@@ -74,6 +83,7 @@ Canonical claims must not rely on:
 - LLM adjudication of ticket snippets as a metric denominator;
 - external narrative packets promoted to fact without a contract change;
 - treating missing coverage as zero;
+- reading a change in classified category time as a total-behavior change;
 - causal wording for an uncontrolled before/after comparison;
 - mixing rows from incompatible substrate refreshes.
 

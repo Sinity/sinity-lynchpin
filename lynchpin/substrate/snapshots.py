@@ -321,7 +321,14 @@ def best_materialized_refresh_id(
                     if counts.get(item[0], 0) > 0 or item[1] == "empty"
                 ]
                 if eligible:
-                    if scoped:
+                    # A lineage partition's physical rows are only what it
+                    # replaced; its resolved product includes every
+                    # predecessor, so the newest eligible head is current and
+                    # row count says nothing about coverage.
+                    lineage_head = LINEAGE_PARTITION_TABLES.get(table, "").startswith(
+                        "substrate_product_lineage:"
+                    )
+                    if scoped or lineage_head:
                         selected = max(eligible, key=lambda item: item[2])
                     else:
                         selected = max(
@@ -389,3 +396,53 @@ def _fallback_order_expr(conn: Any, table: str) -> str:
     if "date" in columns:
         return "MAX(date), COUNT(*)"
     return "refresh_id"
+
+
+#: Tables whose ``refresh_id`` rows are partitions of a lineage chain. One
+#: refresh_id holds only the rows that promotion replaced; the coherent product
+#: at a refresh is resolved through its predecessors (and, for personal
+#: products, tombstones) by the typed readers.
+LINEAGE_PARTITION_TABLES: dict[str, str] = {
+    "personal_daily_signal": "substrate_product_lineage:personal_daily_signals",
+    "title_classification": "substrate_product_lineage:title_metadata",
+    "activity_content_day": "substrate_product_lineage:activity_content_day",
+    "activity_content_bucket": "substrate_product_lineage:activity_content_bucket",
+    "activity_title_usage": "substrate_product_lineage:activity_title_usage",
+    "evidence_node": "evidence_graph_build",
+    "evidence_edge": "evidence_graph_build",
+    "project_day_correlation": "evidence_graph_build",
+    "analysis_claim": "evidence_graph_build",
+}
+
+
+def raw_table_grain(conn: Any, tables: set[str]) -> dict[str, dict[str, str]]:
+    """Describe what one row of each referenced raw relation stands for.
+
+    Raw tables retain every promoted refresh rather than one current snapshot,
+    so a raw SQL result can mix generations or revisions of one logical key.
+    """
+    grain: dict[str, dict[str, str]] = {}
+    for table in sorted(tables):
+        row = conn.execute(
+            "SELECT table_type FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_name = ?",
+            [table],
+        ).fetchone()
+        if row is None:
+            continue
+        if row[0] != "BASE TABLE":
+            grain[table] = {"history": "view", "note": "grain follows the view definition"}
+        elif "refresh_id" not in _table_columns(conn, table):
+            grain[table] = {"history": "unversioned"}
+        elif table in LINEAGE_PARTITION_TABLES:
+            grain[table] = {
+                "history": "lineage_partitions",
+                "lineage": LINEAGE_PARTITION_TABLES[table],
+                "note": "refresh_id = X holds only that partition; typed readers resolve the product at X",
+            }
+        else:
+            grain[table] = {
+                "history": "retained_refreshes",
+                "note": "rows from every retained refresh_id; filter refresh_id for one promotion",
+            }
+    return grain

@@ -138,7 +138,7 @@ def ai_session_efficiency_report(project: str | None = None) -> dict[str, Any]:
         return result
     sessions = payload.get("sessions")
     if isinstance(sessions, list):
-        if project:
+        if project is not None:
             sessions = [s for s in sessions if isinstance(s, dict) and s.get("project") == project]
         result["sessions"] = sessions
         result["summary"]["session_count"] = len(sessions)

@@ -22,6 +22,7 @@ from ..core.projects import project_path
 from ..sources.github import GitHubItem, GitHubLifecycleClassification, classify_lifecycle, repo_slug
 from ..sources.github_context import iter_github_context
 from .evidence_graph import build_evidence_graph
+from .evidence_projects import selected_projects
 from .evidence_views import render_evidence_graph_summary
 from .movement import MovementSummary, movement_summary, render_movement_summary
 from .source_readiness import render_source_readiness, source_readiness
@@ -223,7 +224,7 @@ def current_state_evidence_pack(
     start_date = start.date()
     end_date = end.date()
     include_github = include_github_frontier or (graph is not None and graph.mode == "network")
-    selected = _selected_projects(projects)
+    selected = selected_projects(projects)
     inventory_source = _selected_project_inventory(selected) if selected else active_project_inventory()
     inventory = _filter_inventory(inventory_source, selected=selected)
     evidence_graph = graph or build_evidence_graph(
@@ -485,16 +486,6 @@ def _selected_project_inventory(selected: set[str]) -> tuple[ProjectInventoryIte
         entry = ALL_PROJECTS.get(name)
         items.append(_inventory_one(name, project_path(name), entry.active if entry else True))
     return tuple(items)
-
-
-def _selected_projects(projects: Sequence[str] | None) -> set[str]:
-    if not projects:
-        return set()
-    return {
-        project
-        for project in (canonical_project_name(value) for value in projects)
-        if project is not None
-    }
 
 
 def _filter_inventory(

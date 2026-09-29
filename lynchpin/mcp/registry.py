@@ -99,8 +99,8 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
             ),
             ActionSpec(
                 "sql",
-                "SELECT-only SQL query with parameters, row cap, and optional promotion or exact publication pinning.",
-                parameters=("sql", "parameters", "max_rows", "expected_refresh_id", "expected_publication_id"),
+                "SELECT-only SQL query with parameters, row cap, and optional promotion or exact publication pinning; results name the served generation, raw-table history grain, and relevant source status (detail=true for every source).",
+                parameters=("sql", "parameters", "max_rows", "expected_refresh_id", "expected_publication_id", "detail"),
                 response_kind="query_result",
                 examples=({"mode": "sql", "sql": "SELECT COUNT(*) AS cnt FROM commit_fact"},),
             ),
@@ -131,7 +131,7 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
             ActionSpec("repos", "Known repo names and roots.", response_kind="repo_list"),
             ActionSpec("files", "Repo file listing.", parameters=("repo", "project", "limit"), requires=("repo_or_project",), response_kind="repo_files"),
             ActionSpec("commits", "Recent repo commits.", parameters=("repo", "project", "limit"), requires=("repo_or_project",), response_kind="commits"),
-            ActionSpec("velocity", "Code velocity and throughput views.", "converge", parameters=("repo", "project", "view", "start", "end"), views=("throughput", "daily", "weekly"), response_kind="velocity"),
+            ActionSpec("velocity", "Code velocity and throughput views.", "converge", parameters=("repo", "project", "view", "start", "end"), views=("throughput", "daily", "weekly"), requires=("repo_or_project",), response_kind="velocity"),
             ActionSpec("hotspots", "File/symbol hotspots and refactor candidates.", "converge", parameters=("repo", "project", "view", "limit"), views=("files", "symbols", "refactors"), response_kind="hotspots"),
             ActionSpec("change_kinds", "Commit conventional/breaking/AI attribution views.", "converge", parameters=("repo", "project", "view"), views=("conventional", "breaking", "ai", "attribution"), response_kind="change_analysis"),
             ActionSpec("github", "Paged GitHub issue/PR list and detail; lists report unknown total and a publication-bound next_offset.", "read", parameters=("repo", "project", "view", "number", "state", "limit", "offset", "expected_publication_id"), views=("prs", "issues", "issue"), response_kind="github_items"),
@@ -150,7 +150,7 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
         description="Operator, personal signals, health, communications, web, bookmarks, and reports.",
         effect_mode="converge",
         actions=(
-            ActionSpec("daily", "Normalized personal daily signals.", "converge", parameters=("start", "end", "source", "limit"), response_kind="personal_daily"),
+            ActionSpec("daily", "Normalized personal daily signals from one resolved product refresh, with serving identity and per-source coverage states.", "converge", parameters=("start", "end", "source", "limit"), response_kind="personal_daily"),
             ActionSpec("activity", "ActivityWatch/activity-content/focus views.", "converge", parameters=("view", "start", "end", "limit"), views=("daily", "focus", "titles", "unmatched", "coverage"), response_kind="activity"),
             ActionSpec("phone", "Phone event captures, including backfilled Health Connect records.", "read", parameters=("start", "end", "source", "limit"), response_kind="phone_events"),
             ActionSpec("health", "Dated daily health by default; explicit trend reports substrate promotion confidence. Phone Health Connect, Xiaomi cloud, and coverage are separate views.", "read", parameters=("view", "start", "end", "source", "limit"), views=("trend", "daily", "stress", "heart_rate", "hrv", "phone_health", "xiaomi", "coverage"), response_kind="health"),

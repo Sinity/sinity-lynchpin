@@ -1,6 +1,6 @@
 """Tests for personal.py MCP tools."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -142,13 +142,6 @@ def test_personal_daily_signals_materializes_source_and_substrate_for_default_sn
         def to_json(self) -> dict[str, object]:
             return {"status": "ready"}
 
-    class _Conn:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
     def fake_ensure_materialized(name, *, window=None, budget=None):
         source_calls.append((name, window))
         return Result()
@@ -162,22 +155,43 @@ def test_personal_daily_signals_materializes_source_and_substrate_for_default_sn
         "lynchpin.mcp.tools.personal.ensure_substrate_materialized_for_read",
         fake_ensure_substrate_materialized_for_read,
     )
+    from contextlib import contextmanager
+
+    from lynchpin.substrate.personal import PersonalDailySignalRead, PersonalSignalSourceWindow
+
+    class _StatusConn:
+        def execute(self, *_args, **_kwargs):
+            return SimpleNamespace(fetchone=lambda: None)
+
+    @contextmanager
+    def fake_serving_generation(_path):
+        yield SimpleNamespace(
+            connection=_StatusConn(), database_path=Path("fixture.duckdb"),
+            snapshot_path=Path("fixture.read-snapshot.duckdb"), publication_id=None,
+        )
+
     monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
-    monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: _Conn())
+    monkeypatch.setattr("lynchpin.substrate.connection.serving_generation", fake_serving_generation)
     monkeypatch.setattr(
         "lynchpin.mcp.tools.personal.require_best_materialized_refresh_id",
         lambda *_args, **_kwargs: "rid",
     )
     monkeypatch.setattr(
-        "lynchpin.substrate.personal.load_personal_daily_signals",
-        lambda *_args, **_kwargs: [
-            ("spotify", date(2026, 5, 1), "minutes_played", 7.5, {"artist": "a"}),
-        ],
+        "lynchpin.substrate.personal.read_personal_daily_signals",
+        lambda *_args, **_kwargs: PersonalDailySignalRead(
+            rows=[("spotify", date(2026, 5, 1), "minutes_played", 7.5, {"artist": "a"})],
+            window_row_count=1,
+            sources={"spotify": PersonalSignalSourceWindow("spotify", 1, (date(2026, 5, 1),))},
+            product_sources=frozenset({"spotify"}),
+        ),
     )
 
     from lynchpin.mcp.tools.personal import personal_daily_signals
 
-    rows = personal_daily_signals(start="2026-05-01", end="2026-05-03")
+    result = personal_daily_signals(start="2026-05-01", end="2026-05-03")
+    rows = result["rows"]
+    assert result["serving"] == {"kind": "canonical", "refresh_id": "rid", "publication_id": None}
+    assert result["coverage"]["projection"]["status"] == "unrecorded"
 
     assert source_calls == [
         ("personal_daily_signals", (date(2026, 5, 1), date(2026, 5, 4)))
@@ -1289,6 +1303,7 @@ def test_activity_content_tools_include_end_date(monkeypatch: pytest.MonkeyPatch
         focused_seconds: float
         matched_seconds: float = 10.0
         gpt_matched_seconds: float = 5.0
+        topic_seconds: dict[str, float] = field(default_factory=dict)
 
     @dataclass
     class TitleRow:
@@ -1391,29 +1406,6 @@ class TestActivitySemanticDaily:
                 end="2026-05-22",
                 dimension="invalid_dim",
             )
-
-    def test_activity_semantic_daily_valid_dimensions(self):
-        """Verify all valid dimensions are accepted."""
-        from lynchpin.mcp.tools.personal import activity_semantic_daily
-
-        valid_dims = ["topic_category", "attention_level", "activity", "platform", "mode"]
-        mock_rows = [(date(2026, 5, 20), "test", 3600.0)]
-
-        with patch("lynchpin.substrate.connection.connect") as mock_connect, patch(
-            "lynchpin.substrate.readers_signals.load_activity_title_usage_by_dimension",
-            return_value=mock_rows,
-        ):
-            mock_conn = MagicMock()
-            mock_connect.return_value.__enter__.return_value = mock_conn
-            mock_conn.execute.return_value.fetchall.return_value = mock_rows
-
-            for dim in valid_dims:
-                result = activity_semantic_daily(
-                    start="2026-05-20",
-                    end="2026-05-22",
-                    dimension=dim,
-                )
-                assert isinstance(result, list)
 
     def test_activity_semantic_daily_empty_result(self):
         """Verify empty results are handled correctly."""

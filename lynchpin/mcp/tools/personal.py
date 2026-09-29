@@ -963,12 +963,32 @@ def personal_daily_signals(
     metric: str | None = None,
     refresh_id: str | None = None,
     limit: int = 1000,
-) -> list[dict[str, Any]]:
-    """Normalized daily signals promoted from canonical personal products."""
+) -> dict[str, Any]:
+    """Normalized daily signals promoted from canonical personal products.
+
+    Rows come from one product resolved at one refresh, so a revised key
+    carries its newest value and a removed key is absent. ``serving`` names
+    that refresh and the opened generation. ``coverage.sources`` gives each
+    relevant signal source one state:
+
+    - ``observed``: the product has rows for it in the window;
+    - ``observed_empty``: its input covers the window but the product has no
+      rows for it there;
+    - ``outside_input_coverage``: its input has no coverage in the window, so
+      absence is no observation, not zero;
+    - ``input_unavailable``: its input product is not ready;
+    - ``input_status_unknown``: no rows in the window and no dated input
+      coverage says whether the window was observed;
+    - ``not_in_projection``: the product carries no rows for it on any date
+      and no input status is recorded under that name.
+
+    ``coverage.projection`` is the product's own promotion status.
+    """
     from datetime import date as _date
 
-    from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.personal import load_personal_daily_signals
+    from lynchpin.materialization import audit_dataset, materialized_dataset_coverage
+    from lynchpin.substrate.connection import _same_resource, serving_generation, substrate_path
+    from lynchpin.substrate.personal import read_personal_daily_signals
 
     start_d = _date.fromisoformat(start) if start else None
     end_d = _date.fromisoformat(end) if end else None
@@ -984,7 +1004,8 @@ def personal_daily_signals(
             window=(start_d, materialization_end) if start_d is not None and materialization_end is not None else None,
         )
 
-    with connect(substrate_path(), read_only=True) as conn:
+    with serving_generation(substrate_path()) as serving:
+        conn = serving.connection
         if refresh_id is None:
             refresh_id = require_best_materialized_refresh_id(
                 conn,
@@ -992,8 +1013,7 @@ def personal_daily_signals(
                 caller="personal_daily_signals",
                 tool="personal_daily_signals",
             )
-
-        rows = load_personal_daily_signals(
+        read = read_personal_daily_signals(
             conn,
             refresh_id=refresh_id,
             start=start_d,
@@ -1002,17 +1022,85 @@ def personal_daily_signals(
             metric=metric,
             limit=limit,
         )
-
-    return [
-        {
-            "source": row[0],
-            "date": _json_safe(row[1]),
-            "metric": row[2],
-            "value": row[3],
-            "dimensions": row[4],
+        status_row = conn.execute(
+            "SELECT status, reason, row_count, window_start, window_end FROM substrate_source_status "
+            "WHERE refresh_id = ? AND source = 'personal_daily_signal' ORDER BY recorded_at DESC LIMIT 1",
+            [refresh_id],
+        ).fetchone()
+        serving_meta = {
+            "kind": "read_snapshot" if _same_resource(serving.database_path, serving.snapshot_path) else "canonical",
+            "refresh_id": refresh_id,
+            "publication_id": serving.publication_id,
         }
-        for row in rows
-    ]
+
+    projection = (
+        dict(zip(("status", "reason", "row_count", "window_start", "window_end"),
+                 (_json_safe(value) for value in status_row)))
+        if status_row is not None
+        else {"status": "unrecorded", "reason": "no promotion status for this refresh"}
+    )
+    names = [source] if source is not None else sorted(read.product_sources | set(read.sources))
+    sources: dict[str, Any] = {}
+    for name in names:
+        window = read.sources.get(name)
+        if window is not None:
+            sources[name] = {
+                "state": "observed",
+                "row_count": window.row_count,
+                "observed_days": len(window.observed_dates),
+                "first_observed": _json_safe(window.observed_dates[0]),
+                "last_observed": _json_safe(window.observed_dates[-1]),
+            }
+            continue
+        audit = audit_dataset(name)
+        if audit is None:
+            state = "input_status_unknown" if name in read.product_sources else "not_in_projection"
+            sources[name] = {"state": state, "row_count": 0, "input": None}
+            continue
+        input_coverage = materialized_dataset_coverage(audit, start=start_d, end=materialization_end)
+        relation = input_coverage["relation"]
+        if relation in {"covers_window", "partial_overlap", "extent_overlap"}:
+            state = "observed_empty"
+        elif relation == "no_overlap":
+            state = "outside_input_coverage"
+        elif relation == "unavailable":
+            state = "input_unavailable"
+        else:
+            state = "input_status_unknown"
+        sources[name] = {
+            "state": state,
+            "row_count": 0,
+            "input": {
+                "status": audit.status,
+                "reason": audit.reason,
+                "relation": relation,
+                "first_date": _json_safe(audit.first_date),
+                "last_date": _json_safe(audit.last_date),
+                "covered_days": input_coverage["covered_days"],
+                "requested_days": input_coverage["requested_days"],
+            },
+        }
+
+    return {
+        "rows": [
+            {
+                "source": row[0],
+                "date": _json_safe(row[1]),
+                "metric": row[2],
+                "value": row[3],
+                "dimensions": row[4],
+            }
+            for row in read.rows
+        ],
+        "window_row_count": read.window_row_count,
+        "truncated": read.window_row_count > len(read.rows),
+        "serving": serving_meta,
+        "coverage": {
+            "window": {"start": start, "end": end, "end_semantics": "inclusive"},
+            "projection": projection,
+            "sources": sources,
+        },
+    }
 
 
 def materialization_status() -> list[dict[str, Any]]:
@@ -1131,12 +1219,41 @@ def activity_unmatched_titles(start: str | None = None, end: str | None = None, 
     return rows[: min(max(limit, 1), 1000)]
 
 
-def activity_content_coverage(start: str | None = None, end: str | None = None) -> dict[str, Any]:
-    """Coverage ratios for ActivityWatch title metadata matches over a date range."""
-    from datetime import date
+_CATEGORY_FIELDS = {
+    "activity": "activity_seconds",
+    "content_type": "content_type_seconds",
+    "attention_level": "attention_seconds",
+    "topic_category": "topic_seconds",
+    "platform": "platform_seconds",
+}
+
+
+def activity_content_coverage(
+    start: str | None = None,
+    end: str | None = None,
+    dimension: str = "topic_category",
+) -> dict[str, Any]:
+    """Classification coverage and category bounds for ActivityWatch focus time.
+
+    Every ratio names its numerator and denominator. Category seconds count
+    only time whose title is classified along ``dimension``; the remaining
+    ``unknown_seconds`` could belong to any category. Each category therefore
+    reports ``[classified_seconds, classified_seconds + unknown_seconds]`` as
+    the bounds on its true focus time: when classification coverage differs
+    between two windows, a change in classified category time is not by
+    itself a change in total behavior.
+
+    Days are counted, not assumed: ``observed_days`` have a content row;
+    ``missing_days`` in a bounded window have none, which means a capture gap
+    or no focused activity, never a measured zero. Ratios are null when the
+    denominator is zero.
+    """
+    from datetime import date, timedelta
 
     from lynchpin.sources.activity_content import iter_activity_content_days
 
+    if dimension not in _CATEGORY_FIELDS:
+        raise ValueError(f"dimension must be one of {sorted(_CATEGORY_FIELDS)}, got {dimension!r}")
     start_d = date.fromisoformat(start) if start else None
     end_d = date.fromisoformat(end) if end else None
     end_exclusive = end_d + date.resolution if end_d is not None else None
@@ -1145,19 +1262,65 @@ def activity_content_coverage(start: str | None = None, end: str | None = None) 
     focused = 0.0
     matched = 0.0
     gpt_matched = 0.0
-    days = 0
+    categories: dict[str, float] = {}
+    observed: set[date] = set()
     for row in iter_activity_content_days(start=start_d, end=end_exclusive, ensure=False):
-        days += 1
+        observed.add(row.date)
         focused += row.focused_seconds
         matched += row.matched_seconds
         gpt_matched += row.gpt_matched_seconds
+        for label, seconds in (getattr(row, _CATEGORY_FIELDS[dimension]) or {}).items():
+            categories[label] = categories.get(label, 0.0) + float(seconds)
+    classified = sum(categories.values())
+    unknown = max(focused - classified, 0.0)
+
+    def ratio(numerator: float, denominator: float) -> float | None:
+        return round(numerator / denominator, 6) if denominator else None
+
+    requested_days = (end_d - start_d).days + 1 if start_d and end_d and end_d >= start_d else None
+    missing = (
+        sum(1 for offset in range(requested_days) if start_d + timedelta(days=offset) not in observed)
+        if requested_days is not None and start_d is not None
+        else None
+    )
     return {
-        "days": days,
+        "days": len(observed),
         "focused_seconds": round(focused, 3),
         "matched_seconds": round(matched, 3),
         "gpt_matched_seconds": round(gpt_matched, 3),
-        "matched_ratio": round(matched / focused, 6) if focused else 0.0,
-        "gpt_matched_ratio": round(gpt_matched / focused, 6) if focused else 0.0,
+        "matched_ratio": ratio(matched, focused),
+        "gpt_matched_ratio": ratio(gpt_matched, focused),
+        "classification": {
+            "dimension": dimension,
+            "numerator": "seconds classified along dimension",
+            "denominator": "focused_seconds",
+            "classified_seconds": round(classified, 3),
+            "focused_seconds": round(focused, 3),
+            "unknown_seconds": round(unknown, 3),
+            "classified_ratio": ratio(classified, focused),
+            "unknown_ratio": ratio(unknown, focused),
+        },
+        "categories": [
+            {
+                "category": label,
+                "classified_seconds": round(seconds, 3),
+                "share_of_classified": ratio(seconds, classified),
+                "focused_seconds_bounds": [round(seconds, 3), round(seconds + unknown, 3)],
+            }
+            for label, seconds in sorted(categories.items(), key=lambda item: (-item[1], item[0]))
+        ],
+        "day_coverage": {
+            "requested_days": requested_days,
+            "observed_days": len(observed),
+            "missing_days": missing,
+            "first_observed": min(observed).isoformat() if observed else None,
+            "last_observed": max(observed).isoformat() if observed else None,
+            "partial": (len(observed) < requested_days) if requested_days is not None else None,
+        },
+        "interpretation": (
+            "category shares describe the classified subset only; compare windows on "
+            "focused_seconds_bounds, not on classified category seconds"
+        ),
     }
 
 
@@ -1392,12 +1555,15 @@ def activity_semantic_daily(
     isn't available because activity_title_usage rolls each (title_hash, app)
     into a single row across its entire history.
 
-    Dimensions supported:
+    Dimensions supported (``readers_signals.ACTIVITY_TITLE_DIMENSIONS``):
     - topic_category: what topics were active (work, social, health, etc.)
     - attention_level: scanning, shallow, deep, background, engaged
     - activity: activity type label
+    - content_type: content type label
     - platform: platform classification
-    - mode: mode classification (e.g., active, passive, etc.)
+
+    Titles without a classification along the dimension are reported under
+    ``unknown`` rather than dropped.
 
     Returns rows: {date, dimension_value, focused_minutes, focused_seconds}
     ordered by date and focused_seconds (DESC per date).
@@ -1405,13 +1571,14 @@ def activity_semantic_daily(
     start_d = _date.fromisoformat(start)
     end_d = _date.fromisoformat(end)
 
-    # Validate dimension
-    valid_dims = {"topic_category", "attention_level", "activity", "platform", "mode"}
-    if dimension not in valid_dims:
-        raise ValueError(f"dimension must be one of {valid_dims}, got {dimension!r}")
-
     from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.readers_signals import load_activity_title_usage_by_dimension
+    from lynchpin.substrate.readers_signals import (
+        ACTIVITY_TITLE_DIMENSIONS,
+        load_activity_title_usage_by_dimension,
+    )
+
+    if dimension not in ACTIVITY_TITLE_DIMENSIONS:
+        raise ValueError(f"dimension must be one of {ACTIVITY_TITLE_DIMENSIONS}, got {dimension!r}")
 
     with connect(substrate_path(), read_only=True) as conn:
         # Interval-intersect: title's observed lifetime [first_date, last_date]
