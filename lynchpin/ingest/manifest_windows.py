@@ -75,6 +75,11 @@ def merge_manifest_covered_dates(
     # a changed input) cannot establish that provenance outside observed rows.
     same_input = input_versions is not None and _read_manifest(manifest).get("input_versions") == input_versions
     if verified_bounds is not None and not same_input:
+        # A live append-only input (Atuin's history DB and its WAL) changes
+        # version on every new record, so a changed input must not discard
+        # history: that would uncover every past window on each tail refresh
+        # and coverage would never converge. Days inside the span of rows this
+        # run holds stay covered; claims beyond it are dropped.
         lower, upper = verified_bounds
         if lower > upper:
             lower, upper = upper, lower

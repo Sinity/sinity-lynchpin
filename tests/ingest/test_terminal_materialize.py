@@ -61,6 +61,37 @@ def test_empty_atuin_refresh_on_changed_input_drops_unscanned_coverage(monkeypat
     assert output.read_text(encoding="utf-8") == ""
 
 
+def test_tail_refresh_after_an_append_keeps_historical_coverage(monkeypatch, tmp_path):
+    """Fails if an input-version change from an ordinary append uncovers the
+    history a previous refresh scanned (coverage would never converge)."""
+    from lynchpin.ingest import terminal_materialize
+
+    db = tmp_path / "history.db"
+    db.write_text("fixture", encoding="utf-8")
+    output = tmp_path / "history.ndjson"
+    monkeypatch.setattr(terminal_materialize, "get_config", lambda: SimpleNamespace(atuin_db=db))
+    days = list(range(1, 11))
+    monkeypatch.setattr(
+        terminal_materialize,
+        "commands_from_atuin_db",
+        lambda _db, **_kw: iter([_command(day) for day in days]),
+    )
+    full = terminal_materialize.materialize_atuin_history(
+        output=output, start=date(2026, 1, 1), end=date(2026, 1, 11),
+    )
+    assert len(full["covered_dates"]) == 10
+
+    db.write_text("fixture plus one appended command", encoding="utf-8")
+    days = [10]
+    tail = terminal_materialize.materialize_atuin_history(
+        output=output, start=date(2026, 1, 10), end=date(2026, 1, 12),
+    )
+
+    assert tail["input_versions"] != full["input_versions"]
+    assert tail["covered_dates"] == [f"2026-01-{day:02d}" for day in range(1, 12)]
+    assert len(output.read_text(encoding="utf-8").splitlines()) == 10
+
+
 def test_concurrent_disjoint_atuin_windows_both_publish(monkeypatch, tmp_path):
     from lynchpin.ingest import terminal_materialize
 
