@@ -498,7 +498,11 @@ DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX personal_daily_signal_source_date ON personal_daily_signal(source, date)",
     "CREATE INDEX personal_daily_signal_refresh_id ON personal_daily_signal(refresh_id)",
     # Per-product overlay metadata.  Domain rows remain append-only by refresh;
-    # readers resolve these partitions newest-first.
+    # readers resolve these partitions newest-first.  A partition replaces its
+    # predecessors' dated rows in [replacement_start, replacement_end); a NULL
+    # end is an open tail recorded before bounded replacement.  logical_row_count
+    # is the number of keys readers resolve through the partition, when the
+    # promoter knows it without replaying history.
     """
     CREATE TABLE substrate_product_lineage (
         product                 VARCHAR NOT NULL,
@@ -508,6 +512,8 @@ DDL_STATEMENTS: tuple[str, ...] = (
         input_fingerprint       VARCHAR,
         mode                    VARCHAR NOT NULL,
         materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        replacement_end         DATE,
+        logical_row_count       BIGINT,
         PRIMARY KEY (product, refresh_id)
     )
     """,

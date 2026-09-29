@@ -278,7 +278,7 @@ def promote_personal_sources(
                 else None
             )
 
-            counts["title_classification"] = promote_title_classifications_from_path(
+            titles = promote_title_classifications_from_path(
                 conn,
                 refresh_id=refresh_id,
                 path=str(title_metadata_path()),
@@ -287,13 +287,16 @@ def promote_personal_sources(
                 ),
                 input_fingerprint=manifest_fingerprint,
             )
+            counts["title_classification"] = titles.written
+            # Readiness describes the titles this refresh serves, including
+            # those inherited unchanged, not the rows this run had to write.
             record_source_status(
                 conn,
                 refresh_id=refresh_id,
                 source=SOURCE_TITLE_CLASSIFICATION,
-                status="ok" if counts["title_classification"] else "empty",
-                reason=None if counts["title_classification"] else "no title classifications available",
-                row_count=counts["title_classification"],
+                status="ok" if titles.logical else "empty",
+                reason=None if titles.logical else "no title classifications available",
+                row_count=titles.logical,
                 window_start=window_start,
                 window_end=window_end,
             )
@@ -336,21 +339,24 @@ def promote_personal_sources(
                 refresh_id=refresh_id,
                 rows=content_rows,
                 previous_refresh_id=day_predecessor,
-                incremental_tail_start=window_start if day_predecessor else None,
+                replacement_start=window_start if day_predecessor else None,
+                replacement_end=window_end if day_predecessor else None,
             )
             counts["activity_content_bucket"] = promote_activity_content_buckets(
                 conn,
                 refresh_id=refresh_id,
                 rows=content_rows,
                 previous_refresh_id=bucket_predecessor,
-                incremental_tail_start=window_start if bucket_predecessor else None,
+                replacement_start=window_start if bucket_predecessor else None,
+                replacement_end=window_end if bucket_predecessor else None,
             )
             counts["activity_title_usage"] = promote_activity_title_usage(
                 conn,
                 refresh_id=refresh_id,
                 rows=usage_rows,
                 previous_refresh_id=usage_predecessor,
-                incremental_tail_start=window_start if usage_predecessor else None,
+                replacement_start=window_start if usage_predecessor else None,
+                replacement_end=window_end if usage_predecessor else None,
             )
             row_count = counts["activity_content_day"] + counts["activity_content_bucket"] + counts["activity_title_usage"]
             record_source_status(
@@ -394,7 +400,8 @@ def promote_personal_sources(
                 refresh_id=refresh_id,
                 rows=signal_rows,
                 previous_refresh_id=signal_predecessor,
-                incremental_tail_start=window_start if signal_predecessor else None,
+                replacement_start=window_start if signal_predecessor else None,
+                replacement_end=window_end if signal_predecessor else None,
             )
             record_source_status(
                 conn,

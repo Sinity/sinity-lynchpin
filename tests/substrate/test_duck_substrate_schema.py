@@ -206,7 +206,8 @@ def test_incremental_personal_daily_signal_preserves_history_and_matches_full_ou
             conn,
             refresh_id="incremental",
             previous_refresh_id="prior",
-            incremental_tail_start=date(2026, 5, 5),
+            replacement_start=date(2026, 5, 5),
+            replacement_end=date(2026, 5, 7),
             rows=refreshed_rows,
         )
         promote_personal_daily_signals(conn, refresh_id="full", rows=full_rows)
@@ -217,8 +218,9 @@ def test_incremental_personal_daily_signal_preserves_history_and_matches_full_ou
         promote_personal_daily_signals(
             conn,
             refresh_id="incremental",
-            previous_refresh_id="incremental",
-            incremental_tail_start=date(2026, 5, 5),
+            previous_refresh_id="prior",
+            replacement_start=date(2026, 5, 5),
+            replacement_end=date(2026, 5, 7),
             rows=refreshed_rows,
         )
         after_rerun = conn.execute(
@@ -276,7 +278,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
     """The additive graph-lineage rollout must retain the verified predecessor."""
     from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
 
-    assert SUBSTRATE_VERSION == 49
+    assert SUBSTRATE_VERSION == 50
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
@@ -311,7 +313,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
         ).fetchall() == [("verified", 12, 34, None, None)]
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() == ("49",)
+        ).fetchone() == ("50",)
         migrated_indexes = {
             row[0]
             for row in conn.execute(
@@ -411,16 +413,26 @@ def test_title_overlay_writes_changes_and_reuses_unchanged_input(tmp_path: Path)
     with connect(tmp_path / "sub.duckdb") as conn:
         apply_schema(conn)
         promote_title_classifications_from_path(conn, refresh_id="old", path=str(old_path), input_fingerprint="f1")
-        assert promote_title_classifications_from_path(
+        changed = promote_title_classifications_from_path(
             conn, refresh_id="new", path=str(new_path), previous_refresh_id="old", input_fingerprint="f2"
-        ) == 2
+        )
+        assert (changed.written, changed.logical) == (2, 2)
         assert conn.execute("SELECT COUNT(*) FROM title_classification WHERE refresh_id='new'").fetchone()[0] == 2
         assert _resolved_rows(conn, product="title_metadata", refresh_id="new", table="title_classification",
                               columns=("title_hash",), key=lambda row: row[0]) == [("a",), ("c",)]
-        assert promote_title_classifications_from_path(
+        unchanged = promote_title_classifications_from_path(
             conn, refresh_id="same", path=str(new_path), previous_refresh_id="new", input_fingerprint="f2"
-        ) == 0
+        )
+        assert (unchanged.written, unchanged.logical) == (0, 2)
         assert conn.execute("SELECT COUNT(*) FROM title_classification WHERE refresh_id='same'").fetchone()[0] == 0
+        assert _resolved_rows(conn, product="title_metadata", refresh_id="same", table="title_classification",
+                              columns=("title_hash",), key=lambda row: row[0]) == [("a",), ("c",)]
+        # An unchanged file under a new fingerprint rewrites nothing: stored
+        # rows round-trip equal to the file, including the JSON extra column.
+        reread = promote_title_classifications_from_path(
+            conn, refresh_id="reread", path=str(new_path), previous_refresh_id="same", input_fingerprint="f3"
+        )
+        assert (reread.written, reread.logical) == (0, 2)
 
 
 def test_newer_row_reintroduces_key_tombstoned_by_older_partition(tmp_path: Path) -> None:
@@ -503,7 +515,7 @@ def test_apply_schema_migrates_version_46_work_observation_operation(
     from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
     from lynchpin.substrate.schema import DDL_STATEMENTS
 
-    assert SUBSTRATE_VERSION == 49
+    assert SUBSTRATE_VERSION == 50
     # Reconstruct the pre-47 table shape from the live DDL so the fixture cannot
     # drift away from the real column list.
     create = next(
@@ -543,7 +555,7 @@ def test_apply_schema_migrates_version_46_work_observation_operation(
         ).fetchall() == [("agentctl:9", None)]
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() == ("49",)
+        ).fetchone() == ("50",)
 
 
 def test_migrates_47_dirty_unknown_with_existing_indexes(tmp_path):
@@ -599,4 +611,4 @@ def test_apply_schema_migrates_version_48_adds_work_branch(tmp_path: Path) -> No
         apply_schema(conn)
 
         assert conn.execute("SELECT source_id, git_branch FROM work_observation").fetchall() == [("x:1", None)]
-        assert conn.execute("SELECT value FROM substrate_meta WHERE key = 'version'").fetchone() == ("49",)
+        assert conn.execute("SELECT value FROM substrate_meta WHERE key = 'version'").fetchone() == ("50",)

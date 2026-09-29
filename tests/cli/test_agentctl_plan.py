@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 from contextlib import contextmanager
@@ -440,10 +441,18 @@ def test_promotion_uses_an_immutable_generation_refresh_id(monkeypatch) -> None:
         )
         or 0,
     )
-    monkeypatch.setattr(
-        "lynchpin.analysis.active.substrate_promote.run_substrate_promote",
-        lambda **_kwargs: SimpleNamespace(status="ok", counts={}),
-    )
+    from lynchpin.analysis.active import substrate_promote
+
+    real_signature = inspect.signature(substrate_promote.run_substrate_promote)
+
+    def promote(**kwargs):
+        # The typed-fact promotion must accept exactly what the node passes;
+        # a stale keyword failed every node before any typed fact was written.
+        real_signature.bind(**kwargs)
+        observed["promote_refresh_id"] = kwargs["refresh_id"]
+        return SimpleNamespace(status="ok", counts={})
+
+    monkeypatch.setattr(substrate_promote, "run_substrate_promote", promote)
 
     result = agentctl_plan.run_promotion_node(
         start=date(2026, 8, 20),
@@ -460,6 +469,7 @@ def test_promotion_uses_an_immutable_generation_refresh_id(monkeypatch) -> None:
         "receipt_refresh_id": expected,
         "snapshot_refresh_id": expected,
         "generation": "candidate",
+        "promote_refresh_id": expected,
         "publication_refresh_id": expected,
     }
     assert result["refresh_id"] == expected
