@@ -40,6 +40,11 @@ from .polylogue_models import (
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on session summaries read for a single min/max coverage pass;
+# past this, bounds are treated as potentially incomplete rather than
+# silently returned wrong.
+_SUMMARY_LIMIT = 1_000_000
+
 
 class PolylogueMaterializationError(MaterializationError):
     """Raised when required Polylogue insight products are unavailable."""
@@ -1360,22 +1365,31 @@ def daily_activity(*, start: date, end: date) -> list[ChatDayActivity]:
 
 
 def coverage_bounds() -> CoverageBounds | None:
-    db = _default_polylogue_db_path()
-    if not db.exists():
-        return None
+    # Deliberately not list_archive_coverage_insights(group_by="day"): its
+    # day buckets key off sort_key_ms, which prefers updated_at_ms over
+    # created_at_ms, so a session created on one day and later updated loses
+    # its creation day from the bound. Read summaries directly and take the
+    # true min/max of created_at, matching this function's pre-facade
+    # behavior (MIN/MAX(created_at) over conversations).
     try:
-        with _readonly_polylogue_connection(db) as conn:
-            row = conn.execute(
-                "SELECT MIN(created_at), MAX(created_at) FROM conversations"
-            ).fetchone()
-    except Exception:
+        summaries = _polylogue_client().list_summaries(limit=_SUMMARY_LIMIT)
+    except Exception as exc:
+        logger.warning("polylogue coverage unavailable: %s", exc)
         return None
-    if not row or row[0] is None:
+    if len(summaries) >= _SUMMARY_LIMIT:
+        # An incomplete scan cannot bound anything: a truncated min/max is
+        # not "coverage that stops early", it is a wrong bound (the true
+        # earliest/latest day may be among the summaries never read). Fail
+        # closed rather than report it as capture evidence.
+        logger.warning("polylogue coverage summary limit reached; refusing an incomplete bound")
         return None
-    from datetime import datetime
-    first = datetime.fromisoformat(row[0]).date()
-    last = datetime.fromisoformat(row[1]).date()
-    return CoverageBounds(source="polylogue", first=first, last=last, kind="capture")
+    days = []
+    for summary in summaries:
+        if summary.created_at is not None:
+            days.append(summary.created_at.date())
+    if not days:
+        return None
+    return CoverageBounds(source="polylogue", first=min(days), last=max(days), kind="capture")
 
 
 def work_thread_activity(*, start: date, end: date) -> list[ChatDayActivity]:

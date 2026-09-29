@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,7 +18,6 @@ from lynchpin.sources import activitywatch
 from lynchpin.sources import polylogue, window_session_attribution
 from lynchpin.sources import polylogue_session_attribution
 from lynchpin.sources.activitywatch_models import FocusSpan
-from lynchpin.sources.polylogue_session_attribution import SessionOverlapAttribution
 from lynchpin.sources.window_session_attribution import SpanAttribution
 
 
@@ -101,17 +101,13 @@ def test_enrich_falls_back_to_session_overlap_when_work_events_unavailable(monke
     monkeypatch.setattr(
         "lynchpin.core.config.get_config", lambda: fake_config
     )
+    polylogue_session_attribution._session_repo_intervals_cached.cache_clear()
     monkeypatch.setattr(
-        polylogue_session_attribution, "session_repo_intervals",
-        lambda db_path_str: (object(),),
-    )
-    monkeypatch.setattr(
-        polylogue_session_attribution, "attribute_spans_by_session_overlap",
-        lambda spans, intervals, **kw: [
-            SessionOverlapAttribution(
-                project="sinity-lynchpin", session_id="s1", overlap_s=900.0, confidence=0.9
-            )
-        ],
+        polylogue_session_attribution, "_polylogue_client",
+        lambda: SimpleNamespace(list_summaries=lambda *, limit: [SimpleNamespace(
+            id="s1", working_directories=("/realm/project/sinity-lynchpin",),
+            created_at=start.replace(hour=9), updated_at=start.replace(hour=11),
+        )]),
     )
 
     result = activitywatch._enrich_with_polylogue([span], start, end)

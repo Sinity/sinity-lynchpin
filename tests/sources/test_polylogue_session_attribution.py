@@ -1,16 +1,20 @@
-"""Coverage for the index-DB session/repo overlap attributor (fallback tier)."""
+"""Coverage for the typed Polylogue session overlap attributor."""
 
 from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from lynchpin.sources.polylogue_client import _readonly_polylogue_connection
+from lynchpin.sources import polylogue_session_attribution
+from lynchpin.core.errors import SourceUnavailableError
 from lynchpin.sources.polylogue_session_attribution import (
     SessionRepoInterval,
+    _project_from_root_path,
     attribute_spans_by_session_overlap,
     session_repo_intervals,
 )
@@ -131,9 +135,20 @@ def _make_index_db(path: str) -> None:
     conn.close()
 
 
-def test_session_repo_intervals_reads_real_schema_shape(tmp_path):
+def test_session_repo_intervals_reads_facade_summaries(monkeypatch, tmp_path):
     db_path = str(tmp_path / "index.db")
-    _make_index_db(db_path)
+    polylogue_session_attribution._session_repo_intervals_cached.cache_clear()
+    (tmp_path / "index.db").touch()
+    calls = []
+    summaries = [
+        SimpleNamespace(id="claude-code-session:abc", working_directories=("/realm/project/sinity-lynchpin",), created_at=datetime.fromtimestamp(1_776_000_000, tz=timezone.utc), updated_at=datetime.fromtimestamp(1_776_003_600, tz=timezone.utc)),
+        SimpleNamespace(id="claude-code-session:def", working_directories=("/home/sinity/scratch",), created_at=datetime.fromtimestamp(1_776_000_000, tz=timezone.utc), updated_at=datetime.fromtimestamp(1_776_003_600, tz=timezone.utc)),
+        SimpleNamespace(id="claude-code-session:ghi", working_directories=("/realm/project/sinnix",), created_at=datetime.fromtimestamp(1_776_003_600, tz=timezone.utc), updated_at=datetime.fromtimestamp(1_776_000_000, tz=timezone.utc)),
+    ]
+    def list_summaries(*, limit):
+        calls.append(limit)
+        return summaries
+    monkeypatch.setattr(polylogue_session_attribution, "_polylogue_client", lambda: SimpleNamespace(list_summaries=list_summaries))
 
     intervals = session_repo_intervals(db_path)
 
@@ -145,16 +160,10 @@ def test_session_repo_intervals_reads_real_schema_shape(tmp_path):
             end=datetime.fromtimestamp(1_776_003_600_000 / 1000, tz=timezone.utc),
         ),
     )
+    assert intervals[0].provenance == "polylogue.session_summary.working_directories"
 
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT INTO sessions VALUES (?, ?, ?)",
-            ("claude-code-session:new", 1_776_000_000_000, 1_776_003_600_000),
-        )
-        conn.execute(
-            "INSERT INTO session_repos VALUES (?, ?)",
-            ("claude-code-session:new", "/realm/project/polylogue"),
-        )
+    summaries.append(SimpleNamespace(id="claude-code-session:new", working_directories=("/realm/project/polylogue",), created_at=datetime.fromtimestamp(1_776_000_000, tz=timezone.utc), updated_at=datetime.fromtimestamp(1_776_003_600, tz=timezone.utc)))
+    polylogue_session_attribution._session_repo_intervals_cached.cache_clear()
 
     assert {interval.session_id for interval in session_repo_intervals(db_path)} == {
         "claude-code-session:abc",
@@ -162,6 +171,95 @@ def test_session_repo_intervals_reads_real_schema_shape(tmp_path):
     }
     assert not (tmp_path / "index.db-wal").exists()
     assert not (tmp_path / "index.db-shm").exists()
+    assert calls == [1_000_000, 1_000_000]
+
+
+def test_project_from_root_path_resolves_repo_name_not_working_directory_basename():
+    # A session opened in a subdirectory of a checkout (e.g. sinnix/src)
+    # must still attribute to the checkout's own name, not the leaf
+    # component of whatever path the session happened to be working in.
+    assert _project_from_root_path("/realm/project/sinnix") == "sinnix"
+    assert _project_from_root_path("/realm/project/sinnix/src") == "sinnix"
+    assert _project_from_root_path("/realm/project/sinnix/src/lynchpin/sources") == "sinnix"
+    # An alias (checkout dirname differs from the canonical registry name)
+    # still resolves through the shared registry.
+    assert _project_from_root_path("/realm/project/lynchpin/src") == "sinity-lynchpin"
+    assert _project_from_root_path("/home/sinity/scratch") is None
+    assert _project_from_root_path("") is None
+    # A syntactically valid /realm/project/<name> path for a directory that
+    # isn't a real, registered repository must not be treated as one:
+    # Polylogue's own repository-edge writer requires a discoverable Git
+    # root or explicit remote before asserting that edge.
+    assert _project_from_root_path("/realm/project/fictional-directory") is None
+    # A directory that only starts with, or contains, a project's name is a
+    # different checkout, not that project.
+    assert _project_from_root_path("/realm/project/sinnix-unrelated") is None
+    assert _project_from_root_path("/realm/project/polylogue-not-a-repo/src") is None
+
+
+def test_session_spanning_two_checkouts_attributes_no_span(monkeypatch, tmp_path):
+    """Fails if a multi-checkout session yields an interval per checkout, so a
+    fully overlapping span is claimed by whichever directory came last."""
+    (tmp_path / "index.db").touch()
+    polylogue_session_attribution._session_repo_intervals_cached.cache_clear()
+    start = datetime.fromtimestamp(1_776_000_000, tz=timezone.utc)
+    end = datetime.fromtimestamp(1_776_003_600, tz=timezone.utc)
+    summaries = [
+        SimpleNamespace(
+            id="claude-code-session:both",
+            working_directories=("/realm/project/sinnix", "/realm/project/polylogue/src"),
+            created_at=start,
+            updated_at=end,
+        ),
+        SimpleNamespace(
+            id="claude-code-session:unregistered",
+            working_directories=("/realm/project/sinnix", "/realm/project/other-checkout"),
+            created_at=start,
+            updated_at=end,
+        ),
+        SimpleNamespace(
+            id="claude-code-session:outside",
+            working_directories=("/realm/project/sinnix", "/home/sinity/scratch"),
+            created_at=start,
+            updated_at=end,
+        ),
+        SimpleNamespace(
+            id="claude-code-session:same",
+            working_directories=("/realm/project/sinnix", "/realm/project/sinnix/modules"),
+            created_at=start,
+            updated_at=end,
+        ),
+    ]
+    monkeypatch.setattr(
+        polylogue_session_attribution,
+        "_polylogue_client",
+        lambda: SimpleNamespace(list_summaries=lambda *, limit: summaries),
+    )
+
+    intervals = session_repo_intervals(str(tmp_path / "index.db"))
+
+    assert [(interval.session_id, interval.project) for interval in intervals] == [
+        ("claude-code-session:same", "sinnix"),
+    ]
+    polylogue_session_attribution._session_repo_intervals_cached.cache_clear()
+
+
+def test_session_repo_intervals_reports_missing_archive(tmp_path):
+    with pytest.raises(SourceUnavailableError):
+        session_repo_intervals(str(tmp_path / "missing.db"))
+
+
+def test_session_repo_intervals_reports_unavailable_facade(monkeypatch, tmp_path):
+    path = tmp_path / "index.db"
+    path.touch()
+    def unavailable(*, limit):
+        raise RuntimeError("archive product missing")
+    monkeypatch.setattr(
+        polylogue_session_attribution, "_polylogue_client",
+        lambda: SimpleNamespace(list_summaries=unavailable),
+    )
+    with pytest.raises(SourceUnavailableError, match="archive product missing"):
+        session_repo_intervals(str(path))
 
 
 def test_polylogue_connection_refuses_writes_and_missing_file(tmp_path):

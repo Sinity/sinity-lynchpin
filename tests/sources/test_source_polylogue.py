@@ -1,7 +1,7 @@
 """Tests for the lynchpin Polylogue adapter contract."""
 
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 from lynchpin.core.parse import parse_datetime
@@ -38,6 +38,38 @@ def _ready_client(
         list_archive_coverage_insights=lambda query: [object()],
         list_session_work_event_insights=lambda query: [object()],
     )
+
+
+def test_coverage_bounds_uses_created_at_not_updated_at(monkeypatch):
+    # A session created early but updated later must still contribute its
+    # creation day to the bound (lynchpin regression: day-bucketed coverage
+    # keyed off sort_key_ms, which prefers updated_at_ms, silently dropped
+    # the creation day).
+    calls = []
+
+    def list_summaries(*, limit):
+        calls.append(limit)
+        return [
+            SimpleNamespace(created_at=datetime(2026, 4, 23, tzinfo=timezone.utc)),
+            SimpleNamespace(created_at=datetime(2026, 4, 21, tzinfo=timezone.utc), updated_at=datetime(2026, 5, 1, tzinfo=timezone.utc)),
+            SimpleNamespace(created_at=None),
+        ]
+    monkeypatch.setattr(polylogue, "_polylogue_client", lambda: SimpleNamespace(list_summaries=list_summaries))
+
+    bounds = polylogue.coverage_bounds()
+
+    assert bounds is not None
+    assert (bounds.first, bounds.last) == (date(2026, 4, 21), date(2026, 4, 23))
+    assert calls == [polylogue._SUMMARY_LIMIT]
+
+
+def test_coverage_bounds_reports_unavailable_product(monkeypatch, caplog):
+    def unavailable(*, limit):
+        raise RuntimeError("product absent")
+    monkeypatch.setattr(polylogue, "_polylogue_client", lambda: SimpleNamespace(list_summaries=unavailable))
+
+    assert polylogue.coverage_bounds() is None
+    assert "coverage unavailable" in caplog.text
 
 
 def test_iter_session_profiles_reloads_when_polylogue_db_changes(
