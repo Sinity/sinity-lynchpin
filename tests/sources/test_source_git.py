@@ -564,6 +564,26 @@ def test_human_coauthor_is_unmarked_not_human_only(tmp_path, monkeypatch):
     assert not hasattr(rows[0], "human_only")
 
 
+def test_coauthor_lookup_does_not_read_history_committed_before_the_window(tmp_path, monkeypatch):
+    # Anti-vacuity: without the scan's committer lower bound the trailer
+    # lookup reads every commit of the default ref, so the 2020 commit's
+    # trailer appears in the result.
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    trailer = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+    _commit_at(repo, "old.txt", f"feat: old\n\n{trailer}", "2020-01-01T12:00:00+00:00")
+    _commit_at(repo, "new.txt", f"feat: new\n\n{trailer}", "2026-01-02T12:00:00+00:00")
+    monkeypatch.setattr(git_source, "_repo_path", lambda _repo: repo)
+    day = logical_date(datetime.fromisoformat("2026-01-02T12:00:00+00:00"))
+
+    coauthors = git_source._fetch_coauthor_info("repo", day, day)
+
+    new_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert list(coauthors) == [new_sha]
+
+
 def test_explicit_non_repo_is_typed_unavailable(tmp_path):
     path = tmp_path / "missing"
     with pytest.raises(git_source.GitSourceError, match="not a Git worktree root"):

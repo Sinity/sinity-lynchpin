@@ -1099,10 +1099,14 @@ def _fetch_coauthor_info(repo: str, after: date, before: date) -> dict[str, list
     if ref is None:
         return {}
     # Collect trailers for the selected ref, then match only returned facts.
+    # The committer lower bound is the commit scan's own (see
+    # _iter_repo_commit_records): no returned fact was committed before it,
+    # and without it every call reads the repository's whole history.
     stdout = _run_git_checked(
         repo_path,
         [
             "log",
+            f"--since={(after - timedelta(days=1)).isoformat()}",
             "--format=%H%n%b%n---END---",
             ref,
         ],
