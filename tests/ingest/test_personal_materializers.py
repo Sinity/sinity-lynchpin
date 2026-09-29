@@ -63,10 +63,10 @@ def test_materialize_bookmarks_reads_chromium_and_firefox(monkeypatch, tmp_path)
     con.executescript(
         """
         create table moz_places(id integer primary key, url text, title text);
-        create table moz_bookmarks(id integer primary key, fk integer, type integer, parent integer, title text, dateAdded integer);
+        create table moz_bookmarks(id integer primary key, guid text, fk integer, type integer, parent integer, title text, dateAdded integer);
         insert into moz_places values(1, 'https://mozilla.org/', 'Mozilla');
-        insert into moz_bookmarks values(10, null, 2, 0, 'menu', 0);
-        insert into moz_bookmarks values(11, 1, 1, 10, 'Mozilla', 1624545525000000);
+        insert into moz_bookmarks values(10, 'menu________', null, 2, 0, 'menu', 0);
+        insert into moz_bookmarks values(11, 'mozillaGuid1', 1, 1, 10, 'Mozilla', 1624545525000000);
         """
     )
     con.close()
@@ -132,6 +132,113 @@ def test_bookmark_native_identity_and_occurrences_survive_replay(monkeypatch, tm
     assert all(row["source_path"] and row["bookmark_id"] for row in rows)
 
 
+def _chromium_bookmarks(*nodes: dict) -> str:
+    return json.dumps({"roots": {"bookmark_bar": {"type": "folder", "name": "Bookmarks bar", "children": list(nodes)}}})
+
+
+def _firefox_places_db(path, *, guid: str, url: str, added: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(path)
+    con.executescript(
+        """
+        create table moz_places(id integer primary key, url text, title text);
+        create table moz_bookmarks(id integer primary key, guid text, fk integer, type integer, parent integer, title text, dateAdded integer);
+        insert into moz_bookmarks values(2, 'menu________', null, 2, 0, 'menu', 0);
+        """
+    )
+    con.execute("insert into moz_places values(1, ?, 'Synthetic')", (url,))
+    con.execute("insert into moz_bookmarks values(7, ?, 1, 1, 2, 'Synthetic', ?)", (guid, added))
+    con.commit()
+    con.close()
+
+
+def _firefox_backup(path, *, guid: str, url: str, added: int) -> None:
+    import lz4.block
+
+    payload = {"guid": "root________", "title": "", "children": [
+        {"guid": "menu________", "title": "menu", "children": [
+            {"guid": guid, "title": "Synthetic", "uri": url, "dateAdded": added},
+        ]},
+    ]}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"mozLz40\0" + lz4.block.compress(json.dumps(payload).encode()))
+
+
+def test_repeated_copies_of_one_profile_collapse_to_one_occurrence(monkeypatch, tmp_path):
+    # Anti-vacuity: fails (5 rows instead of 2) if the occurrence identity
+    # includes the file it was read from, or if a Firefox backup's profile is
+    # taken to be its ``bookmarkbackups`` directory.
+    root = tmp_path / "exports"
+    chrome = root / "profile-a"
+    chrome.mkdir(parents=True)
+    node = {"type": "url", "id": "5", "guid": "chrome-guid-5", "name": "Same", "url": "https://copy.example/a", "date_added": "13228166792370662"}
+    (chrome / "Bookmarks").write_text(_chromium_bookmarks(node))
+    (chrome / "Bookmarks.bak").write_text(_chromium_bookmarks(node))
+    firefox = root / "ff-profile"
+    _firefox_places_db(firefox / "places.sqlite", guid="ff-guid-7", url="https://copy.example/b", added=1624545525000000)
+    for name in ("bookmarks-2026-01-01_1_a.jsonlz4", "bookmarks-2026-01-02_1_b.jsonlz4"):
+        _firefox_backup(firefox / "bookmarkbackups" / name, guid="ff-guid-7", url="https://copy.example/b", added=1624545525000000)
+    monkeypatch.setattr("lynchpin.ingest.bookmarks_materialize.discover_profile_history_dbs", lambda: [])
+
+    manifest = materialize_bookmarks(root=root)
+    rows = list(iter_bookmarks(root / "processed/bookmarks.ndjson"))
+
+    assert manifest["input_file_count"] == 5
+    assert manifest["row_count"] == 2
+    assert sorted((row.browser, row.profile, row.url) for row in rows) == [
+        ("chrome", "profile-a", "https://copy.example/a"),
+        ("firefox", "ff-profile", "https://copy.example/b"),
+    ]
+
+
+def test_daily_bookmark_activity_counts_an_addition_once_across_occurrences(monkeypatch, tmp_path):
+    # Anti-vacuity: fails (bookmark_count 2) if daily activity counts
+    # occurrence rows instead of bookmarking acts.
+    from lynchpin.sources.bookmarks import daily_bookmark_activity
+
+    root = tmp_path / "exports"
+    node = {"type": "url", "id": "3", "name": "Imported", "url": "https://import.example/", "date_added": "13228166792370662"}
+    for browser in ("chrome-profile", "edge-profile"):
+        (root / browser).mkdir(parents=True)
+        (root / browser / "Bookmarks").write_text(_chromium_bookmarks(node))
+    target = root / "processed/bookmarks.ndjson"
+    monkeypatch.setattr("lynchpin.ingest.bookmarks_materialize.discover_profile_history_dbs", lambda: [])
+    monkeypatch.setattr("lynchpin.sources.bookmarks.bookmarks_path", lambda root=None: target)
+
+    assert materialize_bookmarks(root=root)["row_count"] == 2
+    [day] = daily_bookmark_activity(start=date(2020, 1, 1), end=date(2030, 1, 1), ensure=False)
+    assert (day.bookmark_count, day.domain_count, day.top_domain) == (1, 1, "import.example")
+
+
+def test_unreadable_archived_export_is_recorded_without_blocking_the_product(monkeypatch, tmp_path):
+    # Anti-vacuity: fails with MaterializationError if an unreadable archived
+    # export aborts the build, and fails the manifest assertion if it is
+    # skipped without being recorded.
+    root = tmp_path / "exports"
+    good = root / "profile-a" / "Bookmarks"
+    good.parent.mkdir(parents=True)
+    good.write_text(_chromium_bookmarks({"type": "url", "id": "1", "name": "Kept", "url": "https://kept.example/", "date_added": "13228166792370662"}))
+    corrupt_json = root / "profile-b" / "Bookmarks"
+    corrupt_json.parent.mkdir()
+    corrupt_json.write_text("{")
+    rootless = root / "profile-c" / "Bookmarks"
+    rootless.parent.mkdir()
+    rootless.write_text("[]")
+    corrupt_lz4 = root / "ff" / "bookmarkbackups" / "bookmarks-2026-01-01_1_x.jsonlz4"
+    corrupt_lz4.parent.mkdir(parents=True)
+    corrupt_lz4.write_bytes(b"mozLz40\0not-an-lz4-block")
+    monkeypatch.setattr("lynchpin.ingest.bookmarks_materialize.discover_profile_history_dbs", lambda: [])
+
+    manifest = materialize_bookmarks(root=root)
+
+    assert manifest["row_count"] == 1
+    assert [row.url for row in iter_bookmarks(root / "processed/bookmarks.ndjson")] == ["https://kept.example/"]
+    assert sorted(item["path"] for item in manifest["unreadable_input_files"]) == sorted(
+        str(path) for path in (corrupt_json, rootless, corrupt_lz4)
+    )
+    assert all(item["error"].split(":", 1)[0] in {"JSONDecodeError", "ValueError"} for item in manifest["unreadable_input_files"])
+
+
 def test_discover_bookmark_files_finds_supported_names_once(tmp_path):
     root = tmp_path / "bookmarks"
     nested = root / "profile"
@@ -165,14 +272,16 @@ def test_active_profile_bookmark_is_queryable_and_unreadable_snapshot_refuses(mo
     active.write_text(json.dumps({"roots": {"bookmark_bar": {"type": "folder", "children": [
         {"type": "url", "id": "41", "name": "Native title", "url": "https://active.example/a#fragment", "date_added": "13228166792370662"}
     ]}}}))
-    monkeypatch.setattr("lynchpin.ingest.bookmarks_materialize.discover_profile_history_dbs", lambda: [(history, "chrome/Default")])
+    monkeypatch.setattr("lynchpin.ingest.bookmarks_materialize.discover_profile_history_dbs", lambda: [(history, "chrome")])
     target = root / "processed/bookmarks.ndjson"
     monkeypatch.setattr("lynchpin.sources.bookmarks.bookmarks_path", lambda root=None: target)
     monkeypatch.setattr(personal, "_ensure_source_materialized_for_read", lambda _name: {"status": "ready"})
     assert materialize_bookmarks(root=root)["row_count"] == 1
     row = personal.bookmarks_search(source="browser")["rows"][0]
+    # The profile is the live-profile label, not the shared "Default"
+    # directory name every browser's default profile has.
     assert (row["source"], row["url"], row["title"], row["folder"], row["profile"]) == (
-        "active_chromium_bookmarks", "https://active.example/a#fragment", "Native title", "bookmark_bar", "Default"
+        "active_chromium_bookmarks", "https://active.example/a#fragment", "Native title", "bookmark_bar", "chrome"
     )
     original = target.read_bytes()
     active.write_text("{")

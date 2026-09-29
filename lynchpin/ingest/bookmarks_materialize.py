@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import html.parser
 import json
+import logging
 import os
 import sqlite3
 import sys
@@ -23,9 +24,11 @@ from ..sources.chrome_profile import discover_profile_history_dbs
 from ..sources.web import normalize_url
 from ._manifest import atomic_write_ndjson, write_manifest
 
+logger = logging.getLogger(__name__)
+
 _WEBKIT_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
 _BOOKMARK_SQL = """
-    SELECT b.id, b.title, b.dateAdded, p.url, parent.title
+    SELECT b.id, b.guid, b.title, b.dateAdded, p.url, parent.title
     FROM moz_bookmarks b
     JOIN moz_places p ON b.fk = p.id
     LEFT JOIN moz_bookmarks parent ON b.parent = parent.id
@@ -41,7 +44,8 @@ def materialize_bookmarks(*, root: Path | None = None, output: Path | None = Non
     output = output or bookmarks_path(root)
     raw_roots = _bookmark_roots(root)
     input_files = _discover_bookmark_files(raw_roots)
-    rows = list(_dedupe(_iter_all_bookmarks(input_files)))
+    unreadable: list[dict[str, str]] = []
+    rows = list(_dedupe(_iter_all_bookmarks(input_files, unreadable=unreadable)))
     rows.sort(key=lambda row: (row.added_at or datetime.min.replace(tzinfo=timezone.utc), row.url, row.source_path, row.bookmark_id))
     output.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_ndjson(
@@ -69,6 +73,7 @@ def materialize_bookmarks(*, root: Path | None = None, output: Path | None = Non
         "input_files": [str(path) for path in input_files],
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
+        "unreadable_input_files": unreadable,
     }
     write_manifest(bookmarks_manifest_path(root), manifest)
     return manifest
@@ -117,34 +122,52 @@ def _is_bookmark_file(name: str) -> bool:
     )
 
 
-def _iter_all_bookmarks(paths: list[Path]) -> Iterator[BookmarkEvent]:
-    active_paths = {history.parent / "Bookmarks" for history, _ in discover_profile_history_dbs()}
+def _iter_all_bookmarks(paths: list[Path], *, unreadable: list[dict[str, str]]) -> Iterator[BookmarkEvent]:
+    """Yield every readable file's bookmarks; record each unreadable one.
+
+    An active profile is the current state of a live browser, so an
+    unreadable one refuses the build: publishing without it would read as
+    deletions. An archived export is one historical observation among many,
+    so it is recorded in ``unreadable`` (published as the manifest's
+    ``unreadable_input_files``) and the rest of the product is built. Each
+    file is parsed completely before any of its rows are yielded, so a file
+    that fails midway contributes nothing rather than a partial tree.
+    """
+    # An active profile is named by its live-profile label (``chrome-ws``,
+    # ``chrome-ws/Profile 1``), as its history is, rather than by its
+    # directory name, which every browser's default profile shares.
+    active_labels = {history.parent / "Bookmarks": label for history, label in discover_profile_history_dbs()}
     for path in paths:
         lower = path.name.lower()
+        active_label = active_labels.get(path)
+        active = active_label is not None
         try:
             if lower == "places.sqlite":
-                yield from _firefox_places(path)
+                rows = list(_firefox_places(path))
             elif lower.endswith(".jsonlz4"):
-                yield from _firefox_backup(path)
+                rows = list(_firefox_backup(path))
             elif lower == "bookmarks.html":
-                yield from _bookmarks_html(path)
+                rows = list(_bookmarks_html(path))
             else:
-                yield from _chromium_json(path, active=path in active_paths)
-        except (OSError, sqlite3.Error, json.JSONDecodeError, UnicodeDecodeError) as exc:
-            if path in active_paths:
+                rows = list(_chromium_json(path, active_label=active_label))
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            if active:
                 raise MaterializationError("browser_bookmarks", reason=f"active profile bookmarks unreadable: {path}") from exc
-            raise MaterializationError("browser_bookmarks", reason=f"bookmark export unreadable: {path}") from exc
+            logger.warning("browser_bookmarks: skipping unreadable export %s: %s", path, exc)
+            unreadable.append({"path": str(path), "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        yield from rows
 
 
-def _chromium_json(path: Path, *, active: bool = False) -> Iterator[BookmarkEvent]:
+def _chromium_json(path: Path, *, active_label: str | None = None) -> Iterator[BookmarkEvent]:
     payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    roots = payload.get("roots")
+    roots = payload.get("roots") if isinstance(payload, dict) else None
     if not isinstance(roots, dict):
-        raise MaterializationError("browser_bookmarks", reason=f"bookmark roots missing: {path}")
+        raise ValueError(f"bookmark roots missing: {path}")
     browser = _browser_from_path(path)
-    profile = _profile_from_path(path)
+    profile = active_label or _profile_from_path(path)
     for name, node in roots.items():
-        yield from _chromium_node(browser, profile, str(name), node, path, active=active)
+        yield from _chromium_node(browser, profile, str(name), node, path, active=active_label is not None)
 
 
 def _chromium_node(browser: str, profile: str, folder: str, node: object, path: Path, *, active: bool = False) -> Iterator[BookmarkEvent]:
@@ -160,7 +183,7 @@ def _chromium_node(browser: str, profile: str, folder: str, node: object, path: 
             added_at=_chrome_time(node.get("date_added")),
             source_path=path,
             source="active_chromium_bookmarks" if active else "chromium_bookmarks",
-            native_id=str(node.get("id") or ""),
+            native_id=str(node.get("guid") or node.get("id") or ""),
         )
         return
     children = node.get("children")
@@ -175,7 +198,7 @@ def _chromium_node(browser: str, profile: str, folder: str, node: object, path: 
 def _firefox_places(path: Path) -> Iterator[BookmarkEvent]:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
-        for bookmark_id, title, date_added, url, folder in conn.execute(_BOOKMARK_SQL):
+        for bookmark_id, guid, title, date_added, url, folder in conn.execute(_BOOKMARK_SQL):
             yield _event(
                 browser="firefox",
                 profile=_profile_from_path(path),
@@ -185,7 +208,7 @@ def _firefox_places(path: Path) -> Iterator[BookmarkEvent]:
                 added_at=_unix_micros(date_added),
                 source_path=path,
                 source=f"firefox_places:{bookmark_id}",
-                native_id=str(bookmark_id),
+                native_id=str(guid or ""),
             )
     finally:
         conn.close()
@@ -193,12 +216,15 @@ def _firefox_places(path: Path) -> Iterator[BookmarkEvent]:
 
 def _firefox_backup(path: Path) -> Iterator[BookmarkEvent]:
     raw = path.read_bytes()
-    try:
-        import lz4.block
-    except ImportError:
-        return
     if raw.startswith(b"mozLz40\0"):
-        raw = lz4.block.decompress(raw[8:])
+        try:
+            import lz4.block
+        except ImportError as exc:
+            raise ValueError(f"lz4 is required to read {path}") from exc
+        try:
+            raw = lz4.block.decompress(raw[8:])
+        except lz4.block.LZ4BlockError as exc:
+            raise ValueError(f"corrupt mozLz4 block: {path}") from exc
     payload = json.loads(raw.decode("utf-8", errors="replace"))
     yield from _firefox_backup_node(_profile_from_path(path), "", payload, path)
 
@@ -265,6 +291,7 @@ def _bookmarks_html(path: Path) -> Iterator[BookmarkEvent]:
 
 
 def _dedupe(rows: Iterator[BookmarkEvent]) -> Iterator[BookmarkEvent]:
+    """Keep the first observation of each bookmark occurrence (``bookmark_id``)."""
     seen: set[str] = set()
     for row in rows:
         if not row.url:
@@ -293,7 +320,17 @@ def _event(
         domain = (urlparse(url).hostname or "").lower()
     except ValueError:
         domain = ""
-    identity = (source, str(source_path), browser, profile, folder, native_id or f"{url}\0{title}\0{added_at}", url)
+    # Occurrence identity: one bookmark object in one browser profile. The
+    # file it was read from is not part of it, so repeated copies of one
+    # profile (Bookmarks and Bookmarks.bak, successive Firefox backups, a
+    # backup beside places.sqlite) collapse, while the same URL in another
+    # folder, profile, or browser stays a distinct occurrence. The native
+    # GUID identifies the object where the format has one; otherwise its
+    # folder, exact URL, title, and added time do.
+    if native_id:
+        identity: tuple[str, ...] = ("native", browser, profile, native_id, url)
+    else:
+        identity = ("observed", browser, profile, folder, url, title, added_at.isoformat() if added_at else "")
     digest = hashlib.sha1(json.dumps(identity, ensure_ascii=False).encode("utf-8")).hexdigest()
     caveats = () if added_at else ("missing_added_at",)
     return BookmarkEvent(
@@ -361,6 +398,9 @@ def _profile_from_path(path: Path) -> str:
             idx = parts.index(marker)
             if idx + 1 < len(parts):
                 return parts[idx + 1]
+    # Firefox keeps its JSON backups in <profile>/bookmarkbackups/.
+    if path.parent.name == "bookmarkbackups":
+        return path.parent.parent.name
     return path.parent.name
 
 

@@ -12,7 +12,7 @@ from typing import Any
 
 from lynchpin.core.io import save_json
 from lynchpin.core.primitives import logical_date
-from lynchpin.sources.bookmarks import BookmarkEvent, iter_bookmarks
+from lynchpin.sources.bookmarks import BookmarkEvent, distinct_additions, iter_bookmarks
 from lynchpin.sources.google_takeout_products import GoogleTakeoutEvent, iter_events
 
 
@@ -127,7 +127,7 @@ def _add_bookmark_evidence(
 ) -> None:
     try:
         rows = events if events is not None else iter_bookmarks(start=start, end=end)
-        for event in rows:
+        for event in distinct_additions(rows):
             if event.added_at is None:
                 continue
             day = logical_date(event.added_at)
