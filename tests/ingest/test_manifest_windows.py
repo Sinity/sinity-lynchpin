@@ -148,3 +148,47 @@ def test_merge_manifest_covered_dates_skips_verification_without_bounds(tmp_path
 
     assert date(2010, 1, 1) in result
     assert date(2026, 7, 12) in result
+
+
+def test_merge_manifest_covered_dates_keeps_empty_days_only_for_matching_input(tmp_path) -> None:
+    manifest = tmp_path / "manifest.json"
+    previous = [{"path": "source", "stat": [1]}]
+    manifest.write_text(json.dumps({
+        "covered_dates": ["2026-01-01", "2026-01-02", "2026-01-03"],
+        "input_versions": previous,
+    }), encoding="utf-8")
+
+    kwargs = dict(
+        manifest=manifest, start=date(2026, 1, 2), end=date(2026, 1, 3),
+        verified_bounds=(date(2026, 1, 2), date(2026, 1, 2)),
+    )
+    assert merge_manifest_covered_dates(**kwargs, input_versions=previous) == (
+        date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3),
+    )
+    assert merge_manifest_covered_dates(**kwargs, input_versions=[{"path": "source", "stat": [2]}]) == (
+        date(2026, 1, 2),
+    )
+
+
+def test_merge_manifest_covered_dates_drops_stale_days_when_input_changed_and_nothing_observed(tmp_path) -> None:
+    # A sparse refresh that observes zero rows (verified_bounds=None) cannot
+    # establish any bound to clip stale coverage against. If the input also
+    # changed, the old manifest's carried-forward days are unverifiable and
+    # must not be silently kept forever (lynchpin regression: a changed
+    # input with zero observed rows retained 2026-01-01 and 2026-01-03
+    # despite only 2026-01-02 being scanned).
+    manifest = tmp_path / "manifest.json"
+    previous = [{"path": "source", "stat": [1]}]
+    manifest.write_text(json.dumps({
+        "covered_dates": ["2026-01-01", "2026-01-02", "2026-01-03"],
+        "input_versions": previous,
+    }), encoding="utf-8")
+
+    result = merge_manifest_covered_dates(
+        manifest=manifest,
+        start=date(2026, 1, 2),
+        end=date(2026, 1, 3),
+        verified_bounds=None,
+        input_versions=[{"path": "source", "stat": [2]}],
+    )
+    assert result == (date(2026, 1, 2),)

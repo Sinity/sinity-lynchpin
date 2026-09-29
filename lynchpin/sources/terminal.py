@@ -134,20 +134,23 @@ def commands(
 
         ensure_materialized("atuin", window=_datetime_window(start, end))
     path = canonical_atuin_history_path()
-    if not path.exists():
-        raise FileNotFoundError(
-            f"canonical Atuin materialization is missing: {path}. "
-            "Run python -m lynchpin.ingest.terminal_materialize."
-        )
+    from ..ingest._manifest import product_lock
+
     start_cmp = as_local(start) if start else None
     end_cmp = as_local(end) if end else None
-    for command in _commands_from_ndjson(path):
-        timestamp = as_local(command.timestamp)
-        if start_cmp and timestamp < start_cmp:
-            continue
-        if end_cmp and timestamp >= end_cmp:
-            continue
-        yield command
+    with product_lock(path, exclusive=False):
+        if not path.exists():
+            raise FileNotFoundError(
+                f"canonical Atuin materialization is missing: {path}. "
+                "Run python -m lynchpin.ingest.terminal_materialize."
+            )
+        for command in _commands_from_ndjson(path):
+            timestamp = as_local(command.timestamp)
+            if start_cmp and timestamp < start_cmp:
+                continue
+            if end_cmp and timestamp >= end_cmp:
+                continue
+            yield command
 
 
 def canonical_atuin_history_path() -> Path:
@@ -172,8 +175,13 @@ def commands_from_atuin_db(
     start: datetime | None = None,
     end: datetime | None = None,
 ) -> Iterator[AtuinCommand]:
-    """Yield shell commands directly from an Atuin SQLite DB for materializers."""
-    with contextlib.closing(sqlite3.connect(str(db))) as conn:
+    """Yield shell commands directly from an Atuin SQLite DB for materializers.
+
+    The connection is read-only. A read-write connection that closes last
+    checkpoints and deletes the WAL Atuin leaves behind, so the reader would
+    change the very input version the materializer checks around the scan.
+    """
+    with contextlib.closing(sqlite3.connect(f"{Path(db).resolve().as_uri()}?mode=ro", uri=True)) as conn:
         unit = _detect_unit(conn)
         query = "SELECT timestamp, duration, exit, cwd, command FROM history"
         params: list[int] = []

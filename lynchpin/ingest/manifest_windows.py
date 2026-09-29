@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 
 def half_open_dates(start: date, end: date) -> tuple[date, ...]:
@@ -40,24 +40,24 @@ def merge_manifest_covered_dates(
     observed_dates: Iterable[date] = (),
     fallback_to_bounds: bool = True,
     verified_bounds: tuple[date, date] | None = None,
+    input_versions: list[dict[str, Any]] | None = None,
 ) -> tuple[date, ...]:
     """Merge a manifest's recorded ``covered_dates`` with this run's window.
 
-    ``verified_bounds`` is the cheap corruption guard: pass the
+    ``verified_bounds`` is a cheap corruption guard when the input version
+    changed or the previous manifest has no matching input version. Pass the
     ``(min, max)`` logical-date span actually present in the full row set
     this run just wrote (kept rows outside the window plus newly observed
     rows inside it) whenever the caller has that in hand -- which every
     materializer that rewrites its full canonical file already does. Any
-    carried-forward date from a *previous* run that falls outside that span
-    is dropped instead of being silently re-affirmed forever.
+    carried-forward date from an unverified prior input that falls outside
+    that span is dropped instead of being silently re-affirmed forever.
 
     This does not re-validate every historical day (that would mean
     re-scanning the full source on every run); it only enforces that no
-    claimed coverage can extend further than the true min/max of data this
-    run can currently see. A day inside the span with no backing row is
-    still trusted as "scanned, found nothing" -- only claims *outside* the
-    span (e.g. a decade-old placeholder date with zero real events behind
-    it, see lynchpin-jzb) get purged.
+    claimed coverage from an older input can extend further than the true
+    min/max of data this run can currently see. For an unchanged input,
+    previously scanned empty days remain valid even outside the row bounds.
     """
     existing = {
         day
@@ -70,11 +70,27 @@ def merge_manifest_covered_dates(
             for day in _manifest_bound_dates(manifest)
             if not (start <= day < end)
         )
-    if verified_bounds is not None:
+    # A successful scan's empty days remain evidence while the input snapshot
+    # that established them is unchanged. Older manifests without versions (or
+    # a changed input) cannot establish that provenance outside observed rows.
+    same_input = input_versions is not None and _read_manifest(manifest).get("input_versions") == input_versions
+    if verified_bounds is not None and not same_input:
+        # A live append-only input (Atuin's history DB and its WAL) changes
+        # version on every new record, so a changed input must not discard
+        # history: that would uncover every past window on each tail refresh
+        # and coverage would never converge. Days inside the span of rows this
+        # run holds stay covered; claims beyond it are dropped.
         lower, upper = verified_bounds
         if lower > upper:
             lower, upper = upper, lower
         existing = {day for day in existing if lower <= day <= upper}
+    elif verified_bounds is None and input_versions is not None and not same_input:
+        # The caller opted into input-version verification but observed no
+        # rows at all this run, so there is no bound to clip stale coverage
+        # against. With the input also changed, nothing carried forward from
+        # the old manifest can still be trusted, so drop it rather than
+        # silently re-affirming a stale claim forever.
+        existing = set()
     existing.update(day for day in observed_dates if not (start <= day < end))
     existing.update(half_open_dates(start, end))
     return tuple(sorted(existing))

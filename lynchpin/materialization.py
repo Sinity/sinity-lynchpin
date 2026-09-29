@@ -2162,6 +2162,13 @@ def _activity_content_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 def _atuin_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     path = canonical_atuin_history_path()
+    from .ingest._manifest import product_lock
+
+    with product_lock(path, exclusive=False):
+        return _atuin_dataset_snapshot(cfg, path)
+
+
+def _atuin_dataset_snapshot(cfg: LynchpinConfig, path: Path) -> MaterializedDataset:
     manifest = path.with_suffix(".manifest.json")
     meta = _load_json(manifest)
     input_files = atuin_input_files(cfg)

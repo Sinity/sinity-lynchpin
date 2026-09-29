@@ -30,6 +30,23 @@ _SHRINK_GUARD_THRESHOLD = 0.5
 _FICLONE = 0x40049409
 
 
+@contextmanager
+def product_lock(path: Path, *, exclusive: bool = True) -> Iterator[None]:
+    """Serialize a product's read/merge/write transaction and paired readers."""
+    lock_path = path.with_name(f".{path.name}.lock")
+    if exclusive:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    elif not lock_path.parent.exists():
+        yield
+        return
+    with lock_path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _open_temp(path: Path) -> tuple[int, Path]:
     """Create a uniquely named temp file beside *path* with normal umask."""
     while True:
