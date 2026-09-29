@@ -93,7 +93,10 @@ def input_versions(paths: Iterable[Path]) -> list[dict[str, Any]]:
     for path in sorted(paths, key=str):
         item: dict[str, Any] = {"path": str(path), "stat": _file_version(path)}
         if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
-            item["wal_stat"] = _file_version(Path(f"{path}-wal"))
+            wal = _file_version(Path(f"{path}-wal"))
+            # A zero-length WAL holds no frames: it is the same database state
+            # as no WAL, and a read-only reader may create one on open.
+            item["wal_stat"] = wal if wal is not None and wal[2] > 0 else None
         versions.append(item)
     return versions
 

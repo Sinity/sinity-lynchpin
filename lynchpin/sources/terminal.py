@@ -175,8 +175,13 @@ def commands_from_atuin_db(
     start: datetime | None = None,
     end: datetime | None = None,
 ) -> Iterator[AtuinCommand]:
-    """Yield shell commands directly from an Atuin SQLite DB for materializers."""
-    with contextlib.closing(sqlite3.connect(str(db))) as conn:
+    """Yield shell commands directly from an Atuin SQLite DB for materializers.
+
+    The connection is read-only. A read-write connection that closes last
+    checkpoints and deletes the WAL Atuin leaves behind, so the reader would
+    change the very input version the materializer checks around the scan.
+    """
+    with contextlib.closing(sqlite3.connect(f"{Path(db).resolve().as_uri()}?mode=ro", uri=True)) as conn:
         unit = _detect_unit(conn)
         query = "SELECT timestamp, duration, exit, cwd, command FROM history"
         params: list[int] = []

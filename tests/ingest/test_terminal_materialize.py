@@ -310,3 +310,63 @@ def test_materialize_atuin_history_merges_requested_window(monkeypatch, tmp_path
     assert manifest["covered_dates"] == ["2026-06-05", "2026-06-06", "2026-06-07"]
     assert manifest["window_start"] == "2026-06-06"
     assert manifest["window_end"] == "2026-06-07"
+
+
+def _atuin_db(path, stamps):
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA wal_autocheckpoint=0")
+    conn.execute("CREATE TABLE history (timestamp INTEGER, duration INTEGER, exit INTEGER, cwd TEXT, command TEXT)")
+    for index, stamp in enumerate(stamps):
+        conn.execute(
+            "INSERT INTO history VALUES (?, 1, 0, '/repo', ?)",
+            (int(stamp.timestamp() * 1_000_000_000), f"command-{index}"),
+        )
+    conn.commit()
+    return conn
+
+
+def test_atuin_refresh_over_a_leftover_wal_reads_it_without_changing_the_input(monkeypatch, tmp_path):
+    """Fails if the reader checkpoints the WAL: a read-write connection closing
+    last deletes the leftover WAL, so the scan changes its own input version and
+    the first refresh after shell activity raises 'input changed during scan'."""
+    import shutil
+
+    from lynchpin.ingest import terminal_materialize
+
+    live = tmp_path / "live.db"
+    writer = _atuin_db(live, [datetime(2026, 1, 2, 10, tzinfo=timezone.utc)])
+    db = tmp_path / "history.db"
+    shutil.copyfile(live, db)
+    shutil.copyfile(f"{live}-wal", f"{db}-wal")
+    writer.close()
+    wal = tmp_path / "history.db-wal"
+    wal_before = wal.stat()
+    assert wal_before.st_size > 0
+
+    monkeypatch.setattr(terminal_materialize, "get_config", lambda: SimpleNamespace(atuin_db=db))
+    result = terminal_materialize.materialize_atuin_history(
+        output=tmp_path / "history.ndjson", start=date(2026, 1, 1), end=date(2026, 1, 4),
+    )
+
+    assert result["covered_dates"] == ["2026-01-01", "2026-01-02", "2026-01-03"]
+    assert (tmp_path / "history.ndjson").read_text(encoding="utf-8").count("command-0") == 1
+    assert wal.exists() and wal.stat().st_mtime_ns == wal_before.st_mtime_ns
+
+
+def test_atuin_refresh_of_a_checkpointed_wal_database_is_stable(monkeypatch, tmp_path):
+    """Fails if an empty WAL a read-only open creates counts as changed input."""
+    from lynchpin.ingest import terminal_materialize
+
+    db = tmp_path / "history.db"
+    _atuin_db(db, [datetime(2026, 1, 2, 10, tzinfo=timezone.utc)]).close()
+    assert not (tmp_path / "history.db-wal").exists()
+
+    monkeypatch.setattr(terminal_materialize, "get_config", lambda: SimpleNamespace(atuin_db=db))
+    result = terminal_materialize.materialize_atuin_history(
+        output=tmp_path / "history.ndjson", start=date(2026, 1, 1), end=date(2026, 1, 4),
+    )
+
+    assert result["covered_dates"] == ["2026-01-01", "2026-01-02", "2026-01-03"]
