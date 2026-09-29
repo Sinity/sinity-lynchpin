@@ -157,7 +157,6 @@ def test_outlook_correspondent_stats_passes_bounds_to_iter_emails(monkeypatch) -
 
 
 def test_outlook_iter_emails_filters_csv_fallback_before_sorting(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(outlook, "_ensure_extracted", lambda: tmp_path)
     csv_rows = [
         outlook.OutlookEmail(
             message_id="1",

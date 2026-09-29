@@ -1,11 +1,9 @@
-"""Outlook PST work email source — historical workplace period.
+"""Outlook CSV work email source — historical workplace period.
 
-Data: /realm/accounts/outlook/historical/jbr/raw/
-      (inbox_backup.pst, sent_backup.pst, deleted_backup.pst)
-
-Uses libpst (readpst) to extract PST to mbox, then Python's mailbox
-module to parse. The first run extracts PST → /tmp/outlook_extract/;
-subsequent runs reuse the cached mbox files.
+The existing Outlook CSV exports provide the dated inbox/sent events used by
+Lynchpin's daily activity and communications products. PST extraction is not
+supported: no current consumer requires PST-only evidence, and the historical
+readpst route did not establish complete mailbox coverage.
 
 The operator's name and address are loaded from an optional external
 config (see _load_operator_identity) rather than hardcoded, same
@@ -18,9 +16,7 @@ from __future__ import annotations
 import csv
 import email.utils
 import json
-import mailbox
 import re
-import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
@@ -34,7 +30,6 @@ from typing import Iterator, Optional
 from ..core.errors import SourceUnavailableError
 
 PST_ROOT = Path("/realm/accounts/outlook/historical/jbr/raw")
-MBOX_CACHE = Path("/tmp/outlook_extract/Plik danych programu Outlook")
 
 
 def _load_operator_identity() -> tuple[str, str]:
@@ -83,30 +78,6 @@ class OutlookDayActivity:
     unique_correspondents: int
 
 
-def _ensure_extracted() -> Path:
-    """Extract PST files if not already cached. Returns mbox cache root."""
-    if MBOX_CACHE.exists() and any(MBOX_CACHE.rglob("mbox")):
-        return MBOX_CACHE
-
-    MBOX_CACHE.mkdir(parents=True, exist_ok=True)
-
-    for pst_name, folder in [
-        ("inbox_backup.pst", "Skrzynka odbiorcza"),
-        ("sent_backup.pst", "Elementy wysłane"),
-    ]:
-        pst_path = PST_ROOT / pst_name
-        if not pst_path.exists():
-            continue
-        subprocess.run(
-            ["nix-shell", "-p", "libpst", "--command",
-             f"readpst -o {MBOX_CACHE} -r {pst_path}"],
-            capture_output=True,
-            timeout=60,
-        )
-
-    return MBOX_CACHE
-
-
 def _parse_date(s: str) -> Optional[datetime]:
     """Parse an RFC 2822 date string to UTC datetime."""
     try:
@@ -125,102 +96,14 @@ def iter_emails(
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
 ) -> Iterator[OutlookEmail]:
-    """Iterate all work emails from extracted PST files.
+    """Iterate dated work email events from Outlook CSV exports.
 
     Yields in chronological order. Filters by start/end if provided.
     """
-    try:
-        cache = _ensure_extracted()
-    except Exception:
-        return
-
-    emails = []
-    for folder_name in ("Skrzynka odbiorcza", "Elementy wysłane"):
-        mbox_path = cache / folder_name / "mbox"
-        if not mbox_path.exists():
-            continue
-        folder_label = "inbox" if "odbiorcza" in folder_name.lower() else "sent"
-
-        mbox = mailbox.mbox(str(mbox_path))
-        for key, msg in mbox.items():
-            try:
-                date_str = msg.get("Date", "")
-                date = _parse_date(date_str)
-                if date is None:
-                    continue
-                if start and date < start:
-                    continue
-                if end and date > end:
-                    continue
-
-                subject_raw = msg.get("Subject", "")
-                # Decode RFC 2047 encoded headers
-                subject = ""
-                for part, charset in email.header.decode_header(subject_raw):
-                    if isinstance(part, bytes):
-                        try:
-                            subject += part.decode(charset or "utf-8", errors="replace")
-                        except Exception:
-                            subject += part.decode("utf-8", errors="replace")
-                    else:
-                        subject += str(part)
-
-                sender = msg.get("From", "")
-                sender_name, sender_addr = email.utils.parseaddr(sender)
-
-                to_raw = msg.get("To", "")
-                recipients = []
-                recipient_emails = []
-                for name, addr in email.utils.getaddresses([to_raw]):
-                    recipients.append(name or addr)
-                    recipient_emails.append(addr)
-
-                # Get plain text body preview
-                body = ""
-                if msg.is_multipart():
-                    for part in msg.walk():
-                        if part.get_content_type() == "text/plain":
-                            try:
-                                payload = part.get_payload(decode=True)
-                                if payload:
-                                    body = payload.decode("utf-8", errors="replace")[:500]
-                                    break
-                            except Exception:
-                                pass
-                else:
-                    try:
-                        payload = msg.get_payload(decode=True)
-                        if payload:
-                            body = payload.decode("utf-8", errors="replace")[:500]
-                    except Exception:
-                        pass
-
-                is_sent = folder_label == "sent"
-                emails.append(
-                    OutlookEmail(
-                        message_id=msg.get("Message-ID", ""),
-                        subject=subject,
-                        sender=sender_name or sender_addr,
-                        sender_email=sender_addr,
-                        recipients=tuple(recipients),
-                        recipient_emails=tuple(recipient_emails),
-                        date=date,
-                        body_preview=body.strip(),
-                        folder=folder_label,
-                        is_sent=is_sent,
-                    )
-                )
-            except Exception:
-                continue
-
-    if not emails:
-        for email_row in _iter_csv_emails():
-            if start and email_row.date < start:
-                continue
-            if end and email_row.date > end:
-                continue
-            emails.append(email_row)
-
+    emails = [
+        row for row in _iter_csv_emails()
+        if (start is None or row.date >= start) and (end is None or row.date <= end)
+    ]
     emails.sort(key=lambda e: e.date)
 
     for e in emails:
@@ -231,11 +114,20 @@ def iter_emails(
         yield e
 
 
+def iter_pst_emails() -> Iterator[OutlookEmail]:
+    """Report that direct PST access is unsupported by this source API."""
+    raise SourceUnavailableError(
+        "outlook_pst",
+        path=str(PST_ROOT),
+        reason="PST extraction is unsupported; use the Outlook CSV export route",
+    )
+
+
 _SENT_RE = re.compile(r"(?im)^\s*Sent:\s*(.+?)\s*$")
 
 
 def _iter_csv_emails() -> Iterator[OutlookEmail]:
-    """Fallback to the adjacent Outlook CSV exports when readpst is absent.
+    """Read adjacent Outlook CSV exports.
 
     The CSV files do not expose a first-class date column, but the exported
     bodies include Outlook forward headers (`Sent: ...`) for the work emails
@@ -362,6 +254,7 @@ __all__ = [
     "OutlookEmail",
     "OutlookDayActivity",
     "iter_emails",
+    "iter_pst_emails",
     "daily_activity",
     "coverage_bounds",
     "date_range",

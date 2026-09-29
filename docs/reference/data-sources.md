@@ -38,6 +38,14 @@ The exact filesystem roots come from `LynchpinConfig`. Tests use temporary
 roots and neutral fixtures; the public source tree does not depend on one
 operator's data layout.
 
+Outlook activity uses the dated inbox/sent CSV exports. They provide the
+message dates, directions, and correspondent fields needed by daily activity
+and canonical communications products. Direct PST extraction is unsupported:
+the historical `readpst` path read only selected folders, could reuse partial
+cache output, and did not establish complete mailbox coverage. Calling
+`lynchpin.sources.outlook.iter_pst_emails()` reports this capability gap;
+ordinary Outlook reads never invoke an extractor.
+
 The Google Takeout inventory keeps one canonical `members.ndjson` and
 `archives.ndjson` pair. Its manifest records each archive's filesystem version
 (device, inode, size, mtime, and ctime), output digests and versions,

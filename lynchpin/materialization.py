@@ -572,23 +572,15 @@ def _graph_source_revisions(cfg: LynchpinConfig) -> list[dict[str, Any]]:
         rows.append({"name": "sms", "status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"})
 
     try:
-        from .sources.outlook import MBOX_CACHE, PST_ROOT
+        from .sources.outlook import PST_ROOT
 
         rows.append(
             _graph_file_revision(
                 "outlook",
-                roots=(PST_ROOT, MBOX_CACHE),
                 files=(
-                    *(
-                        path
-                        for path in PST_ROOT.rglob("*")
-                        if path.is_file()
-                    ),
-                    *(
-                        path
-                        for path in MBOX_CACHE.rglob("*")
-                        if path.is_file()
-                    ),
+                    path
+                    for path in PST_ROOT.rglob("*")
+                    if path.is_file() and path.suffix.lower() == ".csv"
                 ),
             )
         )
