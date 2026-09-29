@@ -8,6 +8,10 @@ root_markers = ["pyproject.toml", "lynchpin"]
 [environment]
 kind = "nix-develop"
 command = ["nix", "develop", "--command"]
+# The files the devShell evaluation reads (its drvPath does not depend on the
+# source tree). Jobs enter a cached `nix print-dev-env` realization keyed on
+# them instead of evaluating the devShell twice per new tree state.
+cache_inputs = ["flake.nix", "flake.lock"]
 inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LYNCHPIN_REPO_ROOT", "POLYLOGUE_ROOT", "SINEX_ROOT", "RAWLOG_FILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
 unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
 
