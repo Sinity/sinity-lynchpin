@@ -432,7 +432,7 @@ class TestGitDayActivity:
     def _make(self, **kwargs):
         defaults = dict(date=date(2026, 3, 15), repo="sinex", commit_count=3,
                         lines_added=20, lines_deleted=5, churn=25, net_loc=15,
-                        ai_coauthored=1, ai_ratio=0.33, human_only=2,
+                        ai_coauthored=1, ai_ratio=0.33, unmarked=2,
                         dominant_prefix="feat", commit_burst_count=0, authors=("Sinity",))
         defaults.update(kwargs)
         return GitDayActivity(**defaults)
@@ -460,9 +460,9 @@ class TestGitDayActivity:
         with pytest.raises(ValueError, match="GitDayActivity.ai_ratio"):
             self._make(ai_ratio=-0.1)
 
-    def test_negative_human_only_raises(self):
-        with pytest.raises(ValueError, match="GitDayActivity.human_only"):
-            self._make(human_only=-1)
+    def test_negative_unmarked_raises(self):
+        with pytest.raises(ValueError, match="GitDayActivity.unmarked"):
+            self._make(unmarked=-1)
 
 
 class TestCommitSession:

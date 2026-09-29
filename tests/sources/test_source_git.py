@@ -15,7 +15,10 @@ from lynchpin.sources.git import (
     commit_facts,
     github_context_for_commits,
 )
+import pytest
+
 from lynchpin.core.primitives import logical_date
+from lynchpin.sources import git as git_source
 from lynchpin.sources.github import GitHubActor, GitHubItem
 
 
@@ -305,23 +308,20 @@ def test_iter_repo_commit_records_closes_git_process_when_consumer_stops(
     monkeypatch, tmp_path
 ):
     repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
+    repo.mkdir()
 
     class FakeStdout:
         def __init__(self):
             self.closed = False
-            self._lines = iter(
+            self._chunks = iter(
                 [
-                    "COMMIT|a1|2026-01-02T00:00:00+00:00|Tester|feat: first\n",
-                    "COMMIT|b2|2026-01-03T00:00:00+00:00|Tester|feat: second\n",
+                    b"COMMIT\x1fa1\x1f2026-01-02T00:00:00+00:00\x1fTester\x1ffeat: first\0\0",
+                    b"COMMIT\x1fb2\x1f2026-01-03T00:00:00+00:00\x1fTester\x1ffeat: second\0\0",
                 ]
             )
 
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            return next(self._lines)
+        def read(self, _size=-1):
+            return next(self._chunks, b"")
 
         def close(self):
             self.closed = True
@@ -347,6 +347,8 @@ def test_iter_repo_commit_records_closes_git_process_when_consumer_stops(
             return 0
 
     fake = FakeProcess()
+    monkeypatch.setattr("lynchpin.sources.git._is_git_repo_root", lambda _repo: True)
+    monkeypatch.setattr("lynchpin.sources.git._repo_identity", lambda _repo: "repo")
     monkeypatch.setattr(
         "lynchpin.sources.git._default_history_ref", lambda _repo: "master"
     )
@@ -365,3 +367,224 @@ def test_iter_repo_commit_records_closes_git_process_when_consumer_stops(
     assert fake.terminated is True
     assert fake.waited is True
     assert fake.killed is False
+
+
+# ── Source-convergence audit reproductions (L52–L55), asserting correct outcomes ──
+
+
+def _git(repo, *args, env=None):
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        env={**os.environ, **(env or {})},
+    )
+
+
+def test_linked_worktree_reads_the_same_history_as_its_primary(tmp_path):
+    # Anti-vacuity: testing `.git`'s file type rejects a linked worktree
+    # (whose `.git` is a file) and yields zero rows.
+    primary = tmp_path / "primary"
+    _init_repo(primary)
+    _commit_at(primary, "a.txt", "feat: base", "2026-01-02T12:00:00+00:00")
+    linked = tmp_path / "linked"
+    _git(primary, "worktree", "add", "-q", str(linked))
+    assert (linked / ".git").is_file()
+    window = dict(start=date(2026, 1, 1), end=date(2026, 1, 5))
+    primary_rows = [r.commit for r in git_source._iter_repo_commit_records(primary, **window)]
+    linked_rows = [r.commit for r in git_source._iter_repo_commit_records(linked, **window)]
+    assert primary_rows
+    assert linked_rows == primary_rows
+    assert [r.repo for r in git_source._iter_repo_commit_records(linked, **window)] == ["primary"]
+
+
+def test_commit_activity_from_linked_worktree_reports_primary_repo_identity(tmp_path):
+    # Same identity gap as _iter_repo_commit_records, but for the
+    # commit-activity route (iter_commit_activity/summarize_commit_activity),
+    # which used the checkout basename directly instead of the shared
+    # repository identity.
+    primary = tmp_path / "primary"
+    _init_repo(primary)
+    _commit_at(primary, "a.txt", "feat: base", "2026-01-02T12:00:00+00:00")
+    linked = tmp_path / "some-batch-worktree-suffix"
+    _git(primary, "worktree", "add", "-q", str(linked))
+    events = list(git_source.iter_commit_activity([linked], start_month="2026-01", end_month="2026-01"))
+    assert events
+    assert {e.repo for e in events} == {"primary"}
+
+
+def test_dangling_declared_default_ref_is_a_typed_failure(tmp_path):
+    # Anti-vacuity: returning an empty history when origin/HEAD points at a
+    # ref that does not resolve makes a broken repository look inactive.
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _commit_at(repo, "a.txt", "feat: base", "2026-01-02T12:00:00+00:00")
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/vanished")
+    with pytest.raises(git_source.GitSourceError, match="does not resolve"):
+        list(
+            git_source._iter_repo_commit_records(
+                repo, start=date(2026, 1, 1), end=date(2026, 1, 5)
+            )
+        )
+
+
+def test_failed_git_log_is_a_typed_failure_not_empty_history(tmp_path, monkeypatch):
+    # Anti-vacuity: discarding git's exit status turns a failed read into
+    # "no commits".
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _commit_at(repo, "a.txt", "feat: base", "2026-01-02T12:00:00+00:00")
+    monkeypatch.setattr(git_source, "_default_history_ref", lambda _repo: "no-such-ref")
+    with pytest.raises(git_source.GitSourceError, match="git log exited"):
+        list(
+            git_source._iter_repo_commit_records(
+                repo, start=date(2026, 1, 1), end=date(2026, 1, 5)
+            )
+        )
+
+
+def test_commit_authored_in_window_but_committed_later_is_returned(tmp_path):
+    # Anti-vacuity: a committer-time upper bound drops commits whose author
+    # time is in the window and whose committer time is after it.
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.txt").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", "a.txt")
+    _git(
+        repo,
+        "commit",
+        "-q",
+        "-m",
+        "feat: rebased later",
+        env={
+            "GIT_AUTHOR_DATE": "2026-01-02T12:00:00+00:00",
+            "GIT_COMMITTER_DATE": "2026-03-02T12:00:00+00:00",
+        },
+    )
+    day = logical_date(datetime.fromisoformat("2026-01-02T12:00:00+00:00"))
+    rows = list(git_source._iter_repo_commit_records(repo, start=day, end=day))
+    assert [r.subject for r in rows] == ["feat: rebased later"]
+
+
+def test_commit_scan_does_not_walk_history_committed_before_the_window(tmp_path, monkeypatch):
+    # Anti-vacuity: without a committer lower bound every query walks the
+    # repository's whole history (tens of seconds on a large repository).
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    for stamp, name in (("2020-01-01T12:00:00+00:00", "old"), ("2026-01-02T12:00:00+00:00", "new")):
+        (repo / f"{name}.txt").write_text("x\n", encoding="utf-8")
+        _git(repo, "add", f"{name}.txt")
+        _git(repo, "commit", "-q", "-m", f"feat: {name}",
+             env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp})
+    walked: list[bytes] = []
+    real_parse = git_source._parse_log_z
+
+    def recording_parse(stream):
+        for record in real_parse(stream):
+            walked.append(record)
+            yield record
+
+    monkeypatch.setattr(git_source, "_parse_log_z", recording_parse)
+    day = logical_date(datetime.fromisoformat("2026-01-02T12:00:00+00:00"))
+    rows = list(git_source._iter_repo_commit_records(repo, start=day, end=day))
+
+    assert [r.subject for r in rows] == ["feat: new"]
+    assert len(walked) == 1
+
+
+def test_numstat_paths_are_exact_including_unicode_spaces_and_renames(tmp_path):
+    # Anti-vacuity: display-formatted numstat quotes and octal-escapes
+    # non-ASCII names, strips leading spaces, and renders renames as
+    # `{a => b}`; none of those is the file's path.
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    stamp = "2026-01-02T12:00:00+00:00"
+    dates = {"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}
+    (repo / "żółć.txt").write_text("a\n", encoding="utf-8")
+    (repo / " note.txt").write_text("b\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "feat: add", env=dates)
+    (repo / "dir name").mkdir()
+    _git(repo, "mv", " note.txt", "dir name/renamed.txt")
+    _git(repo, "commit", "-q", "-m", "feat: move", env=dates)
+    day = logical_date(datetime.fromisoformat(stamp))
+    rows = {
+        r.subject: r
+        for r in git_source._iter_repo_commit_records(repo, start=day, end=day)
+    }
+    assert {p for p, _, _, _ in rows["feat: add"].path_changes} == {"żółć.txt", " note.txt"}
+    assert rows["feat: move"].path_changes == (("dir name/renamed.txt", 0, 0, " note.txt"),)
+    changes = list(git_source.file_change_facts(start=day, end=day, repo_paths=(repo,)))
+    moved = [change for change in changes if change.path == "dir name/renamed.txt"]
+    assert len(moved) == 1
+    assert moved[0].old_path == " note.txt"
+
+
+def test_only_explicit_ai_coauthor_trailers_count_as_ai():
+    # Anti-vacuity: treating every Co-authored-by trailer as AI labels a
+    # human collaborator as AI contribution.
+    human = "Co-authored-by: Audit Collaborator <person@example.com>"
+    assert git_source._extract_coauthor(human) is None
+    agent = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+    assert git_source._extract_coauthor(agent) == "Claude Opus 5.5"
+    by_address = "Co-authored-by: Helper <noreply@anthropic.com>"
+    assert git_source._extract_coauthor(by_address) == "Helper"
+    # A real person's name can coincidentally contain an AI product word;
+    # an address present on an untrusted/personal domain must veto the
+    # loose name match, not just an unmatched one.
+    coincidental_name = "Co-Authored-By: Claude Dupont <claude.dupont@example.com>"
+    assert git_source._extract_coauthor(coincidental_name) is None
+    # A human's GitHub noreply address must not collide with the trusted
+    # "github.com" domain used for exact matching.
+    github_noreply = "Co-authored-by: Some Person <12345+person@users.noreply.github.com>"
+    assert git_source._extract_coauthor(github_noreply) is None
+    # People at an AI vendor or a large host are not agents because of
+    # their mail domain.
+    assert git_source._extract_coauthor("Co-authored-by: Jane Doe <jane@google.com>") is None
+    assert git_source._extract_coauthor("Co-authored-by: Octo Human <octo@github.com>") is None
+    assert git_source._extract_coauthor("Co-authored-by: Jane Doe <jane@anthropic.com>") is None
+    copilot = "Co-authored-by: Copilot <198982749+Copilot@users.noreply.github.com>"
+    assert git_source._extract_coauthor(copilot) == "Copilot"
+
+
+def test_human_coauthor_is_unmarked_not_human_only(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    stamp = "2026-01-02T12:00:00+00:00"
+    _commit_at(repo, "a.txt", "feat: base\n\nCo-authored-by: Audit Collaborator <person@example.com>", stamp)
+    monkeypatch.setattr(git_source, "active_repo_paths", lambda names=None: [repo])
+    monkeypatch.setattr(git_source, "_repo_path", lambda _repo: repo)
+    day = logical_date(datetime.fromisoformat(stamp))
+    rows = git_source.daily_activity(start=day, end=day)
+    assert len(rows) == 1
+    assert rows[0].ai_coauthored == 0
+    assert rows[0].ai_ratio == 0
+    assert rows[0].unmarked == 1
+    assert not hasattr(rows[0], "human_only")
+
+
+def test_coauthor_lookup_does_not_read_history_committed_before_the_window(tmp_path, monkeypatch):
+    # Anti-vacuity: without the scan's committer lower bound the trailer
+    # lookup reads every commit of the default ref, so the 2020 commit's
+    # trailer appears in the result.
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    trailer = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+    _commit_at(repo, "old.txt", f"feat: old\n\n{trailer}", "2020-01-01T12:00:00+00:00")
+    _commit_at(repo, "new.txt", f"feat: new\n\n{trailer}", "2026-01-02T12:00:00+00:00")
+    monkeypatch.setattr(git_source, "_repo_path", lambda _repo: repo)
+    day = logical_date(datetime.fromisoformat("2026-01-02T12:00:00+00:00"))
+
+    coauthors = git_source._fetch_coauthor_info("repo", day, day)
+
+    new_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert list(coauthors) == [new_sha]
+
+
+def test_explicit_non_repo_is_typed_unavailable(tmp_path):
+    path = tmp_path / "missing"
+    with pytest.raises(git_source.GitSourceError, match="not a Git worktree root"):
+        list(git_source._iter_repo_commit_records(path, start=date(2026, 1, 1), end=date(2026, 1, 2)))
