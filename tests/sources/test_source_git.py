@@ -513,6 +513,13 @@ def test_only_explicit_ai_coauthor_trailers_count_as_ai():
     # "github.com" domain used for exact matching.
     github_noreply = "Co-authored-by: Some Person <12345+person@users.noreply.github.com>"
     assert git_source._extract_coauthor(github_noreply) is None
+    # People at an AI vendor or a large host are not agents because of
+    # their mail domain.
+    assert git_source._extract_coauthor("Co-authored-by: Jane Doe <jane@google.com>") is None
+    assert git_source._extract_coauthor("Co-authored-by: Octo Human <octo@github.com>") is None
+    assert git_source._extract_coauthor("Co-authored-by: Jane Doe <jane@anthropic.com>") is None
+    copilot = "Co-authored-by: Copilot <198982749+Copilot@users.noreply.github.com>"
+    assert git_source._extract_coauthor(copilot) == "Copilot"
 
 
 def test_human_coauthor_is_unmarked_not_human_only(tmp_path, monkeypatch):

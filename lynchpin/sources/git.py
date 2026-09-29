@@ -119,16 +119,16 @@ _AI_COAUTHOR_RE = re.compile(
     r"\b(claude|anthropic|codex|openai|chatgpt|gpt-\d|copilot|gemini|cursor|devin|aider)\b",
     re.IGNORECASE,
 )
-# When a trailer carries an address, only a known AI-service domain can
-# assert AI attribution -- exact match, so a human's own
-# "user@users.noreply.github.com" doesn't collide with "github.com". A
-# human's own name can coincidentally contain an AI product word (a real
-# first name "Claude" with a real address), so an untrusted/personal domain
-# vetoes a loose name match too, not just an unmatched one.
-_AI_COAUTHOR_TRUSTED_DOMAINS = frozenset({
-    "anthropic.com", "openai.com", "github.com", "google.com",
-    "cursor.sh", "cursor.com", "devin.ai", "aider.chat",
+# When a trailer carries an address, the address decides: a person's name can
+# contain an AI product word (a first name "Claude"), so a name match never
+# overrides an address that is not an agent's.
+_AI_VENDOR_DOMAINS = frozenset({
+    "anthropic.com", "openai.com", "cursor.sh", "cursor.com", "devin.ai", "aider.chat",
 })
+# Vendor domains also host people, so only an automated sender there marks an
+# agent: a no-reply mailbox or an agent/bot mailbox.
+_AI_VENDOR_AGENT_LOCAL_RE = re.compile(r"^(no-?reply|.*(agent|bot))$", re.IGNORECASE)
+_GITHUB_NOREPLY_DOMAIN = "users.noreply.github.com"
 
 
 class GitSourceError(SourceUnavailableError):
@@ -1162,8 +1162,14 @@ def _extract_coauthor(line: str) -> str | None:
     name = match.group(1).strip()
     address = (match.group(2) or "").strip()
     if "@" in address:
-        domain = address.rsplit("@", 1)[-1].strip().lower()
-        return name if domain in _AI_COAUTHOR_TRUSTED_DOMAINS else None
+        local, domain = (part.strip().lower() for part in address.rsplit("@", 1))
+        if domain in _AI_VENDOR_DOMAINS:
+            return name if _AI_VENDOR_AGENT_LOCAL_RE.match(local) else None
+        if domain == _GITHUB_NOREPLY_DOMAIN:
+            # GitHub App identities: ``<id>+name[bot]@`` or ``<id>+Copilot@``.
+            is_app = local.endswith("[bot]") or local.endswith("+copilot")
+            return name if is_app and _AI_COAUTHOR_RE.search(name) else None
+        return None
     if not _AI_COAUTHOR_RE.search(name):
         return None
     return name
