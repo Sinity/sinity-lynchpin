@@ -9,46 +9,70 @@ from types import SimpleNamespace
 from lynchpin.sources.activitywatch_models import AWEvent
 
 
-def test_materialize_activitywatch_events_sees_committed_wal_append(monkeypatch, tmp_path):
+def _aw_fixture(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_materialize
     from lynchpin.sources import activitywatch_raw
 
     db = tmp_path / "aw.db"
-    output = tmp_path / "events.ndjson"
     cfg = SimpleNamespace(activitywatch_db=db, activitywatch_archive_db_dir=tmp_path / "archive")
     monkeypatch.setattr(activitywatch_materialize, "get_config", lambda: cfg)
     monkeypatch.setattr(activitywatch_raw, "get_config", lambda: cfg)
+    return db, tmp_path / "events.ndjson"
 
-    with sqlite3.connect(db) as writer:
+
+def _create_aw_db(db, *, wal: bool = True) -> sqlite3.Connection:
+    writer = sqlite3.connect(db)
+    if wal:
         writer.execute("PRAGMA journal_mode=WAL")
         writer.execute("PRAGMA wal_autocheckpoint=0")
-        writer.execute("CREATE TABLE buckets (id INTEGER PRIMARY KEY, name TEXT)")
-        writer.execute(
-            "CREATE TABLE events (bucketrow INTEGER, starttime INTEGER, endtime INTEGER, data TEXT)"
-        )
-        writer.execute("INSERT INTO buckets VALUES (1, 'aw-watcher-window_host')")
+    writer.execute("CREATE TABLE buckets (id INTEGER PRIMARY KEY, name TEXT)")
+    writer.execute("CREATE TABLE events (bucketrow INTEGER, starttime INTEGER, endtime INTEGER, data TEXT)")
+    writer.execute("INSERT INTO buckets VALUES (1, 'aw-watcher-window_host')")
+    writer.commit()
+    return writer
 
-        def append_event(app: str, hour: int) -> None:
-            start = int(datetime(2026, 1, 1, hour, tzinfo=timezone.utc).timestamp()) * 10**9
-            writer.execute(
-                "INSERT INTO events VALUES (1, ?, ?, ?)",
-                (start, start + 60 * 10**9, json.dumps({"app": app})),
-            )
-            writer.commit()
 
-        append_event("first", 10)
+def _append_aw_event(writer: sqlite3.Connection, app: str, hour: int) -> None:
+    start = int(datetime(2026, 1, 1, hour, tzinfo=timezone.utc).timestamp()) * 10**9
+    writer.execute("INSERT INTO events VALUES (1, ?, ?, ?)", (start, start + 60 * 10**9, json.dumps({"app": app})))
+    writer.commit()
+
+
+def _apps(output) -> list[str]:
+    return [json.loads(line)["data"]["app"] for line in output.read_text().splitlines()]
+
+
+def _published_state(output) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(output.parent)): path.read_bytes()
+        for path in sorted(output.parent.rglob("*"))
+        if path.is_file() and not path.name.startswith("aw.db") and "archive" not in path.parts
+    }
+
+
+def test_materialize_activitywatch_events_sees_committed_wal_append(monkeypatch, tmp_path):
+    from lynchpin.ingest import activitywatch_materialize
+    from lynchpin.sources import activitywatch_raw
+
+    db, output = _aw_fixture(monkeypatch, tmp_path)
+    writer = _create_aw_db(db)
+    try:
+        _append_aw_event(writer, "first", 10)
         first = activitywatch_materialize.materialize_activitywatch_events(output=output)
+        assert first["input_changed_during_read"] is False
         main_stat = db.stat()
-        append_event("second", 11)
+        _append_aw_event(writer, "second", 11)
         assert db.stat().st_size == main_stat.st_size
         assert db.stat().st_mtime_ns == main_stat.st_mtime_ns
         assert (tmp_path / "aw.db-wal").exists()
 
+        # The committed WAL frame is a new input identity, not a reusable one.
         second = activitywatch_materialize.materialize_activitywatch_events(output=output)
-        apps = [json.loads(line)["data"]["app"] for line in output.read_text().splitlines()]
-        assert apps == ["first", "second"]
+        assert _apps(output) == ["first", "second"]
         assert second["row_count"] == 2
-        assert second["input_signature"] == first["input_signature"]
+        assert second["input_signature"] != first["input_signature"]
+        store = activitywatch_materialize.activitywatch_events_partition_store(output)
+        assert store.metadata["input_signature"] == second["input_signature"]
 
         def unexpected_read(*_args, **_kwargs):
             raise AssertionError("unchanged WAL input should reuse the published product")
@@ -57,10 +81,11 @@ def test_materialize_activitywatch_events_sees_committed_wal_append(monkeypatch,
         unchanged = activitywatch_materialize.materialize_activitywatch_events(output=output)
         assert unchanged["row_count"] == second["row_count"]
         assert unchanged["input_signature"] == second["input_signature"]
+    finally:
+        writer.close()
 
     # Closing the writer checkpoints WAL into the main database. The selected
     # rows remain identical across that identity transition.
-    writer.close()
     assert not (tmp_path / "aw.db-wal").exists()
     monkeypatch.setattr(
         activitywatch_materialize,
@@ -68,9 +93,146 @@ def test_materialize_activitywatch_events_sees_committed_wal_append(monkeypatch,
         activitywatch_raw.events_from_activitywatch_dbs,
     )
     activitywatch_materialize.materialize_activitywatch_events(output=output)
-    assert [json.loads(line)["data"]["app"] for line in output.read_text().splitlines()] == [
-        "first", "second"
-    ]
+    assert _apps(output) == ["first", "second"]
+
+
+def test_activitywatch_publication_names_state_read_when_writer_commits_during_read(monkeypatch, tmp_path):
+    from lynchpin.core.cache import input_versions
+    from lynchpin.ingest import activitywatch_materialize
+    from lynchpin.sources import activitywatch_raw
+
+    db, output = _aw_fixture(monkeypatch, tmp_path)
+    writer = _create_aw_db(db)
+    try:
+        _append_aw_event(writer, "first", 10)
+        _append_aw_event(writer, "second", 11)
+        before_read = input_versions((db,))
+        real_reader = activitywatch_raw.events_from_activitywatch_dbs
+
+        def racing_reader(*args, **kwargs):
+            events = real_reader(*args, **kwargs)
+            head = next(events)
+            # The SELECT's read transaction is open; this commit lands in WAL.
+            _append_aw_event(writer, "late", 12)
+            yield head
+            yield from events
+
+        monkeypatch.setattr(activitywatch_materialize, "events_from_activitywatch_dbs", racing_reader)
+        raced = activitywatch_materialize.materialize_activitywatch_events(output=output)
+
+        # The rows are the snapshot the statement read, and the published
+        # identity is the pre-read observation, flagged as overtaken.
+        assert _apps(output) == ["first", "second"]
+        assert raced["input_versions"] == before_read
+        assert raced["input_versions"] != input_versions((db,))
+        assert raced["input_changed_during_read"] is True
+        store = activitywatch_materialize.activitywatch_events_partition_store(output)
+        assert store.metadata["input_signature"] is None
+
+        monkeypatch.setattr(activitywatch_materialize, "events_from_activitywatch_dbs", real_reader)
+        caught_up = activitywatch_materialize.materialize_activitywatch_events(output=output)
+        assert _apps(output) == ["first", "second", "late"]
+        assert caught_up["input_changed_during_read"] is False
+        assert caught_up["input_versions"] == input_versions((db,))
+    finally:
+        writer.close()
+
+
+def test_activitywatch_locked_database_preserves_last_product(monkeypatch, tmp_path):
+    from lynchpin.core.errors import SourceUnavailableError
+    from lynchpin.ingest import activitywatch_materialize
+    from lynchpin.sources import activitywatch_raw
+
+    db, output = _aw_fixture(monkeypatch, tmp_path)
+    writer = _create_aw_db(db, wal=False)
+    _append_aw_event(writer, "first", 10)
+    activitywatch_materialize.materialize_activitywatch_events(output=output)
+    published = _published_state(output)
+
+    _append_aw_event(writer, "second", 11)
+    real_connect = activitywatch_raw._connect
+    monkeypatch.setattr(activitywatch_raw, "_connect", lambda path=None: real_connect(path, timeout=0))
+    writer.execute("BEGIN EXCLUSIVE")
+    try:
+        with pytest.raises(SourceUnavailableError, match="locked"):
+            activitywatch_materialize.materialize_activitywatch_events(output=output)
+    finally:
+        writer.rollback()
+        writer.close()
+
+    assert _published_state(output) == published
+    assert _apps(output) == ["first"]
+
+
+def test_activitywatch_read_leaves_uncheckpointed_wal_in_place(monkeypatch, tmp_path):
+    import shutil
+
+    from lynchpin.ingest import activitywatch_materialize
+
+    db, output = _aw_fixture(monkeypatch, tmp_path)
+    live = tmp_path / "live"
+    live.mkdir()
+    writer = _create_aw_db(live / "aw.db")
+    try:
+        _append_aw_event(writer, "first", 10)
+        # Copy while the writer holds the WAL: the state a crashed writer leaves.
+        for name in ("aw.db", "aw.db-wal", "aw.db-shm"):
+            shutil.copy2(live / name, tmp_path / name)
+    finally:
+        writer.close()
+    originals = {name: (tmp_path / name).read_bytes() for name in ("aw.db", "aw.db-wal")}
+
+    manifest = activitywatch_materialize.materialize_activitywatch_events(output=output)
+
+    assert _apps(output) == ["first"]
+    assert manifest["input_changed_during_read"] is False
+    assert {name: (tmp_path / name).read_bytes() for name in originals} == originals
+
+
+def test_activitywatch_missing_database_is_unavailable_not_empty(monkeypatch, tmp_path):
+    from lynchpin.core.errors import SourceUnavailableError
+    from lynchpin.ingest import activitywatch_materialize
+
+    db, output = _aw_fixture(monkeypatch, tmp_path)
+    with pytest.raises(SourceUnavailableError, match="no live or archived"):
+        activitywatch_materialize.materialize_activitywatch_events(output=output)
+    assert not output.exists()
+
+    writer = _create_aw_db(db, wal=False)
+    _append_aw_event(writer, "first", 10)
+    writer.close()
+    activitywatch_materialize.materialize_activitywatch_events(output=output)
+    published = _published_state(output)
+
+    # An archive alone does not stand in for the live database the last
+    # product consumed.
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    db.rename(archive / "old.db")
+    with pytest.raises(SourceUnavailableError, match="live database consumed by the last product"):
+        activitywatch_materialize.materialize_activitywatch_events(output=output)
+    assert _published_state(output) == published
+    assert (archive / "old.db").exists()
+
+
+def test_activitywatch_observed_empty_database_publishes_empty_product(monkeypatch, tmp_path):
+    from lynchpin.ingest import activitywatch_materialize
+
+    db, output = _aw_fixture(monkeypatch, tmp_path)
+    _create_aw_db(db, wal=False).close()
+
+    manifest = activitywatch_materialize.materialize_activitywatch_events(output=output)
+    assert manifest["row_count"] == 0
+    assert manifest["covered_dates"] == []
+    assert manifest["input_file_count"] == 1
+    assert manifest["input_changed_during_read"] is False
+
+    monkeypatch.setattr(
+        activitywatch_materialize,
+        "events_from_activitywatch_dbs",
+        lambda *_args, **_kwargs: pytest.fail("an unchanged empty source should reuse its product"),
+    )
+    assert activitywatch_materialize.materialize_activitywatch_events(output=output)["row_count"] == 0
 
 
 def test_materialize_activitywatch_events_records_input_high_water(monkeypatch, tmp_path):
@@ -107,7 +269,9 @@ def test_materialize_activitywatch_events_reports_logical_date_bounds(monkeypatc
     from lynchpin.ingest import activitywatch_materialize
 
     output = tmp_path / "events.ndjson"
-    cfg = SimpleNamespace(activitywatch_db=tmp_path / "missing.db", activitywatch_archive_db_dir=tmp_path / "archive")
+    db = tmp_path / "aw.db"
+    db.write_text("fixture", encoding="utf-8")
+    cfg = SimpleNamespace(activitywatch_db=db, activitywatch_archive_db_dir=tmp_path / "archive")
     event = AWEvent(
         bucket="aw-watcher-window_host",
         start=datetime(2026, 1, 2, 1, tzinfo=timezone.utc),
@@ -135,7 +299,9 @@ def test_activitywatch_incremental_tail_does_not_read_or_rewrite_history(monkeyp
     from lynchpin.ingest import activitywatch_materialize
 
     output = tmp_path / "events.ndjson"
-    cfg = SimpleNamespace(activitywatch_db=tmp_path / "missing.db", activitywatch_archive_db_dir=tmp_path / "archive")
+    db = tmp_path / "aw.db"
+    db.write_text("fixture", encoding="utf-8")
+    cfg = SimpleNamespace(activitywatch_db=db, activitywatch_archive_db_dir=tmp_path / "archive")
     initial = AWEvent(
         bucket="aw-watcher-window_host",
         start=datetime(2026, 6, 5, 8, tzinfo=timezone.utc),
@@ -212,6 +378,7 @@ def test_materialize_activitywatch_events_replaces_only_requested_window(monkeyp
     from lynchpin.ingest._manifest import atomic_write_indexed_ndjson
 
     output = tmp_path / "events.ndjson"
+    (tmp_path / "aw.db").write_text("fixture", encoding="utf-8")
     cfg = SimpleNamespace(activitywatch_db=tmp_path / "aw.db", activitywatch_archive_db_dir=tmp_path / "archive")
     rows = [
         json.dumps(
@@ -279,6 +446,7 @@ def test_materialize_activitywatch_events_rejects_unindexed_incremental_carrier(
     from lynchpin.ingest import activitywatch_materialize
 
     output = tmp_path / "events.ndjson"
+    (tmp_path / "aw.db").write_text("fixture", encoding="utf-8")
     cfg = SimpleNamespace(activitywatch_db=tmp_path / "aw.db", activitywatch_archive_db_dir=tmp_path / "archive")
     output.write_text(
         "\n".join(
@@ -324,6 +492,7 @@ def test_materialize_activitywatch_events_records_zero_row_window_days(monkeypat
     from lynchpin.ingest._manifest import atomic_write_indexed_ndjson
 
     output = tmp_path / "events.ndjson"
+    (tmp_path / "aw.db").write_text("fixture", encoding="utf-8")
     cfg = SimpleNamespace(activitywatch_db=tmp_path / "aw.db", activitywatch_archive_db_dir=tmp_path / "archive")
     indexed_rows = [{
         "bucket": "aw-watcher-window_host",
@@ -375,6 +544,7 @@ def test_materialize_activitywatch_events_purges_phantom_covered_dates(monkeypat
     from lynchpin.ingest._manifest import atomic_write_indexed_ndjson
 
     output = tmp_path / "events.ndjson"
+    (tmp_path / "aw.db").write_text("fixture", encoding="utf-8")
     cfg = SimpleNamespace(activitywatch_db=tmp_path / "aw.db", activitywatch_archive_db_dir=tmp_path / "archive")
     indexed_rows = [{
         "bucket": "aw-watcher-window_host",

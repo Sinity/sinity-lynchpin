@@ -13,7 +13,8 @@ def test_materialize_activitywatch_event_index_writes_logical_day_files(monkeypa
     from lynchpin.sources.activitywatch_event_index import ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
 
     live_db = tmp_path / "activitywatch.sqlite"
-    monkeypatch.setattr(mod, "activitywatch_event_index_input_files", lambda: (live_db,))
+    live_db.write_bytes(b"fixture")
+    monkeypatch.setattr(mod, "activitywatch_input_files", lambda _cfg: (live_db,))
     monkeypatch.setattr(
         mod,
         "events_from_activitywatch_dbs",
@@ -115,7 +116,7 @@ def test_full_rebuild_uses_live_source_past_stale_canonical_carrier(monkeypatch,
         encoding="utf-8",
     )
     canonical.with_suffix(".manifest.json").write_text('{"row_count": 1, "last_date": "2026-08-24"}\n', encoding="utf-8")
-    monkeypatch.setattr(mod, "activitywatch_event_index_input_files", lambda: (canonical,))
+    monkeypatch.setattr(mod, "activitywatch_input_files", lambda _cfg: (canonical,))
     observed_calls: list[dict[str, object]] = []
 
     def live_rows(*_args, **kwargs):
@@ -140,7 +141,9 @@ def test_full_rebuild_uses_live_source_past_stale_canonical_carrier(monkeypatch,
     monkeypatch.setattr(mod, "events_from_activitywatch_dbs", live_rows)
     manifest = mod.materialize_activitywatch_event_index(root=tmp_path, full=True)
 
-    assert observed_calls == [{"start": None, "end": None, "order": "bucket", "dedupe": False}]
+    assert observed_calls == [
+        {"start": None, "end": None, "databases": (canonical,), "order": "bucket", "dedupe": False}
+    ]
     assert manifest["covered_dates"] == ["2026-08-24", "2026-09-26"]
     assert manifest["last_date"] == "2026-09-26"
     assert manifest["canonical_row_count_verified"] is False
@@ -158,6 +161,10 @@ def test_full_rebuild_uses_live_source_past_stale_canonical_carrier(monkeypatch,
 
 def test_materialize_activitywatch_event_index_replaces_only_requested_window(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_event_index_materialize as mod
+
+    source_db = tmp_path / "aw.db"
+    source_db.write_bytes(b"fixture")
+    monkeypatch.setattr(mod, "activitywatch_input_files", lambda _cfg: (source_db,))
 
     monkeypatch.setattr(
         mod,
@@ -265,9 +272,7 @@ def test_event_index_repairs_missing_member_only_inside_requested_window(
     seed(inside_root, date(2026, 6, 6))
     inside_input = inside_root / "events.ndjson"
     inside_input.write_text("{}\n", encoding="utf-8")
-    monkeypatch.setattr(
-        mod, "activitywatch_event_index_input_files", lambda: (inside_input,)
-    )
+    monkeypatch.setattr(mod, "activitywatch_input_files", lambda _cfg: (inside_input,))
     repaired = mod.materialize_activitywatch_event_index(
         root=inside_root,
         start=date(2026, 6, 6),
@@ -281,9 +286,7 @@ def test_event_index_repairs_missing_member_only_inside_requested_window(
     seed(outside_root, date(2026, 6, 5))
     outside_input = outside_root / "events.ndjson"
     outside_input.write_text("{}\n", encoding="utf-8")
-    monkeypatch.setattr(
-        mod, "activitywatch_event_index_input_files", lambda: (outside_input,)
-    )
+    monkeypatch.setattr(mod, "activitywatch_input_files", lambda _cfg: (outside_input,))
     with pytest.raises(MaterializationError, match="2026-06-05"):
         mod.materialize_activitywatch_event_index(
             root=outside_root,
@@ -294,6 +297,10 @@ def test_event_index_repairs_missing_member_only_inside_requested_window(
 
 def test_materialize_activitywatch_event_index_reads_only_bounded_raw_tail(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_event_index_materialize as mod
+
+    source_db = tmp_path / "aw.db"
+    source_db.write_bytes(b"fixture")
+    monkeypatch.setattr(mod, "activitywatch_input_files", lambda _cfg: (source_db,))
 
     calls: list[tuple[object, object]] = []
 
@@ -327,6 +334,10 @@ def test_materialize_activitywatch_event_index_reads_only_bounded_raw_tail(monke
 
 def test_failed_index_generation_does_not_replace_serving_manifest(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_event_index_materialize as mod
+
+    source_db = tmp_path / "aw.db"
+    source_db.write_bytes(b"fixture")
+    monkeypatch.setattr(mod, "activitywatch_input_files", lambda _cfg: (source_db,))
 
     serving = tmp_path / "activitywatch/events_by_day/generations/serving/2026-06-06.ndjson"
     serving.parent.mkdir(parents=True)
@@ -400,3 +411,47 @@ def test_indexed_activitywatch_events_read_only_relevant_day_files(tmp_path):
     )
 
     assert [event.data for event in events] == [{"app": "kitty"}]
+
+
+def test_event_index_freshness_tracks_committed_wal_state_it_read(monkeypatch, tmp_path):
+    import sqlite3
+
+    from lynchpin import materialization
+    from lynchpin.ingest import activitywatch_event_index_materialize as mod
+    from lynchpin.sources import activitywatch_raw
+
+    db = tmp_path / "aw.db"
+    cfg = SimpleNamespace(activitywatch_db=db, activitywatch_archive_db_dir=tmp_path / "archive")
+    monkeypatch.setattr(mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(activitywatch_raw, "get_config", lambda: cfg)
+    writer = sqlite3.connect(db)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute("CREATE TABLE buckets (id INTEGER PRIMARY KEY, name TEXT)")
+    writer.execute("CREATE TABLE events (bucketrow INTEGER, starttime INTEGER, endtime INTEGER, data TEXT)")
+    writer.execute("INSERT INTO buckets VALUES (1, 'aw-watcher-window_host')")
+
+    def append(app: str, hour: int) -> None:
+        start = int(datetime(2026, 6, 6, hour, tzinfo=timezone.utc).timestamp()) * 10**9
+        writer.execute("INSERT INTO events VALUES (1, ?, ?, ?)", (start, start + 60 * 10**9, json.dumps({"app": app})))
+        writer.commit()
+
+    try:
+        append("first", 10)
+        manifest = mod.materialize_activitywatch_event_index(root=tmp_path, full=True)
+        assert manifest["input_changed_during_read"] is False
+        assert materialization._manifest_inputs_current(manifest, mod.activitywatch_event_index_input_files())
+
+        main_stat = db.stat()
+        append("second", 11)
+        assert db.stat().st_mtime_ns == main_stat.st_mtime_ns
+        assert not materialization._manifest_inputs_current(manifest, mod.activitywatch_event_index_input_files())
+
+        refreshed = mod.materialize_activitywatch_event_index(
+            root=tmp_path, start=date(2026, 6, 6), end=date(2026, 6, 7)
+        )
+        rows = Path(refreshed["product_paths"]["2026-06-06"]).read_text(encoding="utf-8").splitlines()
+        assert [json.loads(row)["data"]["app"] for row in rows] == ["first", "second"]
+        assert materialization._manifest_inputs_current(refreshed, mod.activitywatch_event_index_input_files())
+    finally:
+        writer.close()

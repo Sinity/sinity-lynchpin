@@ -12,15 +12,15 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-from ..core.cache import manifest_versions_current
 from ..core.config import get_config
-from ..core.errors import MaterializationError
-from ..core.io import latest_mtime_iso
+from ..core.errors import MaterializationError, SourceUnavailableError
 from ..core.primitives import date_to_dt_range, logical_date
 from ..sources.activitywatch_dedup import dedup_and_merge
 from ..sources.activitywatch_raw import (
+    ActivityWatchInputObservation,
     canonical_activitywatch_events_path,
     events_from_activitywatch_dbs,
+    observe_activitywatch_inputs,
 )
 from ..sources.activitywatch_models import AWEvent
 from .manifest_windows import merge_manifest_covered_dates
@@ -30,7 +30,7 @@ from ._manifest import (
     replace_indexed_ndjson_tail,
     write_manifest,
 )
-from ..materializers.partition_store import ArtifactStore, ProductPartitionKey, deterministic_input_digest
+from ..materializers.partition_store import ArtifactStore, ProductPartitionKey
 
 BUCKET_PREFIXES = ("aw-watcher-window_", "aw-watcher-afk_", "aw-watcher-web-")
 ACTIVITYWATCH_EVENTS_SCHEMA_VERSION = 1
@@ -65,13 +65,14 @@ def materialize_activitywatch_events(
     input_files = activitywatch_input_files(cfg)
     output.parent.mkdir(parents=True, exist_ok=True)
     store = activitywatch_events_partition_store(output)
-    input_signature = _input_signature(input_files)
-    if start is None and end is None and store.selection_is_readable():
-        metadata = store.metadata
-        if metadata.get("input_signature") == input_signature:
-            existing_manifest = _read_manifest(output.with_suffix(".manifest.json"))
-            if manifest_versions_current(existing_manifest, input_files):
-                return existing_manifest
+    manifest_path = output.with_suffix(".manifest.json")
+    previous_manifest = _read_manifest(manifest_path)
+    _require_available_inputs(cfg, input_files, previous_manifest)
+    # Observe before reading: the published identity may only name a state the
+    # read below could have consumed.
+    observation = observe_activitywatch_inputs(input_files)
+    if start is None and end is None and _full_product_current(store, previous_manifest, observation):
+        return previous_manifest
     had_partition_store = bool(store.logical_partitions())
     _migrate_event_store(store, output)
 
@@ -79,18 +80,19 @@ def materialize_activitywatch_events(
 
     # Request bucket order so deduplication can consume one bucket at a time.
     if window is None:
-        raw = events_from_activitywatch_dbs(BUCKET_PREFIXES, order="bucket", dedupe=False)
+        raw = events_from_activitywatch_dbs(
+            BUCKET_PREFIXES, databases=input_files, order="bucket", dedupe=False
+        )
     else:
         raw = events_from_activitywatch_dbs(
             BUCKET_PREFIXES,
             start=window[0],
             end=window[1],
+            databases=input_files,
             order="bucket",
             dedupe=False,
         )
     cleaned = dedup_and_merge(raw) if dedupe else raw
-    manifest_path = output.with_suffix(".manifest.json")
-    previous_manifest = _read_manifest(manifest_path)
     partitioned_window = start is not None and end is not None and had_partition_store
     bounded_tail = (
         start is not None
@@ -122,6 +124,10 @@ def materialize_activitywatch_events(
     else:
         ordered = (_event_row(event) for event in cleaned)
     ordered = list(sorted(ordered, key=lambda item: (_row_logical_date(item) or date.min, _row_key(item))))
+    # Every source row has been consumed. A commit during the read makes the
+    # observation a lower bound of what was read; it is published as such and
+    # never reused, so the next run re-reads the newer state.
+    input_changed_during_read = observation.changed()
     valid_rows: list[tuple[dict[str, Any], datetime]] = []
     row_counts: dict[str, int] = {}
     for row in ordered:
@@ -212,18 +218,27 @@ def materialize_activitywatch_events(
         "bucket_prefixes": list(BUCKET_PREFIXES),
         "input_files": [str(path) for path in input_files],
         "input_file_count": len(input_files),
-        "input_latest_mtime": latest_mtime_iso(input_files),
+        "input_latest_mtime": observation.latest_mtime,
+        "input_versions": observation.versions,
+        "input_signature": observation.signature,
+        "input_changed_during_read": input_changed_during_read,
         "refresh_id": refresh_id,
         "partition_store": str(store.root),
         "partition_scheme": "logical_day(event.start)",
-        "input_signature": input_signature,
     }
     _publish_event_partitions(
         store,
         valid_rows=valid_rows,
         start=start,
         end=end,
-        input_digest=input_signature,
+        input_digest=observation.signature,
+        # Only a complete, race-free read certifies the whole product at this
+        # input identity; a window leaves older days at their earlier reads.
+        product_signature=(
+            observation.signature
+            if start is None and end is None and not input_changed_during_read
+            else None
+        ),
     )
     selected_partitions = store.logical_partitions()
     if partitioned_window:
@@ -240,15 +255,50 @@ def materialize_activitywatch_events(
     return manifest
 
 
-def _input_signature(input_files: Iterable[Path]) -> str:
-    values: list[tuple[str, int, int]] = []
-    for path in input_files:
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        values.append((str(path), stat.st_size, stat.st_mtime_ns))
-    return deterministic_input_digest(values)
+def _full_product_current(
+    store: ArtifactStore,
+    manifest: dict[str, Any],
+    observation: ActivityWatchInputObservation,
+) -> bool:
+    """Return whether the published full product was read from ``observation``."""
+    if not store.selection_is_readable():
+        return False
+    signature = store.metadata.get("input_signature")
+    return (
+        signature is not None
+        and signature == observation.signature
+        and manifest.get("input_signature") == signature
+        and manifest.get("window_start") is None
+        and manifest.get("input_changed_during_read") is False
+        and manifest.get("input_versions") == observation.versions
+    )
+
+
+def _require_available_inputs(
+    cfg: Any,
+    input_files: tuple[Path, ...],
+    previous_manifest: dict[str, Any],
+) -> None:
+    """Refuse to treat an unavailable source as an observed-empty one.
+
+    A missing live database, or no database at all, must not replace the last
+    readable product with fewer rows. Locked or unreadable databases raise from
+    the reader before anything is written.
+    """
+    if not input_files:
+        raise SourceUnavailableError(
+            "activitywatch",
+            path=str(cfg.activitywatch_db),
+            reason="no live or archived ActivityWatch database is present",
+        )
+    live = Path(cfg.activitywatch_db)
+    consumed = previous_manifest.get("input_files")
+    if live not in input_files and isinstance(consumed, list) and str(live) in consumed:
+        raise SourceUnavailableError(
+            "activitywatch",
+            path=str(live),
+            reason="the live database consumed by the last product is missing",
+        )
 
 
 def _migrate_event_store(store: ArtifactStore, output: Path) -> None:
@@ -285,6 +335,7 @@ def _publish_event_partitions(
     start: date | None,
     end: date | None,
     input_digest: str,
+    product_signature: str | None,
 ) -> None:
     selected = store.logical_partitions()
     by_day: dict[date, list[dict[str, Any]]] = {}
@@ -307,7 +358,7 @@ def _publish_event_partitions(
             key, data, format="ndjson", input_digest=input_digest, row_count=len(rows),
             first_date=day, last_date=day,
         )
-    store.publish(selected, metadata={"dataset": "activitywatch.events", "input_signature": input_digest})
+    store.publish(selected, metadata={"dataset": "activitywatch.events", "input_signature": product_signature})
 
 
 def _encode_rows(rows: Iterable[dict[str, Any]]) -> bytes:
