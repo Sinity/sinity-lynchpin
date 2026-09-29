@@ -219,9 +219,17 @@ def _write_raw_batch(
 # ── dedup ─────────────────────────────────────────────────────────────
 
 
-def _make_dedup_key(norm_url: str, ts: datetime, source: str) -> tuple[str, datetime, str]:
-    """Deduplicate retries within one observation source."""
-    return (norm_url, ts.replace(microsecond=0), source)
+def _make_dedup_key(norm_url: str, ts: datetime) -> tuple[str, datetime]:
+    """Canonical visit identity: (normalized URL, timestamp rounded to second).
+
+    The observation source is deliberately not part of the identity. One
+    browser visit is observed by many carriers (the live profile, successive
+    Takeout archives, CSV and JSON copies of one manual export), and those
+    carriers label it differently, so a source-keyed identity would re-admit
+    every re-observation as a new visit. The kept row carries its source as
+    provenance instead.
+    """
+    return (norm_url, ts.replace(microsecond=0))
 
 
 def dedup_raw_files(
@@ -244,10 +252,10 @@ def dedup_raw_files(
     data_dir.mkdir(parents=True, exist_ok=True)
 
     # Build seen-set from existing canonical segments
-    seen: dict[tuple[str, datetime, str], bool] = {}
+    seen: dict[tuple[str, datetime], bool] = {}
     if data_dir.is_dir():
         for visit in iter_gestalt_events(data_dir):
-            key = _make_dedup_key(normalize_url(visit.url), visit.timestamp, visit.source)
+            key = _make_dedup_key(normalize_url(visit.url), visit.timestamp)
             seen[key] = True
 
     reports: list[dict[str, Any]] = []
@@ -273,14 +281,14 @@ def dedup_raw_files(
             base = v.timestamp.replace(microsecond=0)
             is_dup = False
             for delta in range(-tolerance_seconds, tolerance_seconds + 1):
-                key = (norm, base + timedelta(seconds=delta), v.source)
+                key = (norm, base + timedelta(seconds=delta))
                 if key in seen:
                     duplicates += 1
                     is_dup = True
                     break
             if is_dup:
                 continue
-            seen[(norm, base, v.source)] = True
+            seen[(norm, base)] = True
             unique.append(v)
 
         if not unique:
@@ -400,28 +408,28 @@ def build_full_history(
     if not dry_run:
         output.parent.mkdir(parents=True, exist_ok=True)
 
-    seen: dict[tuple[str, datetime, str], bool] = {}
+    seen: dict[tuple[str, datetime], bool] = {}
     row_count = 0
     duplicate_count = 0
     output_source_counts: dict[str, int] = {}
 
     def deduplicated_rows():
         nonlocal duplicate_count, row_count
-        for timestamp, url, title, source, path in visits:
+        for timestamp, url, title, source, _path in visits:
             norm = normalize_url(url)
             base = timestamp.replace(microsecond=0)
             is_dup = False
             for delta in range(-tolerance_seconds, tolerance_seconds + 1):
-                key = (norm, base + timedelta(seconds=delta), source)
+                key = (norm, base + timedelta(seconds=delta))
                 if key in seen:
                     is_dup = True
                     duplicate_count += 1
                     break
             if is_dup:
                 continue
-            seen[(norm, base, source)] = True
+            seen[(norm, base)] = True
             row_count += 1
-            output_source_counts[path] = output_source_counts.get(path, 0) + 1
+            output_source_counts[source] = output_source_counts.get(source, 0) + 1
             yield {
                 "url": url,
                 "title": title,
@@ -462,11 +470,9 @@ def build_full_history(
         "window_end": end.isoformat() if end is not None else None,
         "window_semantics": "start inclusive, end exclusive" if start is not None and end is not None else None,
     }
-    input_source_counts = {
-        row["path"]: int(row["input_visit_count"])
-        for row in report["segments"]
-        if isinstance(row.get("path"), str)
-    }
+    input_source_counts: dict[str, int] = {}
+    for _timestamp, _url, _title, source, _path in segment_visits:
+        input_source_counts[source] = input_source_counts.get(source, 0) + 1
     report["input_source_counts"] = dict(sorted(input_source_counts.items()))
     report["source_duplicate_counts"] = {
         source: max(count - output_source_counts.get(source, 0), 0)
@@ -563,14 +569,13 @@ def _load_existing_full_history(path: Path) -> list[WebHistoryRow]:
             timestamp = payload_timestamp(payload)
             if timestamp is None:
                 continue
-            native_source = str(payload.get("source") or path)
             rows.append(
                 (
                     timestamp,
                     str(payload.get("url") or ""),
                     str(payload.get("title") or ""),
-                    native_source,
-                    native_source,
+                    str(payload.get("source") or path),
+                    str(path),
                 )
             )
     return rows

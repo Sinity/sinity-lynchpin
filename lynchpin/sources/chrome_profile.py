@@ -48,9 +48,22 @@ def discover_profile_history_dbs() -> list[tuple[Path, str]]:
     out: list[tuple[Path, str]] = []
     for path in candidates:
         if path.is_file():
-            label = f"{path.parent.parent.name or 'chrome'}/{path.parent.name}"
-            out.append((path, label))
+            out.append((path, _profile_label(path)))
     return out
+
+
+def _profile_label(history: Path) -> str:
+    """Name a live profile by its browser directory, qualified when non-default.
+
+    ``~/.config/chrome-ws/Default/History`` is ``chrome-ws`` and a second
+    profile is ``chrome-ws/Profile 1``. The default profile keeps the bare
+    browser name because that label is the identity already recorded in
+    ``live_profile:<label>`` provenance and ``live_<label>_history`` raw
+    batches; qualifying it would give one profile two identities.
+    """
+    browser = history.parent.parent.name or "chrome"
+    profile = history.parent.name
+    return browser if profile == "Default" else f"{browser}/{profile}"
 
 
 @contextmanager

@@ -270,6 +270,14 @@ class TestNormalizeDomain:
         assert _normalize_domain("www.wired.com") == "wired.com"
         assert _normalize_domain("www.walmart.com") == "walmart.com"
 
+    def test_ipv6_authority_keeps_its_address(self) -> None:
+        # Anti-vacuity: fails ("::1]:8080" or "[") if a bracketed IPv6
+        # netloc with a port is split on its first colon or only stripped
+        # of brackets, as domain callers pass ``urlparse(url).netloc``.
+        assert _normalize_domain("[::1]:8080") == "::1"
+        assert _normalize_domain("[2001:DB8::1]") == "2001:db8::1"
+        assert _normalize_domain("2001:db8::1") == "2001:db8::1"
+
 
 # ---------------------------------------------------------------------------
 # normalize_url

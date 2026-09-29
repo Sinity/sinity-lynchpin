@@ -93,7 +93,10 @@ def test_build_full_history_writes_manifest(tmp_path):
             "last_visit_at": "2026-01-01T10:01:00+00:00",
         }
     ]
-    assert manifest["source_counts"] == {str(segment): 2}
+    # Source-named counts are keyed by each row's source; per-file counts
+    # live in ``segments``.
+    assert manifest["source_counts"] == {"fixture": 2}
+    assert manifest["input_source_counts"] == {"fixture": 2}
 
 
 def test_webhistory_audit_invalidates_nonlatest_replaced_input(monkeypatch, tmp_path) -> None:
@@ -260,9 +263,8 @@ def test_build_full_history_merges_requested_window(tmp_path):
         "https://example.com/new",
         "https://example.com/after",
     ]
-    # The written row preserves each visit's native source tag (as recorded
-    # in its segment file), not the segment's file path; manifest accounting
-    # (segments/source_counts) is keyed by path separately.
+    # The written row preserves each visit's source as recorded in its
+    # segment, not the segment's file path.
     assert [row["source"] for row in rows] == ["old", "fixture", "old"]
     assert report["covered_dates"] == ["2026-01-01", "2026-01-02", "2026-01-03"]
     assert report["window_start"] == "2026-01-02"

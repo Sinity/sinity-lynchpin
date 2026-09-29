@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 
 from lynchpin.sources import web
 from lynchpin.sources.web_models import WebHistoryEntry, WebHistoryVisit
 
 
-def test_iter_entries_uses_bounded_canonical_visits(monkeypatch) -> None:
+def test_iter_entries_uses_bounded_canonical_visits(monkeypatch, tmp_path) -> None:
+    # Anti-vacuity: fails if the row's provenance is reduced to a path
+    # component ("Profile 1") or the canonical file is reported as the source.
     calls = []
+    canonical = tmp_path / "full_history.ndjson"
+    monkeypatch.setattr(web, "get_config", lambda: SimpleNamespace(webhistory_ndjson=canonical))
     visits = [
         WebHistoryVisit(
             timestamp=datetime(2026, 5, 2, 12, tzinfo=timezone.utc),
             url="https://example.com/a",
             title="A",
-            source="/tmp/full_history.ndjson",
+            source="live_profile:chrome-ws/Profile 1",
         )
     ]
 
@@ -31,8 +36,8 @@ def test_iter_entries_uses_bounded_canonical_visits(monkeypatch) -> None:
             "url": "https://example.com/a",
             "title": "A",
             "iso_time": "2026-05-02T12:00:00+00:00",
-            "source": "full_history.ndjson",
-            "_source_file": "/tmp/full_history.ndjson",
+            "source": "live_profile:chrome-ws/Profile 1",
+            "_source_file": str(canonical),
         }
     ]
 

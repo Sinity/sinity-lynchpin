@@ -88,8 +88,13 @@ def _strip_tracking_params(
 
 def _normalize_domain(netloc: str) -> str:
     netloc = netloc.strip().lower()
+    if netloc.startswith("["):
+        # Bracketed IPv6 authority, possibly with a port: "[::1]:8080".
+        close = netloc.find("]")
+        return netloc[1:close] if close != -1 else netloc[1:]
     if netloc.count(":") > 1:
-        return netloc.strip("[]")
+        # Bare IPv6 literal, as ``urlparse(...).hostname`` returns it.
+        return netloc
     if netloc.startswith("www."):
         netloc = netloc[4:]
     if ":" in netloc:
