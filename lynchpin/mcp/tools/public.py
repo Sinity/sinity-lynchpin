@@ -100,6 +100,13 @@ def _mark_route(tool_name: str, action: str) -> dict[str, Any] | None:
         )
         if unsupported:
             return _error("invalid_argument", f"unsupported arguments for {tool_name}.{action}: {', '.join(unsupported)}", choices=sorted(allowed))
+        # A blank project is neither an omitted selection nor a project name.
+        blank = sorted(
+            name for name in ("project", "repo")
+            if isinstance(caller.f_locals.get(name), str) and not caller.f_locals[name].strip()
+        )
+        if blank:
+            return _error("invalid_argument", f"{', '.join(blank)} must name a project; omit it to select all projects")
     _CURRENT_ROUTE.set((tool_name, action))
     return None
 
@@ -380,7 +387,10 @@ def _internal_call(module_name: str, function_name: str, **kwargs: Any) -> dict[
         return _ok(result, **meta)
     except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors.
         from lynchpin.core.errors import SourceUnavailableError
+        from lynchpin.core.projects import UnknownProjectError
 
+        if isinstance(exc, UnknownProjectError):
+            return _error("unknown_project", str(exc), details={"values": list(exc.values)}, hint=f"route: {route}")
         if isinstance(exc, SourceUnavailableError):
             result = _error("source_unavailable", str(exc), hint=f"route: {route}")
             result.update(
@@ -400,6 +410,7 @@ def _query_sql(
     max_rows: int = 1000,
     expected_refresh_id: str | None = None,
     expected_publication_id: str | None = None,
+    detail: bool = False,
 ) -> dict[str, Any]:
     from lynchpin.mcp.tools.substrate import query_substrate
 
@@ -409,6 +420,7 @@ def _query_sql(
         max_rows=max_rows,
         expected_refresh_id=expected_refresh_id,
         expected_publication_id=expected_publication_id,
+        detail=detail,
     )
 
 
@@ -623,6 +635,8 @@ def lynchpin_query(spec: dict[str, Any]) -> dict[str, Any]:
         not isinstance(expected_publication_id, str) or not expected_publication_id
     ):
         return _error("invalid_expected_publication_id", "expected_publication_id must be a non-empty string")
+    if spec.get("detail") is not None and not isinstance(spec.get("detail"), bool):
+        return _error("invalid_argument", "detail must be a boolean")
     from lynchpin.mcp.tools.substrate import QueryPublicationMismatch, QueryRefreshMismatch
 
     caveats_token = _MATERIALIZATION_CAVEATS.set([])
@@ -634,6 +648,7 @@ def lynchpin_query(spec: dict[str, Any]) -> dict[str, Any]:
                 max_rows=int(spec.get("max_rows") or spec.get("limit") or 1000),
                 expected_refresh_id=expected_refresh_id,
                 expected_publication_id=expected_publication_id,
+                detail=spec.get("detail") is True,
             )
             route = "lynchpin.mcp.tools.substrate.query_substrate"
         elif mode == "dsl":
@@ -840,6 +855,8 @@ def lynchpin_project(
             _meta={"source_mode": "live_git"},
         )
     if action == "velocity":
+        if not target:
+            return _error("missing_argument", "repo or project is required for velocity")
         velocity_view = "throughput" if view in {None, "daily", "weekly"} else view
         granularity = "day" if view == "daily" else "week"
         return _internal_call(
@@ -905,6 +922,8 @@ def lynchpin_personal(
     if action == "daily":
         return _internal_call("lynchpin.mcp.tools.personal", "personal_daily_signals", start=start, end=end, source=source, limit=limit)
     if action == "activity":
+        if view in {"focus", "coverage"} and limit != 100:
+            return _error("invalid_argument", "limit applies only to the daily, titles, and unmatched activity views")
         if view == "focus":
             return _internal_call("lynchpin.mcp.tools.personal", "focus_daily", start=start, end=end)
         return _internal_call("lynchpin.mcp.tools.personal", "activity_content", view=view or "daily", start=start, end=end, limit=limit)
@@ -928,6 +947,8 @@ def lynchpin_personal(
         }.get(health_view, "health_trend")
         return _internal_call("lynchpin.mcp.tools.health", fn, start=start, end=end)
     if action == "communications":
+        if view == "daily" and limit != 100:
+            return _error("invalid_argument", "limit applies only to the communication events view")
         return _internal_call("lynchpin.mcp.tools.personal", "communication", view=view or "events", start=start, end=end, limit=limit)
     if action == "web":
         if view == "takeout":
@@ -965,6 +986,8 @@ def lynchpin_personal(
     if action == "media":
         return _internal_call("lynchpin.mcp.tools.personal", "spotify_daily", start=start, end=end)
     if action == "operator":
+        if view == "readiness" and project is not None:
+            return _error("invalid_argument", "project applies only to the operator rhythm view")
         return _internal_call("lynchpin.mcp.tools.personal", "operator", view=view or "rhythm", start=start or "", end=end or "", project=project)
     if action == "reports":
         report = view or "anomaly"
@@ -978,6 +1001,8 @@ def lynchpin_personal(
         }
         if report not in mapping:
             return _error("invalid_report", f"unknown report {report!r}", choices=sorted(mapping))
+        if project is not None and report != "ai_efficiency":
+            return _error("invalid_argument", "project applies only to the ai_efficiency report")
         module, fn = mapping[report]
         return _internal_call(module, fn, project=project)
     return _invalid_action("lynchpin_personal", action)

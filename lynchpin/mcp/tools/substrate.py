@@ -103,6 +103,51 @@ def _best_commit_ai_join_refresh_id(conn: Any) -> str | None:
     return str(row[0]) if row else None
 
 
+def _query_tables(conn: Any, sql: str) -> set[str] | None:
+    """Return relations the statement names, or None when DuckDB cannot say."""
+    try:
+        return {str(name) for name in conn.get_table_names(sql)}
+    except Exception:  # noqa: BLE001 - relevance is advisory; the query itself still runs.
+        return None
+
+
+def _compact_source_status(
+    status_rows: list[dict[str, Any]], tables: set[str] | None
+) -> dict[str, Any]:
+    """Keep status rows for the sources a query reads and count the rest.
+
+    A source is relevant only through a recorded mapping: the canonical
+    table-to-source registry, or a status row named after the table itself.
+    Unmapped tables are listed rather than attributed to a guessed source.
+    """
+    from lynchpin.core.substrate_sources import SUBSTRATE_TABLE_SOURCE
+
+    recorded = {str(row["source"]) for row in status_rows}
+    relevant: set[str] = set()
+    unmapped: list[str] = []
+    if tables is None:
+        return {
+            "relevant_source_status": status_rows,
+            "relevance": "unknown: referenced tables could not be parsed; all sources listed",
+        }
+    for table in sorted(tables):
+        source = SUBSTRATE_TABLE_SOURCE.get(table) or (table if table in recorded else None)
+        if source is None:
+            unmapped.append(table)
+        else:
+            relevant.add(source)
+    other_counts: dict[str, int] = {}
+    for row in status_rows:
+        if row["source"] not in relevant:
+            status = str(row["status"])
+            other_counts[status] = other_counts.get(status, 0) + 1
+    return {
+        "relevant_source_status": [row for row in status_rows if row["source"] in relevant],
+        "unmapped_tables": unmapped,
+        "other_source_status_counts": other_counts,
+    }
+
+
 def _serving_source_status(conn: Any, refresh_id: str | None) -> list[dict[str, Any]]:
     if refresh_id is None:
         return []
@@ -129,6 +174,7 @@ def query_substrate(
     max_rows: int = 1000,
     expected_refresh_id: str | None = None,
     expected_publication_id: str | None = None,
+    detail: bool = False,
 ) -> dict[str, Any]:
     """Execute a read-only SELECT against the lynchpin substrate.
 
@@ -142,6 +188,15 @@ def query_substrate(
     content pin, ``expected_publication_id`` checks the selected publication
     under the same lock.
 
+    Raw tables keep every retained promotion, so rows are not one current
+    snapshot: ``grain`` states the history each referenced table carries.
+    Typed readers select one coherent product; raw SQL reports history.
+
+    The default ``freshness`` block is compact: the served generation, the
+    inspection status, the status rows of sources the query's tables map to,
+    and per-status counts for every other source. ``detail=True`` adds the
+    full source-status list and the inspection's high-water and coverage.
+
     Returns:
         {
             "columns": ["col1", "col2", ...],
@@ -150,9 +205,15 @@ def query_substrate(
             "truncated": bool,
             "serving": {"kind": "canonical | read_snapshot", "refresh_id": str | None,
                         "publication_id": str | None},
+            "grain": {table: {"history": "retained_refreshes | lineage_partitions
+                              | unversioned | view", ...}},
             "freshness": {"status": str, "reason": str,
-                          "source_high_water": dict, "coverage": dict,
                           "serving_source_status_refresh_id": str | None,
+                          "relevant_source_status": list,
+                          "unmapped_tables": list,
+                          "other_source_status_counts": dict,
+                          # detail=True only:
+                          "source_high_water": dict, "coverage": dict,
                           "serving_source_status": list},
         }
 
@@ -172,12 +233,14 @@ def query_substrate(
     params = list(parameters) if parameters else []
 
     inspected = ensure_substrate_materialized_for_read(caller="query_substrate")
+    detail_keys = ("source_high_water", "coverage") if detail else ()
     freshness = {
         key: inspected[key]
-        for key in ("status", "reason", "source_high_water", "coverage")
+        for key in ("status", "reason", *detail_keys)
         if key in inspected
     }
-    from lynchpin.substrate.connection import serving_generation
+    from lynchpin.substrate.connection import _same_resource, serving_generation
+    from lynchpin.substrate.snapshots import raw_table_grain
 
     path = substrate_path()
     with serving_generation(path) as serving:
@@ -186,10 +249,18 @@ def query_substrate(
         conn.execute("SET autoinstall_known_extensions = false")
         conn.execute("SET autoload_known_extensions = false")
         refresh_id = latest_materialized_refresh_id(conn, caller="query_substrate")
-        serving_kind = "canonical" if serving.database_path == path else "read_snapshot"
+        serving_kind = (
+            "read_snapshot" if _same_resource(serving.database_path, serving.snapshot_path)
+            else "canonical"
+        )
+        status_rows = _serving_source_status(conn, refresh_id)
+        tables = _query_tables(conn, sql)
+        grain = raw_table_grain(conn, tables or set())
         freshness["serving_source_status_refresh_id"] = refresh_id
-        freshness["serving_source_status"] = _serving_source_status(conn, refresh_id)
-        inspected_refresh_id = freshness.get("source_high_water", {}).get("serving_refresh_id")
+        freshness.update(_compact_source_status(status_rows, tables))
+        if detail:
+            freshness["serving_source_status"] = status_rows
+        inspected_refresh_id = inspected.get("source_high_water", {}).get("serving_refresh_id")
         if freshness.get("status") == "ready" and inspected_refresh_id != refresh_id:
             freshness = {
                 **freshness,
@@ -229,6 +300,7 @@ def query_substrate(
         "truncated": truncated,
         "serving": {"kind": serving_kind, "refresh_id": refresh_id,
                     "publication_id": serving.publication_id},
+        "grain": grain,
         "freshness": freshness,
     }
 

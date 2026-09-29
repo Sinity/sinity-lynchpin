@@ -11,10 +11,10 @@ from typing import Iterable, Literal, Mapping, Sequence, cast
 
 from ..core.evidence import EvidenceCaveat, dedupe_caveats
 from ..core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
-from ..core.projects import canonical_project_name
 from .causal_chains import CausalChain, detect_chains
 from .current_state import CurrentStateEvidencePack, current_state_evidence_pack, evidence_pack_markdown
 from .evidence_graph import build_evidence_graph
+from .evidence_projects import selected_projects
 from .evidence_views import render_evidence_relations, render_evidence_timeline
 from .performance import GraphStageRecorder, log_performance, recorded_stage, sample_performance
 from .weak_tags import WeakTagEnrichment, build_weak_tags, render_weak_tag_summary
@@ -791,22 +791,12 @@ def render_context_pack(pack: ContextPack) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _selected_projects(projects: Sequence[str] | None) -> set[str]:
-    if not projects:
-        return set()
-    return {
-        project
-        for project in (canonical_project_name(value) for value in projects)
-        if project is not None
-    }
-
-
 def _project_slices(
     rows: Sequence[CorrelatedWorkDay],
     *,
     projects: Sequence[str] | None,
 ) -> tuple[ProjectContextSlice, ...]:
-    selected = _selected_projects(projects)
+    selected = selected_projects(projects)
     if selected:
         rows = tuple(row for row in rows if row.project in selected)
 
@@ -1062,11 +1052,11 @@ def _render_machine_analysis_artifacts(
         lines.append(f"- Episodes in window: {len(matching_episodes)} ({_top_counts(row.get('kind') for row in matching_episodes)})")
 
     context = _artifact_rows(artifacts.payloads.get("machine_context_windows.json"), "windows")
-    selected_projects = set(projects)
+    wanted_projects = set(projects)
     matching_context = [
         row for row in context
         if _row_overlaps(row, start=start, end=end, start_key="started_at", end_key="ended_at")
-        and (not selected_projects or selected_projects.intersection(_row_projects(row)))
+        and (not wanted_projects or wanted_projects.intersection(_row_projects(row)))
     ]
     if matching_context:
         overlapped = sum(1 for row in matching_context if _row_int(row, "episode_count") > 0)

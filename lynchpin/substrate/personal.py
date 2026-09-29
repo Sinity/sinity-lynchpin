@@ -438,22 +438,84 @@ def load_personal_daily_signals(
 
     Returns (source, date, metric, value, dimensions) tuples.
     """
-    rows = _resolved_rows(
+    return read_personal_daily_signals(
+        conn, refresh_id=refresh_id, start=start, end=end, source=source,
+        metric=metric, limit=limit,
+    ).rows
+
+
+@dataclass(frozen=True)
+class PersonalSignalSourceWindow:
+    """What the resolved product holds for one signal source in a window."""
+
+    source: str
+    row_count: int
+    observed_dates: tuple[date, ...]
+
+
+@dataclass(frozen=True)
+class PersonalDailySignalRead:
+    """One coherent product read: bounded rows plus unbounded per-source counts.
+
+    ``product_sources`` is every source the resolved product carries on any
+    date (for the requested metric), so a source absent from the window can
+    be told apart from a source the projection never carries.
+    """
+
+    rows: list[tuple[Any, ...]]
+    window_row_count: int
+    sources: dict[str, PersonalSignalSourceWindow]
+    product_sources: frozenset[str]
+
+
+def read_personal_daily_signals(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    start: date | None = None,
+    end: date | None = None,
+    source: str | None = None,
+    metric: str | None = None,
+    limit: int = 1000,
+) -> PersonalDailySignalRead:
+    """Resolve the product at ``refresh_id`` once and summarize the window.
+
+    The product is resolved through its lineage, so a revised key carries its
+    newest value and a tombstoned key is absent; ``end`` is inclusive.
+    """
+    resolved = _resolved_rows(
         conn, product="personal_daily_signals", refresh_id=refresh_id,
         table="personal_daily_signal",
         columns=("source", "date", "metric", "value", "dimensions", "dimension_key"),
         key=lambda row: (row[0], row[1], row[2], row[5]),
     )
-    rows = [row for row in rows if (start is None or row[1] >= start) and (end is None or row[1] <= end)
+    product_sources = frozenset(str(row[0]) for row in resolved if metric is None or row[2] == metric)
+    rows = [row for row in resolved if (start is None or row[1] >= start) and (end is None or row[1] <= end)
             and (source is None or row[0] == source) and (metric is None or row[2] == metric)]
     rows.sort(key=lambda row: (row[1], row[0], row[2]))
-    return [row[:5] for row in rows[:min(max(limit, 1), 10_000)]]
+    counts: dict[str, int] = defaultdict(int)
+    dates: dict[str, set[date]] = defaultdict(set)
+    for row in rows:
+        counts[row[0]] += 1
+        dates[row[0]].add(row[1])
+    return PersonalDailySignalRead(
+        rows=[row[:5] for row in rows[:min(max(limit, 1), 10_000)]],
+        window_row_count=len(rows),
+        sources={
+            name: PersonalSignalSourceWindow(name, counts[name], tuple(sorted(dates[name])))
+            for name in sorted(counts)
+        },
+        product_sources=product_sources,
+    )
 
 
 __all__ = [
     "load_operator_day_rows",
     "load_personal_daily_signals",
     "load_spotify_daily_rows",
+    "PersonalDailySignalRead",
+    "PersonalSignalSourceWindow",
+    "read_personal_daily_signals",
     "promote_activity_content_buckets",
     "promote_activity_content_days",
     "promote_activity_title_usage",

@@ -422,7 +422,8 @@ def test_catalog_view_reaches_its_executable_route(
     monkeypatch.setattr(f"lynchpin.mcp.tools.{module}.{function}", leaf)
     route = public.lynchpin_project if tool == "project" else public.lynchpin_personal
     dates = {"start": "2026-01-01", "end": "2026-01-02"} if "start" in spec.parameters else {}
-    result = route(action=action, view=view, **dates)
+    target = {"project": "sinex"} if "repo_or_project" in spec.requires else {}
+    result = route(action=action, view=view, **dates, **target)
 
     assert result["ok"] is True
     assert result["data"] == {"reached": function}

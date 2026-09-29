@@ -83,11 +83,28 @@ SELECT-only SQL with bounded response pages. In the DSL, `limit` is the total
 requested result scope and `max_rows` is the page size (at most 10,000 rows).
 Continue with the returned `next_offset`, the same `order_by`, and the serving
 `publication_id` as `expected_publication_id`; a changed publication is rejected.
-SQL and DSL results include the selected serving refresh and its recorded
-per-source status, row count, window, and observation time in `freshness`.
-These rows describe the retained promotion. The separate freshness status
-reports whether current inputs are known to differ; a recorded `ok` source
-does not claim current acquisition coverage.
+SQL and DSL results include the selected serving refresh and, in
+`freshness`, the recorded status, row count, window, and observation time of
+the sources the query's tables map to, with per-status counts for every other
+source; `detail: true` returns every source row. A table without a recorded
+source mapping is listed as unmapped rather than attributed to a guessed
+source. These rows describe the retained promotion. The separate freshness
+status reports whether current inputs are known to differ; a recorded `ok`
+source does not claim current acquisition coverage.
+
+Raw tables keep every retained promotion, so a raw SQL result is history, not
+one current snapshot, and `grain` says what each referenced table holds.
+Lineage products (personal signals, activity content, title classifications,
+and graph tables) store one partition per promotion: filtering `refresh_id`
+returns only what that promotion replaced. Typed readers resolve a lineage
+product at its newest eligible head, so a revised key reads its latest value
+and a replaced or tombstoned key is absent, while the raw partitions keep each
+earlier revision as evidence.
+
+Explicit database paths are compared by resolved filesystem identity, so a
+relative, `..`, or symlinked spelling of the serving database meets the same
+write guard. A read-only fallback opens only the selected database's own
+snapshot, and serving observations report the file DuckDB actually opened.
 Unknown query fields and public action filters are rejected. Mutation is not
 exposed through query tools.
 

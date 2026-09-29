@@ -56,7 +56,9 @@ def test_query_substrate_reports_served_generation_when_convergence_is_blocked(
     assert result["freshness"] == {
         "status": "blocked", "reason": "fixture failure",
         "serving_source_status_refresh_id": "served-generation",
-        "serving_source_status": [],
+        "relevant_source_status": [],
+        "unmapped_tables": ["substrate_promotion_run"],
+        "other_source_status_counts": {},
     }
 
 

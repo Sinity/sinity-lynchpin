@@ -13,6 +13,19 @@ if TYPE_CHECKING:
     import duckdb
 
 
+def _project_filter(column: str, projects: tuple[str, ...] | None) -> tuple[str, list[Any]]:
+    """Return an ``AND`` clause for a project selection.
+
+    ``None`` selects every project; an empty tuple selects none.
+    """
+    if projects is None:
+        return "", []
+    if not projects:
+        return "AND FALSE", []
+    placeholders = ",".join(["?"] * len(projects))
+    return f"AND {column} IN ({placeholders})", list(projects)
+
+
 # ── velocity_series ───────────────────────────────────────────────────────────
 
 
@@ -74,11 +87,8 @@ def load_velocity_series(
         columns=("project", "date", "commit_count", "source_count"),
         key_columns=("project", "date"),
     )
-    proj_filter = ""
-    if projects:
-        placeholders = ",".join(["?"] * len(projects))
-        proj_filter = f"AND project IN ({placeholders})"
-        params.extend(projects)
+    proj_filter, proj_params = _project_filter("project", projects)
+    params.extend(proj_params)
 
     rows = conn.execute(
         f"""
@@ -154,11 +164,8 @@ def load_velocity_project_summary(
         columns=("project", "date", "commit_count"),
         key_columns=("project", "date"),
     )
-    proj_filter = ""
-    if projects:
-        placeholders = ",".join(["?"] * len(projects))
-        proj_filter = f"AND project IN ({placeholders})"
-        params.extend(projects)
+    proj_filter, proj_params = _project_filter("project", projects)
+    params.extend(proj_params)
 
     return conn.execute(
         f"""
@@ -190,11 +197,8 @@ def load_velocity_peak(
         columns=("project", "date", "commit_count"),
         key_columns=("project", "date"),
     )
-    proj_filter = ""
-    if projects:
-        placeholders = ",".join(["?"] * len(projects))
-        proj_filter = f"AND project IN ({placeholders})"
-        params.extend(projects)
+    proj_filter, proj_params = _project_filter("project", projects)
+    params.extend(proj_params)
 
     return conn.execute(
         f"""
@@ -226,18 +230,14 @@ def load_symbol_velocity_rows(
         columns=("project", "date", "commit_count"),
         key_columns=("project", "date"),
     )
-    outer_filter = ""
-    inner_filter = ""
-    params: list[Any] = [*relation_params, refresh_id]
-    if projects:
-        placeholders = ",".join(["?"] * len(projects))
-        outer_filter = f"AND p.project IN ({placeholders})"
-        inner_filter = f"AND project IN ({placeholders})"
-        params = [*relation_params, refresh_id, *projects]
+    # Both sides are filtered before the FULL OUTER JOIN: a predicate in the
+    # ON clause would keep every unmatched row of an unrelated project.
+    proj_filter, proj_params = _project_filter("project", projects)
+    params: list[Any] = [*relation_params, *proj_params, refresh_id, *proj_params]
 
     return conn.execute(
         f"""
-        WITH p AS {relation},
+        WITH p AS (SELECT * FROM {relation} WHERE TRUE {proj_filter}),
         sym AS (
             SELECT project, date,
                    SUM(CASE WHEN change_type = 'ADDED' THEN 1 ELSE 0 END) AS added,
@@ -245,7 +245,7 @@ def load_symbol_velocity_rows(
                    SUM(CASE WHEN change_type = 'RENAMED' THEN 1 ELSE 0 END) AS renamed,
                    COUNT(*) AS total
             FROM symbol_change
-            WHERE refresh_id = ? {inner_filter}
+            WHERE refresh_id = ? {proj_filter}
             GROUP BY project, date
         )
         SELECT COALESCE(p.project, sym.project) AS project,
@@ -257,7 +257,6 @@ def load_symbol_velocity_rows(
                COALESCE(sym.total, 0) AS symbols_total
         FROM p
         FULL OUTER JOIN sym ON p.project = sym.project AND p.date = sym.date
-        {outer_filter}
         ORDER BY project, date
         """,
         params,

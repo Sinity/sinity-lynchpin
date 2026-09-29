@@ -20,10 +20,10 @@ from typing import Any, Literal, Sequence
 
 from ..core.config import get_config
 from ..core.evidence_graph import EvidenceGraph, EvidenceNode
-from ..core.projects import canonical_project_name
 from ..core.serialization import jsonable
 from ..core.evidence import EvidenceCaveat, EvidenceProvenance
 from .evidence_graph import build_evidence_graph
+from .evidence_projects import selected_projects
 
 WeakTagMode = Literal["deterministic"]
 WeakTagCategory = Literal[
@@ -135,7 +135,7 @@ def current_weak_tags(
     tooling, not a domain-object cache yet: `WeakTagEnrichment` deliberately
     contains the source graph, so this function rebuilds from primary evidence.
     """
-    selected = tuple(sorted(project for project in (canonical_project_name(p) for p in projects or ()) if project))
+    selected = tuple(sorted(selected_projects(projects)))
     graph = build_evidence_graph(start=start, end=end, projects=selected)
     return build_weak_tags(graph, mode=mode, persist=persist)
 

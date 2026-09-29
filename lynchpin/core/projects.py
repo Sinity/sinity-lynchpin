@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Callable, Optional
 
 ProjectClassifier = Callable[[str], Optional[str]]
@@ -206,6 +207,41 @@ def canonical_project_name(value: object, *, include_inactive: bool = False) -> 
         if needle in lowered:
             return project
     return None
+
+
+class UnknownProjectError(ValueError):
+    """A project selection names values that identify no known project."""
+
+    def __init__(self, values: Sequence[str]) -> None:
+        self.values = tuple(values)
+        super().__init__(
+            "unknown project selection: " + ", ".join(repr(value) for value in self.values)
+        )
+
+
+def resolve_project_selection(values: Sequence[str] | None) -> tuple[str, ...] | None:
+    """Resolve a caller's project selection without widening it.
+
+    ``None`` (omitted) selects every project. An explicitly empty sequence
+    selects none. Every value must name a known project; an unresolved value
+    raises :class:`UnknownProjectError` instead of being dropped, because
+    dropping it would turn a narrow selection into an unrestricted one.
+    """
+    if values is None:
+        return None
+    if isinstance(values, str):
+        values = (values,)
+    resolved: set[str] = set()
+    unknown: list[str] = []
+    for value in values:
+        project = canonical_project_name(value, include_inactive=True)
+        if project is None:
+            unknown.append(str(value))
+        else:
+            resolved.add(project)
+    if unknown:
+        raise UnknownProjectError(unknown)
+    return tuple(sorted(resolved))
 
 
 def project_for_checkout_name(name: str) -> str | None:

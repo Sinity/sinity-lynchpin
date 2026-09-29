@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from ..core.projects import canonical_project_name
+from ..core.projects import canonical_project_name, resolve_project_selection
 
 
 def selected_projects(projects: Sequence[str] | None) -> set[str]:
-    if not projects:
-        return set()
-    return {
-        project
-        for project in (normalize_project(value) for value in projects)
-        if project is not None
-    }
+    """Return the builder filter set; empty means every project.
+
+    Graph builders treat an omitted or empty selection as unrestricted. A
+    named project that resolves to nothing raises ``UnknownProjectError``
+    rather than silently widening the selection to every project.
+    """
+    return set(resolve_project_selection(projects) or ())
 
 
 def include_project(project: str | None, selected: set[str]) -> bool:

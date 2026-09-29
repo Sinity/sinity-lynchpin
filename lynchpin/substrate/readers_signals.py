@@ -380,6 +380,10 @@ def load_pressure_timestamps_in_range(
 # ── activity_semantic_daily (personal.py) ─────────────────────────────────────
 
 
+#: Title-classification columns the semantic distribution can group by.
+ACTIVITY_TITLE_DIMENSIONS = ("activity", "attention_level", "content_type", "platform", "topic_category")
+
+
 def load_activity_title_usage_by_dimension(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -390,8 +394,11 @@ def load_activity_title_usage_by_dimension(
 ) -> list[tuple[Any, ...]]:
     """Return (first_date, dim_value, focused_seconds) grouped by dimension.
 
-    Note: ``dimension`` is pre-validated by the caller against a whitelist.
+    ``focused_seconds`` is each title's lifetime total, bucketed by its first
+    observed date; it bounds, rather than measures, time inside the window.
     """
+    if dimension not in ACTIVITY_TITLE_DIMENSIONS:
+        raise ValueError(f"dimension must be one of {ACTIVITY_TITLE_DIMENSIONS}, got {dimension!r}")
     if refresh_id is None:
         row = conn.execute(
             "SELECT refresh_id FROM substrate_product_lineage WHERE product='activity_title_usage' "
@@ -424,6 +431,7 @@ def load_activity_title_usage_by_dimension(
 
 
 __all__ = [
+    "ACTIVITY_TITLE_DIMENSIONS",
     "load_source_co_occurrence",
     "load_attributed_commit_count",
     "load_ai_commit_lag_stats",

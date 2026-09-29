@@ -135,6 +135,26 @@ def _substrate_path_value(path: Path | str | None = None) -> Path:
     return candidate if candidate is not None else Path(substrate_path())
 
 
+def _same_resource(left: Path | str, right: Path | str) -> bool:
+    """Compare substrate locations by resolved filesystem identity.
+
+    ``..`` segments, relative spellings, and symlinks name the same database
+    file; the candidate/write boundary and snapshot selection must not treat
+    them as different resources.
+    """
+    return os.path.realpath(left) == os.path.realpath(right)
+
+
+def _opened_database_path(conn: Any) -> Path:
+    """Return the file DuckDB actually opened for this connection."""
+    row = conn.execute(
+        "SELECT path FROM duckdb_databases() WHERE database_name = current_database()"
+    ).fetchone()
+    if row is None or row[0] is None:
+        raise RuntimeError("DuckDB connection does not identify its opened database file")
+    return Path(str(row[0]))
+
+
 def substrate_read_snapshot_path() -> Path:
     """Return the path to the read-only snapshot of the substrate.
 
@@ -1614,11 +1634,11 @@ def connect(
     target = _substrate_path_value(path)
     canonical_target = target
     candidate = _substrate_path_override.get()
-    if candidate is not None and not read_only and target != candidate:
+    if candidate is not None and not read_only and not _same_resource(target, candidate):
         raise CandidateGenerationRejected(
             "candidate generation cannot write outside its staged substrate"
         )
-    serving_target = target == _substrate_path_value() and _substrate_path_override.get() is None
+    serving_target = candidate is None and _same_resource(target, _substrate_path_value())
     if serving_target and not read_only:
         if target.exists() or _publication_intent_path(target).exists():
             with _publication_write_lock(target):
@@ -1631,8 +1651,11 @@ def connect(
     # A failed recovery may leave a clean but unpromoted canonical database.
     # Prefer the prior verified snapshot in that state rather than making read
     # clients observe an empty schema as if it were a successful generation.
-    if read_only and snapshot_fallback and canonical_target == _substrate_path_value():
-        snapshot = substrate_read_snapshot_path()
+    # Every fallback belongs to the selected database: an explicit path reads
+    # its own adjacent snapshot, never the configured serving snapshot.
+    own_snapshot = canonical_target.with_suffix(".read-snapshot.duckdb")
+    if read_only and snapshot_fallback and _same_resource(canonical_target, _substrate_path_value()):
+        snapshot = own_snapshot
         if (
             generation_refresh_id(target) is None
             and generation_refresh_id(snapshot) is not None
@@ -1658,10 +1681,13 @@ def connect(
                 else:
                     raise
             else:
-                snapshot = substrate_read_snapshot_path()
-                if not snapshot.exists():
+                if _same_resource(target, own_snapshot) or not own_snapshot.exists():
                     raise
-                conn = duckdb.connect(str(snapshot), read_only=True)
+                log.warning(
+                    "substrate read opened snapshot %s because %s is unavailable: %s",
+                    own_snapshot, target, exc,
+                )
+                conn = duckdb.connect(str(own_snapshot), read_only=True)
         try:
             yield conn
         finally:
@@ -1679,14 +1705,15 @@ def serving_generation(path: Path | str | None = None) -> Iterator[ServingGenera
     import duckdb
 
     target = _substrate_path_value(path)
-    if target != _substrate_path_value() or _substrate_path_override.get() is not None:
+    if not _same_resource(target, _substrate_path_value()) or _substrate_path_override.get() is not None:
         with connect(target, read_only=True) as conn:
+            opened = _opened_database_path(conn)
             yield ServingGeneration(
                 connection=conn,
-                database_path=target,
+                database_path=opened,
                 snapshot_path=target.with_suffix(".read-snapshot.duckdb"),
                 manifest=None,
-                publication_id=(identity[0] if (identity := generation_publication_identity(target)) else None),
+                publication_id=(identity[0] if (identity := generation_publication_identity(opened)) else None),
             )
         return
 

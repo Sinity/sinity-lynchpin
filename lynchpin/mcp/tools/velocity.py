@@ -7,6 +7,8 @@ string annotations for tool parameters.
 
 from typing import Any
 
+from lynchpin.core.projects import resolve_project_selection
+
 from lynchpin.mcp.tools._utils import (
     best_materialized_refresh_id,
     ensure_substrate_materialized_for_read,
@@ -35,7 +37,8 @@ def velocity_series(
     window is zero are omitted.
 
     Parameters:
-        projects:     filter to specific projects; None = all.
+        projects:     filter to specific projects; None = all, [] = none;
+                      an unknown name raises UnknownProjectError.
         refresh_id:   materialized substrate snapshot to query; default = best current snapshot.
         window_days:  trailing window size in calendar days (default 7).
 
@@ -48,7 +51,7 @@ def velocity_series(
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_velocity import load_velocity_series
 
-    projs: tuple[str, ...] | None = tuple(projects) if projects else None
+    projs = resolve_project_selection(projects)
     if refresh_id is None:
         ensure_substrate_materialized_for_read(caller="velocity_series")
     path = substrate_path()
@@ -96,7 +99,8 @@ def velocity_narrative(
     text suitable for inclusion in a context pack or seed note.
 
     Parameters:
-        projects:   filter to specific projects; None = top 8 by commits.
+        projects:   filter to specific projects; None = top 8 by commits, [] = none;
+                    an unknown name raises UnknownProjectError.
         refresh_id: materialized substrate snapshot (default: best current snapshot).
 
     Returns:
@@ -118,7 +122,7 @@ def velocity_narrative(
         load_velocity_peak,
     )
 
-    projs: tuple[str, ...] | None = tuple(projects) if projects else None
+    projs = resolve_project_selection(projects)
     materialization = (
         ensure_substrate_materialized_for_read(caller="velocity_narrative")
         if refresh_id is None
@@ -227,7 +231,8 @@ def symbol_velocity(
     project_day_correlation for a unified velocity surface.
 
     Parameters:
-        projects:   filter to specific projects; None = all.
+        projects:   filter to specific projects; None = all, [] = none;
+                    an unknown name raises UnknownProjectError.
         refresh_id: materialized substrate snapshot (default: best symbol_change coverage).
 
     Returns:
@@ -238,7 +243,7 @@ def symbol_velocity(
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_velocity import load_symbol_velocity_rows
 
-    projs: tuple[str, ...] | None = tuple(projects) if projects else None
+    projs = resolve_project_selection(projects)
 
     if refresh_id is None:
         ensure_substrate_materialized_for_read(caller="symbol_velocity")
@@ -884,8 +889,10 @@ def code_velocity(
         For view="rhythm": {hourly, weekday, peak_hour, peak_weekday}
     """
     if view == "throughput":
+        if project is None:
+            raise ValueError("project is required for the throughput view")
         return engineering_throughput(
-            project=project or "unknown",
+            project=project,
             start=start,
             end=end,
             granularity=granularity,
@@ -894,7 +901,7 @@ def code_velocity(
             category=category,
         )
     if view == "symbols":
-        projects_list = [project] if project else None
+        projects_list = [project] if project is not None else None
         return symbol_velocity(projects=projects_list, refresh_id=refresh_id)
     if view == "rhythm":
         return temporal_rhythm(project=project, refresh_id=refresh_id)
