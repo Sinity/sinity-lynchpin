@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Iterable, Iterator
 
 from ..core.config import get_config
 from ..core.primitives import logical_date
@@ -18,6 +18,7 @@ __all__ = [
     "bookmarks_path",
     "bookmarks_manifest_path",
     "iter_bookmarks",
+    "distinct_additions",
     "daily_bookmark_activity",
 ]
 
@@ -103,9 +104,28 @@ def iter_bookmarks(
             )
 
 
+def distinct_additions(rows: Iterable[BookmarkEvent]) -> Iterator[BookmarkEvent]:
+    """Yield one dated row per bookmarking act: an exact URL added at one instant.
+
+    The canonical product holds occurrences (one row per bookmark object per
+    browser profile), so a bookmark imported into another browser, or copied
+    into a second folder, appears more than once with the same added time.
+    Activity counts measure additions, so they count each act once.
+    """
+    seen: set[tuple[str, datetime]] = set()
+    for row in rows:
+        if row.added_at is None:
+            continue
+        key = (row.url, row.added_at)
+        if key in seen:
+            continue
+        seen.add(key)
+        yield row
+
+
 def daily_bookmark_activity(*, start: date, end: date, ensure: bool = True) -> list[BookmarkDayActivity]:
     by_day: dict[date, list[BookmarkEvent]] = defaultdict(list)
-    for row in iter_bookmarks(start=start, end=end, ensure=ensure):
+    for row in distinct_additions(iter_bookmarks(start=start, end=end, ensure=ensure)):
         if row.added_at is None:
             continue
         day = logical_date(row.added_at)

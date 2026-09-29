@@ -49,7 +49,8 @@ WEBHISTORY_FULL_HISTORY_SCHEMA_VERSION = 1
 WEBHISTORY_CHROME_RETENTION_DAYS = 90
 WEBHISTORY_SCHEDULE_MAX_AGE_HOURS = 48
 WEBHISTORY_RUN_REPORT_NAME = "last_run.json"
-WebHistoryRow = tuple[datetime, str, str, str]
+# timestamp, url, title, native source tag, canonical segment path
+WebHistoryRow = tuple[datetime, str, str, str, str]
 _DATE_RANGE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})_to_(\d{4}-\d{2}-\d{2})")
 
 # Canonical historical browser snapshots. Disk-image recovery directories are
@@ -142,7 +143,7 @@ def extract_browser_data(
                 )
             )
         report = _write_raw_batch(
-            raw_dir, f"live_{profile_label}_history", visits, dry_run=dry_run
+            raw_dir, f"live_{profile_label.replace('/', '_')}_history", visits, dry_run=dry_run
         )
         report["kind"] = "live_profile"
         report["profile"] = profile_label
@@ -219,7 +220,15 @@ def _write_raw_batch(
 
 
 def _make_dedup_key(norm_url: str, ts: datetime) -> tuple[str, datetime]:
-    """Canonical dedup key: (normalized URL, timestamp rounded to second)."""
+    """Canonical visit identity: (normalized URL, timestamp rounded to second).
+
+    The observation source is deliberately not part of the identity. One
+    browser visit is observed by many carriers (the live profile, successive
+    Takeout archives, CSV and JSON copies of one manual export), and those
+    carriers label it differently, so a source-keyed identity would re-admit
+    every re-observation as a new visit. The kept row carries its source as
+    provenance instead.
+    """
     return (norm_url, ts.replace(microsecond=0))
 
 
@@ -392,7 +401,7 @@ def build_full_history(
         )
     else:
         visits = segment_visits
-        covered_dates = tuple(sorted({logical_date(timestamp) for timestamp, _url, _title, _source in visits}))
+        covered_dates = tuple(sorted({logical_date(timestamp) for timestamp, _url, _title, _source, _path in visits}))
 
     visits.sort(key=lambda item: item[0])
 
@@ -406,7 +415,7 @@ def build_full_history(
 
     def deduplicated_rows():
         nonlocal duplicate_count, row_count
-        for timestamp, url, title, source in visits:
+        for timestamp, url, title, source, _path in visits:
             norm = normalize_url(url)
             base = timestamp.replace(microsecond=0)
             is_dup = False
@@ -461,11 +470,9 @@ def build_full_history(
         "window_end": end.isoformat() if end is not None else None,
         "window_semantics": "start inclusive, end exclusive" if start is not None and end is not None else None,
     }
-    input_source_counts = {
-        row["path"]: int(row["input_visit_count"])
-        for row in report["segments"]
-        if isinstance(row.get("path"), str)
-    }
+    input_source_counts: dict[str, int] = {}
+    for _timestamp, _url, _title, source, _path in segment_visits:
+        input_source_counts[source] = input_source_counts.get(source, 0) + 1
     report["input_source_counts"] = dict(sorted(input_source_counts.items()))
     report["source_duplicate_counts"] = {
         source: max(count - output_source_counts.get(source, 0), 0)
@@ -481,7 +488,7 @@ def build_full_history(
         report.update(
             {
                 key: value
-                for key, value in _visit_date_bounds([timestamp for timestamp, _url, _title, _source in visits]).items()
+                for key, value in _visit_date_bounds([timestamp for timestamp, _url, _title, _source, _path in visits]).items()
                 if key not in {"first_date", "last_date"}
             }
         )
@@ -541,7 +548,7 @@ def _load_segment_visits(
             day = logical_date(visit.timestamp)
             if start is not None and end is not None and not (start <= day < end):
                 continue
-            visits.append((visit.timestamp, visit.url, visit.title, visit.source))
+            visits.append((visit.timestamp, visit.url, visit.title, visit.source, str(path)))
     return visits
 
 
@@ -568,6 +575,7 @@ def _load_existing_full_history(path: Path) -> list[WebHistoryRow]:
                     str(payload.get("url") or ""),
                     str(payload.get("title") or ""),
                     str(payload.get("source") or path),
+                    str(path),
                 )
             )
     return rows
@@ -607,7 +615,7 @@ def _merge_covered_dates(
     start: date,
     end: date,
 ) -> tuple[date, ...]:
-    logical_dates = [logical_date(timestamp) for timestamp, _url, _title, _source in rows]
+    logical_dates = [logical_date(timestamp) for timestamp, _url, _title, _source, _path in rows]
     return merge_manifest_covered_dates(
         manifest=manifest,
         observed_dates=logical_dates,
@@ -618,14 +626,14 @@ def _merge_covered_dates(
 
 
 def _segment_inventory_from_visits(
-    visits: list[tuple[datetime, str, str, str]],
+    visits: list[WebHistoryRow],
 ) -> list[dict[str, Any]]:
-    by_source: dict[str, dict[str, Any]] = {}
-    for timestamp, _url, _title, source in visits:
-        row = by_source.setdefault(
-            source,
+    by_path: dict[str, dict[str, Any]] = {}
+    for timestamp, _url, _title, _source, path in visits:
+        row = by_path.setdefault(
+            path,
             {
-                "path": source,
+                "path": path,
                 "input_visit_count": 0,
                 "first_visit_at": timestamp.isoformat(),
                 "last_visit_at": timestamp.isoformat(),
@@ -636,7 +644,7 @@ def _segment_inventory_from_visits(
             row["first_visit_at"] = timestamp.isoformat()
         if timestamp.isoformat() > row["last_visit_at"]:
             row["last_visit_at"] = timestamp.isoformat()
-    return [by_source[source] for source in sorted(by_source)]
+    return [by_path[path] for path in sorted(by_path)]
 
 
 def _canonical_segment_files(data_dir: Path) -> list[Path]:

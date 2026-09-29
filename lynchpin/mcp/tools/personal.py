@@ -856,7 +856,7 @@ def bookmark_daily(start: str, end: str) -> list[dict[str, Any]]:
         start=start_d,
         end=_exclusive_end(end_d),
     )
-    return [_json_safe(row.__dict__) for row in daily_bookmark_activity(start=start_d, end=end_d, ensure=False)]
+    return [_json_safe(row.__dict__) for row in daily_bookmark_activity(start=start_d, end=_exclusive_end(end_d), ensure=False)]
 
 
 def communication_events(start: str | None = None, end: str | None = None, limit: int = 100) -> list[dict[str, Any]]:

@@ -68,12 +68,12 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from ..core.config import LynchpinConfig
-from ..core.parse import as_local, parse_datetime as _parse_dt, safe_float, safe_int
+from ..core.parse import as_local, local_tz, parse_datetime as _parse_dt, safe_float, safe_int
 from ..core.source import SourceReadiness, read_jsonl_with
 
 __all__ = [
@@ -198,6 +198,9 @@ class InstrumentDay:
 def _day_files(root: Path, start: Optional[date], end: Optional[date]) -> list[Path]:
     if not root.exists():
         return []
+    # Carrier names are UTC days; public bounds are inclusive local days.
+    utc_start = datetime.combine(start, datetime.min.time(), local_tz()).astimezone(timezone.utc).date() if start else None
+    utc_end = (datetime.combine(end + timedelta(days=1), datetime.min.time(), local_tz()).astimezone(timezone.utc) - timedelta(microseconds=1)).date() if end else None
     dated: list[tuple[date, Path]] = []
     for path in root.glob("events-*.jsonl"):
         match = _DAY_FILE_RE.search(path.name)
@@ -207,9 +210,9 @@ def _day_files(root: Path, start: Optional[date], end: Optional[date]) -> list[P
             file_date = datetime.strptime(match.group(1), "%Y%m%d").date()
         except ValueError:
             continue
-        if start is not None and file_date < start:
+        if utc_start is not None and file_date < utc_start:
             continue
-        if end is not None and file_date > end:
+        if utc_end is not None and file_date > utc_end:
             continue
         dated.append((file_date, path))
     return [path for _day, path in sorted(dated)]

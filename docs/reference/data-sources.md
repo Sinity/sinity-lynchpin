@@ -55,6 +55,23 @@ are traversed once. Missing or unreadable archives, and output files that
 differ from the published manifest, remain visible as incomplete coverage in
 source readiness.
 
+A web-history visit is identified by its normalized URL and its time to the
+second, within the dedup tolerance, whichever carrier observed it: the live
+Chrome profile, successive Takeout archives, and manual exports all record the
+same visits. The kept row carries its carrier's `source` as provenance. Live
+profiles are labelled by browser directory (`chrome-ws`), qualified only for a
+non-default profile (`chrome-ws/Profile 1`).
+
+A canonical bookmark row is one occurrence: one bookmark object in one browser
+profile, identified by its native GUID, or by folder, exact URL, title, and
+added time where the format has none. Repeated copies of one profile's export
+collapse; the same URL in another folder, profile, or browser stays distinct.
+An active profile's bookmarks carry its live-profile label as their profile.
+Daily bookmark activity counts each addition (exact URL and added time) once.
+An unreadable archived export is listed in the manifest's
+`unreadable_input_files` and the rest of the product is built; an unreadable
+active-profile `Bookmarks` file refuses the build.
+
 The machine source reads live telemetry SQLite when available. Its offline canonical fallback uses `processed/manifest.json` to select immutable daily NDJSON partitions. A bounded refresh writes only the requested days and replaces the manifest after those files are durable. Version 1 packages with one NDJSON file per table remain readable; on a bounded refresh that file stays as the historical base while partition entries replace the touched dates for current readers. A fresh package can be built entirely from partitions. A full rebuild over an existing legacy monolith requires a separately verified migration because the live SQLite database alone may not reproduce its complete history. The machine staging cleanup command also identifies unreferenced partition files, retaining them for at least 24 hours so readers holding an earlier manifest can finish.
 
 IRC uses `lynchpin.sources.irc_raw` over the canonical materialized event

@@ -179,8 +179,10 @@ def iter_entries(
     ndjson: Optional[Path] = None,
 ) -> Iterator[dict[str, object]]:
     if root is None and ndjson is None:
+        canonical = get_config().webhistory_ndjson
+        source_file = str(canonical) if canonical is not None else ""
         for visit in _iter_all_visits(start=start, end=end):
-            yield _visit_to_record(visit)
+            yield _visit_to_record(visit, source_file=source_file)
         return
 
     for entry in _load_entries(root, ndjson):
@@ -191,13 +193,16 @@ def iter_entries(
         yield entry.to_record()
 
 
-def _visit_to_record(visit: WebHistoryVisit) -> dict[str, object]:
+def _visit_to_record(visit: WebHistoryVisit, *, source_file: str) -> dict[str, object]:
     return {
         "url": visit.url,
         "title": visit.title,
         "iso_time": visit.timestamp.isoformat(),
-        "source": Path(visit.source).name,
-        "_source_file": visit.source,
+        # A canonical row's source is its observation provenance (a native
+        # tag such as ``live_profile:chrome-ws`` or a legacy segment path),
+        # not a file this record was read from, so it is passed through whole.
+        "source": visit.source,
+        "_source_file": source_file,
     }
 
 
@@ -547,7 +552,8 @@ def _visit_from_dict(obj: dict[str, Any], source: str) -> Optional[WebHistoryVis
     raw_title = obj.get("title")
     url = raw_url if isinstance(raw_url, str) else ""
     title = raw_title if isinstance(raw_title, str) else ""
-    return WebHistoryVisit(timestamp=dt, url=url, title=title, source=source)
+    native_source = obj.get("source")
+    return WebHistoryVisit(timestamp=dt, url=url, title=title, source=native_source if isinstance(native_source, str) and native_source else source)
 
 
 def _parse_csv_dt(row: dict[str, str | None]) -> Optional[datetime]:

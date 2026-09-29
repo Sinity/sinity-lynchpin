@@ -18,7 +18,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, NamedTuple, Optional
@@ -28,6 +28,9 @@ CHROME_PROFILE_DBS_ENV = "LYNCHPIN_CHROME_PROFILE_DBS"
 
 #: Chrome stores timestamps as microseconds since 1601-01-01 UTC.
 _CHROME_EPOCH_OFFSET_S = 11644473600
+
+#: SQLite sidecars that carry committed (WAL) or rollback (journal) state.
+_SIDECAR_SUFFIXES = ("-wal", "-journal")
 
 
 def discover_profile_history_dbs() -> list[tuple[Path, str]]:
@@ -45,18 +48,47 @@ def discover_profile_history_dbs() -> list[tuple[Path, str]]:
     out: list[tuple[Path, str]] = []
     for path in candidates:
         if path.is_file():
-            # e.g. ~/.config/chrome-ws/Default/History → "chrome-ws"
-            label = path.parent.parent.name or "chrome"
-            out.append((path, label))
+            out.append((path, _profile_label(path)))
     return out
+
+
+def _profile_label(history: Path) -> str:
+    """Name a live profile by its browser directory, qualified when non-default.
+
+    ``~/.config/chrome-ws/Default/History`` is ``chrome-ws`` and a second
+    profile is ``chrome-ws/Profile 1``. The default profile keeps the bare
+    browser name because that label is the identity already recorded in
+    ``live_profile:<label>`` provenance and ``live_<label>_history`` raw
+    batches; qualifying it would give one profile two identities.
+    """
+    browser = history.parent.parent.name or "chrome"
+    profile = history.parent.name
+    return browser if profile == "Default" else f"{browser}/{profile}"
 
 
 @contextmanager
 def snapshot_history_db(path: Path) -> Iterator[Path]:
-    """Copy the (possibly locked) History DB to a temp file and yield the copy."""
+    """Snapshot a live History DB, including committed WAL transactions.
+
+    A running Chrome holds its History database under an exclusive lock, and
+    ``sqlite3.Connection.backup`` retries a busy source forever, so the live
+    file is never opened through SQLite. Its bytes and any ``-wal`` or
+    ``-journal`` sidecar are copied instead; SQLite then recovers that
+    unlocked copy, and the backup folds it into one self-contained file.
+    """
     with tempfile.TemporaryDirectory(prefix="lynchpin-chrome-") as tmp:
+        staged = Path(tmp) / "staged"
+        staged.mkdir()
+        copy = staged / path.name
+        shutil.copyfile(path, copy)
+        for suffix in _SIDECAR_SUFFIXES:
+            sidecar = path.with_name(path.name + suffix)
+            if sidecar.is_file():
+                shutil.copyfile(sidecar, staged / sidecar.name)
         dst = Path(tmp) / "History"
-        shutil.copy2(path, dst)
+        with closing(sqlite3.connect(copy)) as source:
+            with closing(sqlite3.connect(dst)) as target:
+                source.backup(target)
         yield dst
 
 

@@ -49,7 +49,11 @@ def normalize_url(url: str) -> str:
         scheme = (parsed.scheme or "https").lower()
         if scheme not in ("http", "https"):
             return url.strip()
-        host = _normalize_domain(parsed.netloc)
+        if parsed.hostname is None:
+            return url.strip()
+        host = _normalize_domain(parsed.hostname)
+        if ":" in host:
+            host = f"[{host}]"
         path = parsed.path or "/"
         if len(path) > 1 and path.endswith("/"):
             path = path[:-1]
@@ -74,7 +78,7 @@ def normalize_url(url: str) -> str:
 def _strip_tracking_params(
     query: dict[str, list[str]], host: str
 ) -> dict[str, list[str]]:
-    keep = SPECIAL_PARAM_WHITELIST.get(host.split(":")[0], set())
+    keep = SPECIAL_PARAM_WHITELIST.get(host, set())
     return {
         k: v
         for k, v in query.items()
@@ -84,6 +88,13 @@ def _strip_tracking_params(
 
 def _normalize_domain(netloc: str) -> str:
     netloc = netloc.strip().lower()
+    if netloc.startswith("["):
+        # Bracketed IPv6 authority, possibly with a port: "[::1]:8080".
+        close = netloc.find("]")
+        return netloc[1:close] if close != -1 else netloc[1:]
+    if netloc.count(":") > 1:
+        # Bare IPv6 literal, as ``urlparse(...).hostname`` returns it.
+        return netloc
     if netloc.startswith("www."):
         netloc = netloc[4:]
     if ":" in netloc:
