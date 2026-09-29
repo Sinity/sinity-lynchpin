@@ -387,20 +387,6 @@ def plan_materializations(
                 added = True
         if not added:
             break
-    if maintenance:
-        materialized_windows = [step.effective_window for step in steps if step.action == "materialize" and step.effective_window is not None]
-        if materialized_windows:
-            graph_tail_start = min(item[0] for item in materialized_windows)
-            steps = [
-                replace(
-                    step,
-                    effective_window=(graph_tail_start, step.effective_window[1]),
-                    reason=f"{step.reason}; widened to the shared graph tail so downstream keybind attribution reuses this artifact instead of rescanning raw keylog",
-                )
-                if step.product == "keylog_analysis" and step.action == "materialize" and step.effective_window is not None and step.effective_window[0] > graph_tail_start
-                else step
-                for step in steps
-            ]
     return steps
 
 
@@ -499,13 +485,13 @@ def run_materialization_plan(
     }
 
     def run_one(step: PlanStep, dependencies: dict[str, StepResult], queued_at: datetime) -> StepResult:
-        definition = registry.resolve(step.spec.handler)
-        validate_step_contract(step, definition)
         effective_window = step.effective_window if step.effective_window is not None else window
         started = datetime.now(timezone.utc)
         emit(step, "started", queue_wait_seconds=round((started - queued_at).total_seconds(), 3), effective_window=audit._window_payload(effective_window))
         audit._record_materialization_step(refresh_id, step.product, "started", step.reason, started_at=started)
         try:
+            definition = registry.resolve(step.spec.handler)
+            validate_step_contract(step, definition)
             value = definition.handler(
                 StepContext(
                     step,
