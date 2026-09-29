@@ -18,36 +18,48 @@ from lynchpin.core.errors import MaterializationError
 from lynchpin.ingest._manifest import write_manifest
 
 
-def code_snapshots_stale() -> bool:
-    """True if any REPO_PLANS repo's .git/HEAD mtime is newer than last promotion."""
-    from lynchpin.sources.code_snapshots import REPO_PLANS
+def code_snapshots_currentness() -> dict[str, Any]:
+    """Compare each selected project's promoted view with its local Git refs.
+
+    The selection is the materializer's own (``DEFAULT_PROJECTS``). A project
+    is current only when its retained package's selected views still match the
+    local refs and the substrate row promotes that same captured commit. A
+    missing repository or a never-captured project is reported, not skipped.
+    """
+    from lynchpin.sources.chisel_options import DEFAULT_PROJECTS
+    from lynchpin.sources.chisel_snapshots import view_currentness
+    from lynchpin.sources.code_snapshots import REPO_PLANS, code_snapshots_path
     from lynchpin.substrate.connection import connect
 
     try:
         with connect(read_only=True) as conn:
             rows = conn.execute(
-                "SELECT project, MAX(run_at) FROM code_snapshot_run"
+                "SELECT project, arg_max(git_commit, run_at) FROM code_snapshot_run"
                 " WHERE refresh_id = 'latest' GROUP BY project"
             ).fetchall()
-    except Exception:
-        return True
+    except Exception as exc:
+        return {"state": "missing", "reason": f"code_snapshot_run unreadable: {exc}", "projects": []}
+    promoted = {project: commit for project, commit in rows}
 
-    if not rows:
-        return True
-
-    latest = {r[0]: r[1] for r in rows}
-    for plan in REPO_PLANS.values():
-        head = plan.path / ".git" / "HEAD"
-        if not head.exists():
-            continue
-        project_run_at = latest.get(plan.name)
-        if project_run_at is None:
-            return True
-        if project_run_at.tzinfo is None:
-            project_run_at = project_run_at.replace(tzinfo=timezone.utc)
-        if head.stat().st_mtime > project_run_at.timestamp():
-            return True
-    return False
+    projects: list[dict[str, Any]] = []
+    for name in DEFAULT_PROJECTS:
+        plan = REPO_PLANS[name]
+        view = view_currentness(plan.path, code_snapshots_path(name))
+        if view["state"] == "current":
+            if name not in promoted:
+                view = {**view, "state": "never_captured",
+                        "reason": "retained package exists but was never promoted"}
+            elif promoted[name] != view.get("revision"):
+                view = {**view, "state": "stale",
+                        "reason": f"promoted commit {promoted[name]} differs from retained package"}
+        projects.append({"project": name, **view})
+    not_current = [p for p in projects if p["state"] != "current"]
+    return {
+        "state": "stale" if not_current else "current",
+        "reason": "; ".join(f"{p['project']} {p['state']}: {p['reason']}" for p in not_current)
+        or "selected views match local refs",
+        "projects": projects,
+    }
 
 
 def iter_code_snapshots(project: str | None = None):
