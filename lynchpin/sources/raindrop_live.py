@@ -31,6 +31,7 @@ from .exports_raindrop import (
     RaindropDayActivity,
     iter_raindrop_bookmarks,
 )
+from ..ingest.raindrop_archive import iter_retained_highlights, iter_retained_metadata
 
 __all__ = [
     "RaindropBookmarkLive",
@@ -41,6 +42,7 @@ __all__ = [
     "iter_merged_bookmarks",
     "daily_raindrop_live_activity",
     "poll_raindrop",
+    "iter_retained_bookmarks",
 ]
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -84,6 +86,37 @@ class RaindropBookmarkLive:
 class RaindropPollCursor:
     last_id: int
     last_polled: str  # ISO datetime
+
+
+@dataclass(frozen=True)
+class RetainedRaindrop:
+    """Complete bookmark record from a retained API snapshot."""
+    id: int
+    created: datetime | None
+    updated: datetime | None
+    state: str
+    metadata: dict
+    highlights: tuple[dict, ...]
+
+
+def iter_retained_bookmarks(*, raw_root=None) -> Iterator[RetainedRaindrop]:
+    highlights_by_id: dict[int, list[dict]] = defaultdict(list)
+    for highlight in iter_retained_highlights(raw_root):
+        item = highlight.get("item") or {}
+        rid = highlight.get("raindropId") or highlight.get("itemId") or item.get("_id") or highlight.get("_id")
+        if rid is not None:
+            highlights_by_id[int(rid)].append(highlight)
+    for item in iter_retained_metadata(raw_root):
+        created_raw = item.get("created")
+        updated_raw = item.get("lastUpdate")
+        yield RetainedRaindrop(
+            id=int(item.get("_id") or 0),
+            created=parse_datetime(created_raw) if created_raw else None,
+            updated=parse_datetime(updated_raw) if updated_raw else None,
+            state=str(item.get("_lynchpin_state") or "active"),
+            metadata=item,
+            highlights=tuple(highlights_by_id.get(int(item.get("_id") or 0), ())),
+        )
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
 
@@ -136,7 +169,7 @@ def iter_live_bookmarks(
     *,
     since: datetime | None = None,
     per_page: int = 50,
-    max_pages: int = 20,
+    max_pages: int | None = None,
     token: str | None = None,
 ) -> Iterator[RaindropBookmarkLive]:
     """Yield bookmarks from the Raindrop API, newest first.
@@ -155,12 +188,12 @@ def iter_live_bookmarks(
         return
 
     page = 0
-    while page < max_pages:
+    while max_pages is None or page < max_pages:
         page_str = f"perpage={per_page}&page={page}"
         try:
             data = _api_get(f"raindrops/0?{page_str}", api_token)
         except Exception:
-            return
+            raise
 
         items = data.get("items", [])
         if not items:
@@ -278,14 +311,15 @@ def poll_raindrop(token: str | None = None) -> tuple[int, datetime]:
     count = 0
     newest: datetime | None = None
     now = datetime.now(timezone.utc)
-    cursor_path.parent.mkdir(parents=True, exist_ok=True)
-    cursor_path.write_text(json.dumps({"last_polled": now.isoformat()}))
-
-    # We iterate live bookmarks to trigger API fetch, but for count we
-    # only care about count — the caller iterates the data.
+    # Consume every page successfully before advancing progress. A failed page
+    # leaves the prior cursor intact so the next run retries the same window.
     for bm in iter_live_bookmarks(since=since, token=api_token):
         count += 1
         if newest is None or (bm.created is not None and bm.created > newest):
             newest = bm.created
 
+    cursor_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = cursor_path.with_suffix(cursor_path.suffix + ".tmp")
+    temporary.write_text(json.dumps({"last_polled": now.isoformat()}), encoding="utf-8")
+    temporary.replace(cursor_path)
     return count, now
