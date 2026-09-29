@@ -267,8 +267,15 @@ def analyze(
     # Build coverage-aware composite signal (missing != zero).
     signals = _build_composite_signal(rows, metric_bounds)
 
-    # Detect boundaries on the composite (real binary-segmentation, not events).
-    detected = _detect_boundaries(signals, rows)
+    # Detect boundaries on the composite (real binary-segmentation, not
+    # events), separately within each coverage regime: a signal entering or
+    # leaving coverage changes the composite's makeup, which is a capture
+    # change, never a behavioral phase boundary.
+    detected = [
+        boundary
+        for lo, hi in _coverage_regime_spans(rows, metric_bounds)
+        for boundary in _detect_boundaries(signals[lo:hi], rows[lo:hi])
+    ]
 
     # Snap-annotate known events onto detected boundaries (no synthesis).
     report.boundaries, report.event_annotations = _align_with_events(detected, events)
@@ -441,6 +448,31 @@ def _build_composite_signal(
         composite.append(total_signal / total_weight if total_weight > 0 else 0.0)
 
     return composite
+
+
+def _coverage_regime_spans(
+    rows: list[OperatorDay],
+    metric_bounds: dict[str, CoverageBounds],
+) -> list[tuple[int, int]]:
+    """Split ``rows`` into maximal runs with the same set of covered metrics.
+
+    Returns half-open ``(start, end)`` row-index spans. A span ends wherever a
+    metric's coverage bounds begin or end, so change-point detection never
+    straddles a change in which sources feed the composite.
+    """
+    all_dates = [r.date for r in rows]
+    covered: dict[str, set[date]] = {}
+    for m in _METRICS:
+        in_cov, _ = partition_by_coverage(all_dates, metric_bounds[m.name])
+        covered[m.name] = set(in_cov)
+    keys = [frozenset(m.name for m in _METRICS if d in covered[m.name]) for d in all_dates]
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for i in range(1, len(keys) + 1):
+        if i == len(keys) or keys[i] != keys[start]:
+            spans.append((start, i))
+            start = i
+    return spans
 
 
 def _detect_boundaries(

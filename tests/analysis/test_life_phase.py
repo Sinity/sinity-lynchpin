@@ -478,3 +478,31 @@ def test_in_bounds_capture_gap_is_absent_not_zero(
     assert all(abs(v) < 1e-9 for v in signal)
     report = lp.analyze(rows[0].date, rows[-1].date, known_events=[])
     assert report.boundaries == []
+
+
+def test_signal_leaving_coverage_is_not_a_phase_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fails if a composite that loses a signal at its coverage end reports a
+    boundary there. ActivityWatch changes level on day 40 and stops being
+    captured after day 119; nothing observed changes on day 120."""
+    start = date(2025, 1, 1)
+    rows: list[OperatorDay] = []
+    for i in range(180):
+        d = start + timedelta(days=i)
+        if i < 120:
+            rows.append(_day(d, aw=2.0 if i < 40 else 8.0, spotify=1.0))
+        else:
+            row = OperatorDay(date=d, spotify_hours=1.0)
+            row.sources_present = frozenset({"spotify"})
+            rows.append(row)
+    capture_end = rows[119].date
+    _patch_sources(monkeypatch, rows, cov_first=rows[0].date, cov_last=rows[-1].date)
+    bounds = _full_coverage_bounds(rows[0].date, rows[-1].date)
+    bounds["activitywatch"] = CoverageBounds("activitywatch", rows[0].date, capture_end, "capture")
+    monkeypatch.setattr(lp, "coverage_bounds", lambda: bounds)
+
+    report = lp.analyze(rows[0].date, rows[-1].date, known_events=[])
+
+    assert all(abs((b.date - rows[120].date).days) > 7 for b in report.boundaries), report.boundaries
+    assert any(abs((b.date - rows[40].date).days) <= 7 for b in report.boundaries), report.boundaries
