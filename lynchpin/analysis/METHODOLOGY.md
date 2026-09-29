@@ -33,7 +33,9 @@ Life-phase detection excludes sparse positive-event exports such as substance
 doses, Wykop comments, and Reddit activity when their adapters return only
 event dates. A quiet date is unknown, not a measured zero. Phase artifacts keep
 event totals by substance/source and report event-day counts against the phase
-calendar-day denominator; per-event-day values must not be read as per-calendar-
+calendar-day denominator. A source with no observed event dates has a null
+total and zero observed event days, rather than a zero total. An explicitly
+observed zero remains zero. Per-event-day values must not be read as per-calendar-
 day rates or abstinence evidence. The life-phase artifact uses schema version
 2 for this output contract.
 

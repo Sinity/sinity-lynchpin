@@ -104,7 +104,7 @@ class SparseEventVolume:
     """Observed event totals with explicit event-day and calendar denominators."""
 
     unit: str
-    total: float
+    total: Optional[float]
     event_days: int
     calendar_days: int
     per_event_day: Optional[float]
@@ -267,8 +267,15 @@ def analyze(
     # Build coverage-aware composite signal (missing != zero).
     signals = _build_composite_signal(rows, metric_bounds)
 
-    # Detect boundaries on the composite (real binary-segmentation, not events).
-    detected = _detect_boundaries(signals, rows)
+    # Detect boundaries on the composite (real binary-segmentation, not
+    # events), separately within each coverage regime: a signal entering or
+    # leaving coverage changes the composite's makeup, which is a capture
+    # change, never a behavioral phase boundary.
+    detected = [
+        boundary
+        for lo, hi in _coverage_regime_spans(rows, metric_bounds)
+        for boundary in _detect_boundaries(signals[lo:hi], rows[lo:hi])
+    ]
 
     # Snap-annotate known events onto detected boundaries (no synthesis).
     report.boundaries, report.event_annotations = _align_with_events(detected, events)
@@ -443,6 +450,31 @@ def _build_composite_signal(
     return composite
 
 
+def _coverage_regime_spans(
+    rows: list[OperatorDay],
+    metric_bounds: dict[str, CoverageBounds],
+) -> list[tuple[int, int]]:
+    """Split ``rows`` into maximal runs with the same set of covered metrics.
+
+    Returns half-open ``(start, end)`` row-index spans. A span ends wherever a
+    metric's coverage bounds begin or end, so change-point detection never
+    straddles a change in which sources feed the composite.
+    """
+    all_dates = [r.date for r in rows]
+    covered: dict[str, set[date]] = {}
+    for m in _METRICS:
+        in_cov, _ = partition_by_coverage(all_dates, metric_bounds[m.name])
+        covered[m.name] = set(in_cov)
+    keys = [frozenset(m.name for m in _METRICS if d in covered[m.name]) for d in all_dates]
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for i in range(1, len(keys) + 1):
+        if i == len(keys) or keys[i] != keys[start]:
+            spans.append((start, i))
+            start = i
+    return spans
+
+
 def _detect_boundaries(
     signal: list[float],
     rows: list[OperatorDay],
@@ -570,12 +602,12 @@ def _build_phases(
             for name, amount in row.substance_mg_by_name.items():
                 substance_amounts[name].append(float(amount))
         event_volume: dict[str, SparseEventVolume] = {}
-        if substance_days:
-            doses = float(sum(row.substance_doses for row in substance_days))
-            event_volume["substance:doses"] = SparseEventVolume(
-                unit="doses", total=doses, event_days=len(substance_days),
-                calendar_days=n, per_event_day=doses / len(substance_days),
-            )
+        doses = float(sum(row.substance_doses for row in substance_days))
+        event_volume["substance:doses"] = SparseEventVolume(
+            unit="doses", total=doses if substance_days else None,
+            event_days=len(substance_days), calendar_days=n,
+            per_event_day=doses / len(substance_days) if substance_days else None,
+        )
         for name, amounts in substance_amounts.items():
             total = sum(amounts)
             event_days = len(amounts)
@@ -592,12 +624,12 @@ def _build_phases(
                 for row in phase_rows
                 if source in row.sources_present
             ]
-            if observed:
-                total = sum(observed)
-                event_volume[source] = SparseEventVolume(
-                    unit=unit, total=total, event_days=len(observed),
-                    calendar_days=n, per_event_day=total / len(observed),
-                )
+            total = sum(observed)
+            event_volume[source] = SparseEventVolume(
+                unit=unit, total=total if observed else None,
+                event_days=len(observed), calendar_days=n,
+                per_event_day=total / len(observed) if observed else None,
+            )
 
         # Web distraction ratio: only compute when at least one day has visits.
         web_rows = [r for r in phase_rows if r.web_visits > 0]
@@ -652,15 +684,16 @@ def _summarize_phases(report: LifePhaseReport) -> str:
             lines.append(f"  {prov}")
     lines += ["", "Phases:"]
     for p in report.phases:
-        aw = f"{p.aw_active_hours:.0f}h" if p.aw_active_hours else "?"
-        stress = f"{p.stress_mean:.0f}" if p.stress_mean else "?"
-        sleep = f"{p.sleep_hours:.1f}h" if p.sleep_hours else "?"
+        aw = f"{p.aw_active_hours:.0f}h" if p.aw_active_hours is not None else "?"
+        stress = f"{p.stress_mean:.0f}" if p.stress_mean is not None else "?"
+        sleep = f"{p.sleep_hours:.1f}h" if p.sleep_hours is not None else "?"
         web_dist = f"{p.web_distraction_ratio:.2f}" if p.web_distraction_ratio is not None else "?"
         spotify = f"{p.spotify_hours_per_day:.1f}h" if p.spotify_hours_per_day is not None else "?"
         event_summary = ", ".join(
-            f"{name}={value.total:g}{value.unit} on {value.event_days}/{value.calendar_days} days"
+            f"{name}={f'{value.total:g}{value.unit}' if value.total is not None else 'unknown'} "
+            f"on {value.event_days}/{value.calendar_days} observed event days"
             for name, value in sorted(p.sparse_event_volume.items())
-        ) or "none observed"
+        )
         lines.append(
             f"  {p.start} → {p.end} ({p.n_days:>4}d) | "
             f"AW={aw:>4s} git={p.git_commits_per_day:>5.1f}/d "

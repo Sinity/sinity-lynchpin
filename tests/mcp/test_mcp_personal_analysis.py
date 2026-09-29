@@ -99,6 +99,7 @@ def test_life_phase_returns_payload_fields(
             {"label": "recovery", "start": "2026-05-16", "end": "2026-05-31"},
         ],
         "boundaries": [{"date": "2026-05-16", "confidence": 0.85}],
+        "event_metric_coverage": ["fixture events: 3 observed days of 30; quiet dates unknown"],
     })
     from lynchpin.mcp.tools.personal_analysis import life_phase_report
 
@@ -106,6 +107,10 @@ def test_life_phase_returns_payload_fields(
     assert result["summary"]["status"] == "available"
     assert result["summary"]["phase_count"] == 2
     assert len(result["boundaries"]) == 1
+    # Sparse-event coverage must survive the MCP read, or absent events read as zero.
+    assert result["event_metric_coverage"] == [
+        "fixture events: 3 observed days of 30; quiet dates unknown"
+    ]
 
 
 def test_life_phase_filter(

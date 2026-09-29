@@ -254,7 +254,11 @@ def test_sparse_event_volumes_keep_active_days_and_substances_separate() -> None
     assert first.sparse_event_volume["reddit"].calendar_days == 4
     assert all("quiet dates are unknown, not zero" in value.interpretation
                for value in first.sparse_event_volume.values())
-    assert phases[1].sparse_event_volume == {}
+    assert set(phases[1].sparse_event_volume) == {"substance:doses", "wykop", "reddit"}
+    for value in phases[1].sparse_event_volume.values():
+        assert (value.total, value.event_days, value.calendar_days, value.per_event_day) == (
+            None, 0, 1, None,
+        )
     assert not {"substance_mg", "wykop", "reddit"}.intersection(
         metric.name for metric in lp._METRICS
     )
@@ -277,6 +281,56 @@ def test_sparse_source_ending_does_not_create_a_zero_rate_boundary(monkeypatch) 
     wykop_coverage = next(row for row in report.event_metric_coverage if row.startswith("Wykop:"))
     assert rows[7].date.isoformat() in wykop_coverage
     assert "quiet dates unknown" in wykop_coverage
+
+
+def test_sparse_events_distinguish_no_observation_from_observed_zero() -> None:
+    start = date(2025, 1, 1)
+    rows = [_day(start + timedelta(days=i), aw=4.0) for i in range(4)]
+    rows[1].sources_present = rows[1].sources_present | {"wykop"}
+    rows[1].wykop_comments = 0
+    phases = lp._build_phases(
+        rows, [lp.PhaseBoundary(rows[3].date, 0.5, ("fixture",), ())], {},
+    )
+
+    observed = phases[0].sparse_event_volume["wykop"]
+    assert (observed.total, observed.event_days, observed.calendar_days, observed.per_event_day) == (
+        0.0, 1, 3, 0.0,
+    )
+    unknown = phases[0].sparse_event_volume["reddit"]
+    assert (unknown.total, unknown.event_days, unknown.calendar_days, unknown.per_event_day) == (
+        None, 0, 3, None,
+    )
+    assert phases[1].sparse_event_volume["wykop"].total is None
+
+    summary_report = lp.LifePhaseReport(start, rows[-1].date, len(rows), phases=phases)
+    assert "wykop=0comments on 1/3" in lp._summarize_phases(summary_report)
+
+
+def test_capture_boundary_with_observed_zero_does_not_split_phase(monkeypatch) -> None:
+    start = date(2025, 1, 1)
+    rows = [OperatorDay(date=start + timedelta(days=i)) for i in range(120)]
+    for row in rows[:60]:
+        row.aw_active_hours = 0.0
+        row.sources_present = frozenset({"activitywatch"})
+    _patch_sources(monkeypatch, rows, cov_first=rows[0].date, cov_last=rows[-1].date)
+
+    report = lp.analyze(rows[0].date, rows[-1].date, known_events=[])
+
+    assert report.boundaries == []
+    assert report.phases == []
+
+
+def test_observed_zero_is_rendered_in_phase_summary() -> None:
+    start = date(2025, 1, 1)
+    phase = lp.LifePhase(start, start, 1, aw_active_hours=0.0, stress_mean=0.0,
+                         sleep_hours=0.0)
+    report = lp.LifePhaseReport(start, start, 1, phases=[phase])
+
+    summary = lp._summarize_phases(report)
+
+    assert "AW=  0h" in summary
+    assert "stress=  0" in summary
+    assert "sleep= 0.0h" in summary
 
 
 def test_life_phase_report_versions_sparse_event_schema(tmp_path, monkeypatch) -> None:
@@ -384,7 +438,9 @@ def test_social_phase_distinguishable_from_coding_phase(
         # Every phase object should now carry the new signal attributes.
         assert hasattr(phase, "spotify_hours_per_day")
         assert hasattr(phase, "web_distraction_ratio")
-    social_phase = next(p for p in report.phases if "reddit" in p.sparse_event_volume)
+    social_phase = next(
+        p for p in report.phases if p.sparse_event_volume["reddit"].event_days > 0
+    )
     assert social_phase.sparse_event_volume["reddit"].event_days == social_phase.n_days
     assert social_phase.sparse_event_volume["reddit"].calendar_days == social_phase.n_days
 
@@ -422,3 +478,31 @@ def test_in_bounds_capture_gap_is_absent_not_zero(
     assert all(abs(v) < 1e-9 for v in signal)
     report = lp.analyze(rows[0].date, rows[-1].date, known_events=[])
     assert report.boundaries == []
+
+
+def test_signal_leaving_coverage_is_not_a_phase_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fails if a composite that loses a signal at its coverage end reports a
+    boundary there. ActivityWatch changes level on day 40 and stops being
+    captured after day 119; nothing observed changes on day 120."""
+    start = date(2025, 1, 1)
+    rows: list[OperatorDay] = []
+    for i in range(180):
+        d = start + timedelta(days=i)
+        if i < 120:
+            rows.append(_day(d, aw=2.0 if i < 40 else 8.0, spotify=1.0))
+        else:
+            row = OperatorDay(date=d, spotify_hours=1.0)
+            row.sources_present = frozenset({"spotify"})
+            rows.append(row)
+    capture_end = rows[119].date
+    _patch_sources(monkeypatch, rows, cov_first=rows[0].date, cov_last=rows[-1].date)
+    bounds = _full_coverage_bounds(rows[0].date, rows[-1].date)
+    bounds["activitywatch"] = CoverageBounds("activitywatch", rows[0].date, capture_end, "capture")
+    monkeypatch.setattr(lp, "coverage_bounds", lambda: bounds)
+
+    report = lp.analyze(rows[0].date, rows[-1].date, known_events=[])
+
+    assert all(abs((b.date - rows[120].date).days) > 7 for b in report.boundaries), report.boundaries
+    assert any(abs((b.date - rows[40].date).days) <= 7 for b in report.boundaries), report.boundaries

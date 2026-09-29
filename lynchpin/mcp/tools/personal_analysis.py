@@ -80,7 +80,7 @@ def life_phase_report(phase: str | None = None) -> dict[str, Any]:
     if isinstance(boundaries, list):
         result["boundaries"] = boundaries
     # Preserve both the current writer's contract and historical artifacts.
-    for key in ("event_annotations", "known_event_alignment"):
+    for key in ("event_annotations", "known_event_alignment", "event_metric_coverage"):
         if key in payload:
             result[key] = payload[key]
     return result
