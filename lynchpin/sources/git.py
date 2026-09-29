@@ -648,7 +648,7 @@ def github_context_for_commits(
     try:
         for row in iter_github_context(
             projects={repo for repo, _kind, _number in wanted},
-            ensure=cache_only,
+            ensure=False,
             window=window if not cache_only else None,
         ):
             key = (row.project, row.item.kind, row.item.number)

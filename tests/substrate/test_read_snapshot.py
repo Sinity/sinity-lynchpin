@@ -7,6 +7,7 @@ lock for 30-60+ minutes; MCP needs a path to read regardless.
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 from pathlib import Path
 import signal
@@ -39,7 +40,6 @@ from lynchpin.substrate.status_manifest import (
 def isolated_substrate(monkeypatch, tmp_path: Path) -> Path:
     """Point substrate_path at an isolated tmp file for this test."""
     target = tmp_path / "substrate.duckdb"
-    monkeypatch.setenv("LYNCHPIN_SUBSTRATE_LOCK_ROOT", str(tmp_path / "runtime-locks"))
     monkeypatch.setattr(
         "lynchpin.substrate.connection.substrate_path",
         lambda: target,
@@ -1224,7 +1224,7 @@ def test_serving_generation_normalizes_string_configured_path(
         ).fetchone() == ("prior",)
 
 
-def test_read_only_canonical_uses_writable_runtime_publication_lock(
+def test_read_only_canonical_uses_writable_publication_lock(
     isolated_substrate: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1234,7 +1234,7 @@ def test_read_only_canonical_uses_writable_runtime_publication_lock(
     canonical = isolated_substrate.parent / "canonical" / isolated_substrate.name
     canonical.parent.mkdir()
     monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: canonical)
-    lock_root = isolated_substrate.parent / "runtime-locks"
+    lock_root = isolated_substrate.parent / ".substrate-locks"
     lock_root.mkdir()
     _record_verified_generation(canonical, "prior")
     original_mode = stat.S_IMODE(canonical.parent.stat().st_mode)
@@ -1253,3 +1253,32 @@ def test_read_only_canonical_uses_writable_runtime_publication_lock(
     assert not canonical.with_name(
         f".{canonical.name}.promotion.lock"
     ).exists()
+
+
+def test_publication_lock_contends_across_runtime_environments(
+    isolated_substrate: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lynchpin.substrate.locking import publication_lock, publication_lock_path
+
+    canonical = isolated_substrate.parent / "canonical" / isolated_substrate.name
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(isolated_substrate.parent / "runtime-a"))
+    monkeypatch.setenv("LYNCHPIN_SUBSTRATE_LOCK_ROOT", str(isolated_substrate.parent / "override-a"))
+    lock_path = publication_lock_path(canonical)
+    with publication_lock(canonical, exclusive=True):
+        pid = os.fork()
+        if pid == 0:
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+            os.environ["LYNCHPIN_SUBSTRATE_LOCK_ROOT"] = str(isolated_substrate.parent / "override-b")
+            if publication_lock_path(canonical) != lock_path:
+                os._exit(1)
+            fd = os.open(publication_lock_path(canonical), os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    os._exit(0)
+                os._exit(2)
+            finally:
+                os.close(fd)
+        _, status = os.waitpid(pid, 0)
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0

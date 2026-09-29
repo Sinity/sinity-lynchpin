@@ -180,6 +180,38 @@ def test_github_context_for_commits_reports_missing_product(monkeypatch):
     assert result["items"][0]["status"] == "unavailable"
 
 
+def test_github_context_cache_only_reads_product_without_materialization(monkeypatch):
+    fact = GitCommitFact(
+        repo="sample", commit="abc123", authored_at=datetime(2026, 5, 6, 1, 0),
+        author="Example", subject="Fix #12", lines_added=1, lines_deleted=0,
+        lines_changed=1, files_changed=1, paths=("sample.py",),
+        path_roots=("sample",),
+    )
+    item = GitHubItem(
+        repo="sample", slug="example/sample", kind="issue", number=12,
+        title="Fix", state="closed", url="https://example.invalid/12",
+        author=GitHubActor("Example"), labels=(), body="", comments=(),
+        created_at=None, updated_at=None, closed_at=None, merged_at=None,
+        merge_commit=None,
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("cache-only read called materialization owner")
+
+    def cached_rows(*, projects, ensure, window):
+        assert projects == {"sample"}
+        assert ensure is False
+        assert window is None
+        yield type("Row", (), {"project": "sample", "item": item})()
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", forbidden)
+    monkeypatch.setattr("lynchpin.sources.github_context.iter_github_context", cached_rows)
+    result = github_context_for_commits([fact], cache_only=True)
+    assert result["status"] == "ok"
+    assert result["materialization_status"] == "skipped"
+    assert result["items"][0]["number"] == 12
+
+
 def test_commit_facts_defaults_to_current_history_ref(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
