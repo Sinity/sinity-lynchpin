@@ -61,7 +61,16 @@ def test_machine_tail_reuses_history_and_replaces_overlap(monkeypatch, tmp_path)
         _Sample(_timestamp(2), "new-overlap"),
         _Sample(_timestamp(3), "new-tail"),
     ]
-    second = materialize_machine_telemetry(start=date(2026, 1, 2), end=date(2026, 1, 4))
+    original_open = Path.open
+
+    def reject_historical_read(path, *args, **kwargs):
+        if path == historical:
+            raise AssertionError("bounded tail read an unchanged historical partition")
+        return original_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as guarded:
+        guarded.setattr(Path, "open", reject_historical_read)
+        second = materialize_machine_telemetry(start=date(2026, 1, 2), end=date(2026, 1, 4))
     assert (historical.stat().st_ino, historical.read_bytes()) == historical_identity
     assert second["tables"]["metric_sample"]["partitions"]["2026-01-01"] == first["tables"]["metric_sample"]["partitions"]["2026-01-01"]
     assert [row["value"] for row in iter_machine_table_rows(table, start=None, end=None)] == [
