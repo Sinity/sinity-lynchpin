@@ -801,8 +801,12 @@ def _iter_repo_commit_records(
 ) -> Iterator[_RepoCommitRecord]:
     if not _is_git_repo_root(repo_path):
         raise GitSourceError(repo_path, "path is not a Git worktree root")
-    # Git date options filter by committer time. Filter author time below,
-    # without a committer prefilter that could omit valid author dates.
+    # Git date options filter by committer time; author time is filtered
+    # below. An upper committer bound would drop commits authored in the
+    # window and committed (rebased, amended, applied) after it, so there is
+    # none. The lower bound stays: a commit is committed no earlier than it
+    # is authored, and without it every call walks the whole history (tens
+    # of seconds per large repository). The day of margin absorbs clock skew.
     cmd = [
         "git",
         "-C",
@@ -810,6 +814,7 @@ def _iter_repo_commit_records(
         "log",
         "-z",
         "--date=iso-strict",
+        f"--since={(start - timedelta(days=1)).isoformat()}",
         "--pretty=format:COMMIT%x1f%H%x1f%aI%x1f%aN%x1f%s",
     ]
     if include_paths:

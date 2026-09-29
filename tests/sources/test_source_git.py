@@ -467,6 +467,32 @@ def test_commit_authored_in_window_but_committed_later_is_returned(tmp_path):
     assert [r.subject for r in rows] == ["feat: rebased later"]
 
 
+def test_commit_scan_does_not_walk_history_committed_before_the_window(tmp_path, monkeypatch):
+    # Anti-vacuity: without a committer lower bound every query walks the
+    # repository's whole history (tens of seconds on a large repository).
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    for stamp, name in (("2020-01-01T12:00:00+00:00", "old"), ("2026-01-02T12:00:00+00:00", "new")):
+        (repo / f"{name}.txt").write_text("x\n", encoding="utf-8")
+        _git(repo, "add", f"{name}.txt")
+        _git(repo, "commit", "-q", "-m", f"feat: {name}",
+             env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp})
+    walked: list[bytes] = []
+    real_parse = git_source._parse_log_z
+
+    def recording_parse(stream):
+        for record in real_parse(stream):
+            walked.append(record)
+            yield record
+
+    monkeypatch.setattr(git_source, "_parse_log_z", recording_parse)
+    day = logical_date(datetime.fromisoformat("2026-01-02T12:00:00+00:00"))
+    rows = list(git_source._iter_repo_commit_records(repo, start=day, end=day))
+
+    assert [r.subject for r in rows] == ["feat: new"]
+    assert len(walked) == 1
+
+
 def test_numstat_paths_are_exact_including_unicode_spaces_and_renames(tmp_path):
     # Anti-vacuity: display-formatted numstat quotes and octal-escapes
     # non-ASCII names, strips leading spaces, and renders renames as
