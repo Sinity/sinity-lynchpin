@@ -3,6 +3,11 @@
 The sync command writes authenticated private messages and notification rows
 under ``/realm/accounts/themotte/raw/<username>/``. This source keeps the
 browser scrape out of ordinary read paths; readers only parse local JSONL.
+
+Rows are historical occurrences keyed by native comment ID. ``current`` is
+false for a row that a later complete sync pass no longer listed; the row
+still records a message or notification that happened. Rows written before
+membership tracking have no flag and read as current.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from ..core.primitives import logical_date
 MESSAGE_FILENAME = "themotte_messages.jsonl"
 NOTIFICATION_FILENAME = "themotte_notifications.jsonl"
 SYNC_MANIFEST_FILENAME = "sync_manifest.json"
+SYNC_STATE_FILENAME = "sync_state.json"
 T = TypeVar("T")
 
 
@@ -35,6 +41,7 @@ class TheMotteMessage:
     body: str
     url: str
     relative_time: str
+    current: bool = True
 
 
 @dataclass(frozen=True)
@@ -48,6 +55,7 @@ class TheMotteNotification:
     url: str
     relative_time: str
     unread: bool
+    current: bool = True
 
 
 @dataclass(frozen=True)
@@ -209,6 +217,7 @@ def _parse_message(row: dict[str, Any]) -> TheMotteMessage | None:
         body=str(row.get("body") or ""),
         url=str(row.get("url") or ""),
         relative_time=str(row.get("relative_time") or ""),
+        current=row.get("current", True) is not False,
     )
 
 
@@ -226,6 +235,7 @@ def _parse_notification(row: dict[str, Any]) -> TheMotteNotification | None:
         url=str(row.get("url") or ""),
         relative_time=str(row.get("relative_time") or ""),
         unread=bool(row.get("unread")),
+        current=row.get("current", True) is not False,
     )
 
 
@@ -253,6 +263,7 @@ __all__ = [
     "MESSAGE_FILENAME",
     "NOTIFICATION_FILENAME",
     "SYNC_MANIFEST_FILENAME",
+    "SYNC_STATE_FILENAME",
     "TheMotteMessage",
     "TheMotteNotification",
     "TheMotteDayActivity",

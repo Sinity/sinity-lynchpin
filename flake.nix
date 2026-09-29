@@ -260,6 +260,7 @@
 
         pythonEnv = devPython.withPackages (
           ps: with ps; [
+            beautifulsoup4
             black
             ipython
             mypy
@@ -275,6 +276,7 @@
             tiktoken
             typer
             claude-agent-sdk
+            cryptography
             mcp
             polars
             polylogue
@@ -349,8 +351,10 @@
           ];
 
           dependencies = with python.pkgs; [
+            beautifulsoup4
             cachew
             claude-agent-sdk
+            cryptography
             duckdb
             hmmlearn
             mcp
