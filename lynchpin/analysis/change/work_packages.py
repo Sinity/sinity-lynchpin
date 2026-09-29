@@ -14,7 +14,7 @@ from typing import Any
 from ...core.parse import parse_datetime
 from ...substrate.work_commits import read_commit_facts
 from ...substrate.connection import connect, substrate_path
-from lynchpin.core.io import resolve_analysis_path, save_json
+from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 
 _DEFAULT_GAP_DAYS = 2
 
@@ -71,7 +71,7 @@ def build_active_work_packages(
     start = start or (end - timedelta(days=31))
 
     if commit_payload is None:
-        with connect(substrate_path()) as conn:
+        with connect(substrate_path(), read_only=True) as conn:
             commit_payload = read_commit_facts(
                 conn,
                 start=start,
@@ -149,9 +149,19 @@ def run_active_work_packages(
     start: date | None = None,
     end: date | None = None,
     projects: Sequence[str] | None = None,
+    commit_facts_file: str | PathLike[str] | None = None,
 ) -> dict[str, Any]:
-    """Materialize active work packages from substrate commit facts."""
-    payload = build_active_work_packages(start=start, end=end, projects=projects)
+    """Materialize active work packages from substrate or explicit commit facts."""
+    payload = build_active_work_packages(
+        start=start,
+        end=end,
+        projects=projects,
+        commit_payload=(
+            load_json_object(commit_facts_file, label="commit facts")
+            if commit_facts_file is not None
+            else None
+        ),
+    )
     save_json(resolve_analysis_path(out_file), payload, sort_keys=True)
     return payload
 

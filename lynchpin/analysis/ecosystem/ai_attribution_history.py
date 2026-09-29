@@ -10,8 +10,8 @@ which projects show high AI ratios? which months were AI-light?
 
 Implementation reuses ``ai_attribution._classify_commit`` for per-commit
 labels (so the longitudinal series stays consistent with the 31-day
-artifact's methodology), but iterates chunk-by-chunk over the full
-``active_commit_facts.json`` history.
+artifact's methodology), but iterates over the full history of the selected
+substrate ``commit_fact`` generation.
 
 Output schema:
 
@@ -67,7 +67,7 @@ def build_active_ai_attribution_history(
     it."""
 
     if commit_payload is None:
-        with connect(substrate_path()) as conn:
+        with connect(substrate_path(), read_only=True) as conn:
             commit_payload = read_commit_facts(conn)
     selected = set(projects or ())
 

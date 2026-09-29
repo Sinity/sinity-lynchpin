@@ -98,18 +98,39 @@ def read_commit_facts(
     """Return a payload dict matching ``active_commit_facts.json`` shape.
 
     Queries ``commit_fact`` and wraps results in
-    ``{"commits": [...], "projects": [...], "window": {...}}``
+    ``{"commits": [...], "projects": [...], "window": {...}, "refresh_id": ...}``
     so downstream consumers (ai_attribution, work_packages) see the same
     structure they get from the JSON file.
+
+    Each promotion stores a window-scoped copy of its commits under its own
+    ``refresh_id``, so overlapping generations share rows.  Without an explicit
+    ``refresh_id`` the read selects one materialized generation instead of
+    counting shared commits once per generation.
     """
+    from lynchpin.substrate.snapshots import best_materialized_refresh_id
+
+    if refresh_id is None:
+        refresh_id = best_materialized_refresh_id(
+            conn, "commit_fact", caller="read_commit_facts"
+        )
+        if refresh_id is None:
+            return {
+                "commits": [],
+                "projects": [],
+                "window": {
+                    "start": start.isoformat() if start else "",
+                    "end": end.isoformat() if end else "",
+                },
+                "refresh_id": None,
+            }
+
     clauses: list[str] = []
     params: list[Any] = []
 
     add_date_filter("authored_at", start, end, clauses, params)
     add_in_filter("project", projects, clauses, params)
-    if refresh_id is not None:
-        clauses.append("refresh_id = ?")
-        params.append(refresh_id)
+    clauses.append("refresh_id = ?")
+    params.append(refresh_id)
 
     where = build_where(clauses, params)
     sql = f"""
@@ -212,6 +233,7 @@ def read_commit_facts(
             "start": actual_start or (start.isoformat() if start else ""),
             "end": actual_end or (end.isoformat() if end else ""),
         },
+        "refresh_id": refresh_id,
     }
 
 

@@ -119,6 +119,7 @@ def _active_work_packages(
         start=_opt_date(start),
         end=_opt_date(end),
         projects=list(project or []),
+        commit_facts_file=commit_facts,
     )
 
 
@@ -245,6 +246,7 @@ def register_commands(parent: typer.Typer) -> None:
             start=_opt_date(start),
             end=_opt_date(end),
             projects=list(project or []),
+            commit_facts_file=commit_facts,
         )
 
     @parent.command(
@@ -437,6 +439,7 @@ def register_commands(parent: typer.Typer) -> None:
         run_active_commit_semantics(
             target,
             start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+            commit_facts_file=commit_facts,
         )
 
     @parent.command(
@@ -454,6 +457,7 @@ def register_commands(parent: typer.Typer) -> None:
         run_active_ai_attribution(
             target,
             start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+            commit_facts_file=commit_facts,
         )
 
     @parent.command(
