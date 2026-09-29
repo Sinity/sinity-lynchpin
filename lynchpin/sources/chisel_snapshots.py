@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .chisel_inventory import CapturedInventory, capture_inventory
+from .chisel_inventory import CapturedInventory, _git_state, capture_inventory
 
 SCHEMA_VERSION = 1
 
@@ -23,8 +23,8 @@ def git(repo: Path, *args: str) -> str:
                           text=True, env={**os.environ, "GIT_NO_LAZY_FETCH": "1"}).stdout.strip()
 
 
-def resolve_snapshot(repo: Path, ref: str | None = None) -> dict[str, Any]:
-    """Resolve only local refs. FETCH_HEAD time is not a remote freshness claim."""
+def resolve_ref(repo: Path, ref: str | None = None) -> tuple[str, str]:
+    """Return ``(ref, commit)`` for a local ref, or for the default branch when ``ref`` is None."""
     if ref is None:
         try:
             ref = git(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
@@ -38,7 +38,12 @@ def resolve_snapshot(repo: Path, ref: str | None = None) -> dict[str, Any]:
                 break
         if ref is None:
             raise ValueError(f"default branch identity unavailable: {repo}")
-    revision = git(repo, "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}")
+    return ref, git(repo, "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}")
+
+
+def resolve_snapshot(repo: Path, ref: str | None = None) -> dict[str, Any]:
+    """Resolve only local refs. FETCH_HEAD time is not a remote freshness claim."""
+    ref, revision = resolve_ref(repo, ref)
     return {"ref": ref, "revision": revision,
             "commit_time": git(repo, "show", "-s", "--format=%cI", revision),
             "observed_at": datetime.now(timezone.utc).isoformat(),
@@ -174,3 +179,99 @@ def verify_snapshot(inventory: CapturedInventory) -> None:
             path = inventory.root / record.path
             if hashlib.sha256(path.read_bytes()).hexdigest() != record.sha256:
                 raise ValueError(f"captured snapshot hash mismatch: {record.path}")
+
+
+def _dirty_paths(repo: Path) -> list[str]:
+    # Not ``git()``: stripping would eat the status column of the first entry.
+    raw = subprocess.run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                         cwd=repo, check=True, capture_output=True, text=True,
+                         env={**os.environ, "GIT_NO_LAZY_FETCH": "1"}).stdout
+    paths: list[str] = []
+    entries = iter(raw.split("\0"))
+    for entry in entries:
+        if len(entry) < 4:
+            continue
+        paths.append(entry[3:])
+        if entry[0] in "RC":
+            paths.append(next(entries, ""))
+    return [path for path in paths if path]
+
+
+def _overlay_current(repo: Path, package: Path, primary: dict[str, Any]) -> str | None:
+    """Return why a captured checkout view no longer matches the checkout, or None.
+
+    The Git status fingerprint catches changed dirty membership; only the paths
+    Git reports as dirty are hashed, so clean tracked files cost nothing.
+    """
+    capture = json.loads((package / "capture.json").read_text())
+    worktree = next((s for s in json.loads((package / "snapshots.json").read_text())["snapshots"]
+                     if s.get("name") == "worktree"), None)
+    if worktree is None:
+        return "retained checkout view has no worktree overlay manifest"
+    revision, dirty, fingerprint = _git_state(repo)
+    if revision != primary.get("revision"):
+        return f"checkout HEAD {revision} differs from captured {primary.get('revision')}"
+    if (dirty, fingerprint) != (capture.get("dirty"), capture.get("status_fingerprint")):
+        return "checkout dirty-file set changed since capture"
+    records = {row["path"]: row for row in
+               json.loads((package / worktree["path"]).read_text())["files"]}
+    for relative in _dirty_paths(repo):
+        record = records.get(relative)
+        path = repo / relative
+        exists = path.is_file() and not path.is_symlink()
+        if record is None:
+            if exists:
+                return f"dirty path was not captured: {relative}"
+            continue
+        if not record.get("included") or record.get("sha256") is None:
+            continue
+        if not exists or hashlib.sha256(path.read_bytes()).hexdigest() != record["sha256"]:
+            return f"dirty path changed since capture: {relative}"
+    return None
+
+
+def view_currentness(repo: Path, package: Path) -> dict[str, Any]:
+    """Compare a retained package's selected views with the repository's local refs.
+
+    Default-branch views follow the default ref's commit; explicit candidate
+    refs follow only their own ref. Only a checkout-target view (primary ref
+    ``worktree``) includes the dirty overlay, so live edits never invalidate a
+    commit-pinned view. Git resolves linked worktrees, so ``.git`` may be a file.
+    """
+    catalogue_path = package / "snapshots.json"
+    if not catalogue_path.is_file():
+        return {"state": "never_captured", "reason": f"no retained snapshot catalogue at {catalogue_path}"}
+    try:
+        git(repo, "rev-parse", "--git-dir")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return {"state": "unavailable", "reason": f"repository unavailable: {repo}: {exc}"}
+    try:
+        snapshots = json.loads(catalogue_path.read_text())["snapshots"]
+    except (OSError, ValueError, KeyError) as exc:
+        return {"state": "stale", "reason": f"retained snapshot catalogue unreadable: {exc}"}
+    stale: list[str] = []
+    for snapshot in snapshots:
+        name = snapshot.get("name")
+        try:
+            if name == "primary" and snapshot.get("ref") == "worktree":
+                reason = _overlay_current(repo, package, snapshot)
+                if reason:
+                    stale.append(f"primary: {reason}")
+                continue
+            if name == "primary" or name == "merged":
+                ref, revision = resolve_ref(repo)
+            elif str(name).startswith("candidate-"):
+                ref, revision = resolve_ref(repo, snapshot["ref"])
+            else:
+                continue
+        except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as exc:
+            stale.append(f"{name}: selected view unavailable: {exc}")
+            continue
+        if (ref, revision) != (snapshot.get("ref"), snapshot.get("revision")):
+            stale.append(f"{name}: {ref}@{revision[:12]} differs from captured "
+                         f"{snapshot.get('ref')}@{str(snapshot.get('revision'))[:12]}")
+    primary = snapshots[0] if snapshots else {}
+    if stale:
+        return {"state": "stale", "reason": "; ".join(stale), "revision": primary.get("revision")}
+    return {"state": "current", "reason": "selected views match local refs",
+            "revision": primary.get("revision")}

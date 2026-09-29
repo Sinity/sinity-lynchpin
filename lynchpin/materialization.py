@@ -2781,7 +2781,7 @@ def _github_context_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 def _code_snapshots_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     from .sources.code_snapshots import code_snapshots_path
-    from .ingest.code_snapshots_materialize import code_snapshots_stale
+    from .ingest.code_snapshots_materialize import code_snapshots_currentness
     from .substrate.code_snapshots import count_code_snapshot_slices
     from .substrate.connection import connect
 
@@ -2802,9 +2802,9 @@ def _code_snapshots_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     if run_count == 0:
         status: Status = "missing"
         reason = "code_snapshot_run substrate table has no rows — run chisel to populate"
-    elif code_snapshots_stale():
+    elif (currentness := code_snapshots_currentness())["state"] != "current":
         status = "partial"
-        reason = "one or more registered repos have advanced since last chisel run"
+        reason = f"selected snapshot views are not current: {currentness['reason']}"
     else:
         status = "ready"
         reason = f"code snapshots are current ({run_count} projects, {row_count} slice files)"
