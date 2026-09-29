@@ -7,14 +7,16 @@ import heapq
 import sqlite3
 import functools
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, Literal, Optional, Sequence
 
 
-from ..core.cache import file_signature
+from ..core.cache import file_signature, input_versions
 from ..core.config import get_config
-from ..core.errors import MaterializationError
+from ..core.errors import MaterializationError, SourceUnavailableError
+from ..core.io import latest_mtime_iso
 from ..core.parse import as_local
 from ..core.primitives import logical_date
 from .activitywatch_event_index import (
@@ -23,9 +25,12 @@ from .activitywatch_event_index import (
 )
 from .activitywatch_models import AWEvent
 
-def _connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
+def _connect(db_path: Optional[Path] = None, *, timeout: float = 5.0) -> sqlite3.Connection:
+    # Read-only: a read-write connection that closes last checkpoints the
+    # owner's WAL into the main file and deletes it, and would create an empty
+    # database for a missing path.
     path = Path(db_path).expanduser() if db_path else get_config().activitywatch_db
-    return sqlite3.connect(str(path))
+    return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=timeout)
 
 
 def _candidate_dbs(db_path: Optional[Path] = None) -> tuple[Path, ...]:
@@ -63,6 +68,44 @@ def _database_signature(path: Path) -> tuple[object, ...]:
         file_signature(path),
         file_signature(Path(f"{path}-wal")),
         file_signature(Path(f"{path}-shm")),
+    )
+
+
+@dataclass(frozen=True)
+class ActivityWatchInputObservation:
+    """Identity of owner SQLite inputs, observed before one acquisition reads.
+
+    ``versions`` follows :func:`lynchpin.core.cache.input_versions`, which
+    records each database's ``-wal`` beside it: a live writer's committed rows
+    stay in the WAL until checkpoint while the main file's stat is unchanged.
+    Observing before the read means a publication never certifies a later
+    state it did not consume.  Each database is read by one statement, i.e. one
+    SQLite read transaction, so the rows form a consistent per-database
+    snapshot at or after this observation; :meth:`changed` reports whether a
+    commit raced the read, in which case the identity is only a lower bound.
+    """
+
+    paths: tuple[Path, ...]
+    versions: list[dict[str, Any]]
+    latest_mtime: str | None
+
+    @property
+    def signature(self) -> str:
+        from ..materializers.partition_store import deterministic_input_digest
+
+        return deterministic_input_digest(self.versions)
+
+    def changed(self) -> bool:
+        return input_versions(self.paths) != self.versions
+
+
+def observe_activitywatch_inputs(paths: Sequence[Path]) -> ActivityWatchInputObservation:
+    """Observe ``paths`` before reading them; see :class:`ActivityWatchInputObservation`."""
+    observed = tuple(paths)
+    return ActivityWatchInputObservation(
+        paths=observed,
+        versions=input_versions(observed),
+        latest_mtime=latest_mtime_iso(observed),
     )
 
 
@@ -167,9 +210,18 @@ def events_from_activitywatch_dbs(
     start: datetime | None = None,
     end: datetime | None = None,
     db_path: Optional[Path] = None,
+    databases: Optional[Sequence[Path]] = None,
     order: Literal["start", "bucket"] = "start",
     dedupe: bool = True,
 ) -> Iterator[AWEvent]:
+    """Yield events from owner SQLite databases.
+
+    ``databases`` pins the exact files an acquisition observed; otherwise the
+    configured live and archive databases are discovered.  A missing, locked,
+    or unreadable database raises :class:`SourceUnavailableError` rather than
+    contributing zero rows, so an incomplete read is never mistaken for an
+    observed-empty source.
+    """
     if start is not None:
         start = as_local(start)
     if end is not None:
@@ -196,7 +248,8 @@ def events_from_activitywatch_dbs(
     else:
         query += " ORDER BY e.starttime"
     streams: list[Iterator[AWEvent]] = []
-    for candidate in _candidate_dbs(db_path):
+    candidates = tuple(databases) if databases is not None else _candidate_dbs(db_path)
+    for candidate in candidates:
         if not _candidate_may_overlap(candidate, prefixes=prefixes, start=start, end=end):
             continue
         streams.append(_iter_activitywatch_db_events(candidate, query, params))
@@ -223,20 +276,33 @@ def _iter_activitywatch_db_events(
 ) -> Iterator[AWEvent]:
     # Keep each connection alive for its cursor, but release it as soon as the
     # stream is exhausted. The merge above holds only one row per database.
-    with closing(_connect(candidate)) as conn:
-        for bucket, start_ns, end_ns, payload in conn.execute(query, params):
-            if start_ns is None or end_ns is None or end_ns < start_ns:
-                continue
-            payload_text = payload if isinstance(payload, str) else payload.decode("utf-8") if payload else ""
-            data: Dict[str, object] = {}
-            if payload_text:
-                try:
-                    data = json.loads(payload_text)
-                except json.JSONDecodeError:
-                    pass
-            s = datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
-            e = datetime.fromtimestamp(end_ns / 1_000_000_000, tz=timezone.utc)
-            yield AWEvent(bucket=bucket, start=s, end=e, data=data)
+    # A single statement is one read transaction: every row comes from the
+    # same committed database state, including rows still in the WAL.
+    if not candidate.is_file():
+        raise SourceUnavailableError("activitywatch", path=str(candidate), reason="database is missing")
+    try:
+        with closing(_connect(candidate)) as conn:
+            yield from _decode_activitywatch_rows(conn.execute(query, params))
+    except sqlite3.Error as exc:
+        raise SourceUnavailableError(
+            "activitywatch", path=str(candidate), reason=f"database read failed: {exc}"
+        ) from exc
+
+
+def _decode_activitywatch_rows(rows: Iterator[Any]) -> Iterator[AWEvent]:
+    for bucket, start_ns, end_ns, payload in rows:
+        if start_ns is None or end_ns is None or end_ns < start_ns:
+            continue
+        payload_text = payload if isinstance(payload, str) else payload.decode("utf-8") if payload else ""
+        data: Dict[str, object] = {}
+        if payload_text:
+            try:
+                data = json.loads(payload_text)
+            except json.JSONDecodeError:
+                pass
+        s = datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
+        e = datetime.fromtimestamp(end_ns / 1_000_000_000, tz=timezone.utc)
+        yield AWEvent(bucket=bucket, start=s, end=e, data=data)
 
 
 def _event_key(event: AWEvent) -> tuple[str, int, int, str]:
@@ -260,7 +326,9 @@ def _candidate_may_overlap(
     start: datetime | None,
     end: datetime | None,
 ) -> bool:
-    if start is None and end is None:
+    if start is None and end is None or not path.is_file():
+        # A missing file must reach the reader, which reports it as unavailable;
+        # connecting here would create an empty database.
         return True
     bounds = _db_event_bounds(path, _database_signature(path), prefixes)
     if bounds is False:

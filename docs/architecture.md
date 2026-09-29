@@ -133,7 +133,7 @@ its paths and covered dates. Paired `start` and `end` dates report coverage of
 that inclusive window without refreshing products. `tail_stale` distinguishes
 new live input from historical repair requirements.
 
-Materialization manifests retain the identity of each declared input file, including the SQLite WAL where applicable. A missing identity is unverified, and an input replacement invalidates the product even when the newest mtime and file count are unchanged. Date extrema describe observed event extent; only explicit covered dates or a source-specific verified index establish coverage between them. Raw capture directory mtimes do not supply event dates.
+Materialization manifests retain the identity of each declared input file, including the SQLite WAL where applicable. A missing identity is unverified, and an input replacement invalidates the product even when the newest mtime and file count are unchanged. A materializer observes that identity before it reads, so a manifest never names a later input state than the one consumed; when a commit races the read, the manifest records `input_changed_during_read` and the product is not reused at that identity. A missing, locked, or unreadable owner database fails the acquisition and leaves the last published product in place; only a readable database with no rows is an observed-empty input. Date extrema describe observed event extent; only explicit covered dates or a source-specific verified index establish coverage between them. Raw capture directory mtimes do not supply event dates.
 
 Generated artifacts live under the ignored local root or configured derived
 root. Tracked documentation describes contracts, not generated personal

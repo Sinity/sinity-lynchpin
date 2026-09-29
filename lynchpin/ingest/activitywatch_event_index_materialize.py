@@ -11,8 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..core.config import get_config
-from ..core.errors import MaterializationError
-from ..core.io import latest_mtime_iso
+from ..core.errors import MaterializationError, SourceUnavailableError
 from ..core.primitives import date_to_dt_range, logical_date
 from ..sources.activitywatch_dedup import dedup_and_merge
 from ..sources.activitywatch_event_index import (
@@ -23,6 +22,7 @@ from ..sources.activitywatch_event_index import (
 )
 from ..sources.activitywatch_raw import (
     events_from_activitywatch_dbs,
+    observe_activitywatch_inputs,
 )
 from .activitywatch_materialize import BUCKET_PREFIXES, activitywatch_input_files
 from ._manifest import write_manifest
@@ -30,7 +30,10 @@ from ._manifest import write_manifest
 
 def activitywatch_event_index_input_files() -> tuple[Path, ...]:
     """Return owner-native databases and WALs used to build the day index."""
-    databases = activitywatch_input_files(get_config())
+    return _index_input_paths(activitywatch_input_files(get_config()))
+
+
+def _index_input_paths(databases: tuple[Path, ...]) -> tuple[Path, ...]:
     return tuple(
         path
         for db in databases
@@ -49,22 +52,27 @@ def materialize_activitywatch_event_index(
     output_dir = activitywatch_event_index_dir(root)
     output_dir.mkdir(parents=True, exist_ok=True)
     window_dates = _exclusive_window_dates(start, end)
+    databases = activitywatch_input_files(get_config())
+    # Observe before reading so the manifest names a state the read consumed.
+    observation = observe_activitywatch_inputs(_index_input_paths(databases))
 
     previous: dict[str, Any] = {}
+    if window_dates is None and not full:
+        raise MaterializationError(
+            "activitywatch_event_index_materialize",
+            reason="an unbounded ActivityWatch event-index rebuild requires explicit full=True",
+        )
+    if not databases:
+        # Absent databases are unavailable, not an observed-empty source: an
+        # empty read must not replace the published days.
+        raise SourceUnavailableError(
+            "activitywatch",
+            reason="live ActivityWatch SQLite and archived databases are missing",
+        )
     if window_dates is None:
-        if not full:
-            raise MaterializationError(
-                "activitywatch_event_index_materialize",
-                reason="an unbounded ActivityWatch event-index rebuild requires explicit full=True",
-            )
-        if not activitywatch_event_index_input_files():
-            raise FileNotFoundError(
-                "live ActivityWatch SQLite and archived databases are missing; "
-                "cannot perform a full event-index rebuild"
-            )
         paths: dict[str, str] = {}
         row_counts: dict[str, int] = {}
-        rows = _iter_live_rows()
+        rows = _iter_live_rows(databases=databases)
     else:
         previous = _read_existing_manifest(activitywatch_event_index_manifest_path(root))
         paths = _string_dict(previous.get("product_paths"))
@@ -89,7 +97,7 @@ def materialize_activitywatch_event_index(
             raw_day = day.isoformat()
             paths.pop(raw_day, None)
             row_counts.pop(raw_day, None)
-        rows = _iter_tail_rows(start=start, end=end)
+        rows = _iter_tail_rows(start=start, end=end, databases=databases)
 
     # A refresh writes only its affected day files into a new immutable
     # generation. The single manifest move below is the visibility boundary:
@@ -126,6 +134,9 @@ def materialize_activitywatch_event_index(
         for output in temporary_handles.values():
             output.close()
 
+    # A commit that raced the read leaves the observation as a lower bound;
+    # the next freshness check sees newer inputs and refreshes again.
+    input_changed_during_read = observation.changed()
     generation_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir.replace(generation_dir)
     for raw_day, staging_path in generation_paths.items():
@@ -149,7 +160,6 @@ def materialize_activitywatch_event_index(
         # the stale carrier was copied faithfully.
         canonical_row_count_verified = False
         full_source_scan_completed = True
-    input_files = activitywatch_event_index_input_files()
     manifest = {
         "dataset": "lynchpin.activitywatch_event_index",
         "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
@@ -170,16 +180,18 @@ def materialize_activitywatch_event_index(
         "window_semantics": "start inclusive, end exclusive"
         if start is not None and end is not None
         else None,
-        "input_files": [str(path) for path in input_files],
-        "input_file_count": len(input_files),
-        "input_latest_mtime": latest_mtime_iso(input_files),
+        "input_files": [str(path) for path in observation.paths],
+        "input_file_count": len(observation.paths),
+        "input_latest_mtime": observation.latest_mtime,
+        "input_versions": observation.versions,
+        "input_changed_during_read": input_changed_during_read,
     }
     write_manifest(activitywatch_event_index_manifest_path(root), manifest)
     return manifest
 
 
 def _iter_live_rows(
-    *, start: date | None = None, end: date | None = None
+    *, databases: tuple[Path, ...], start: date | None = None, end: date | None = None
 ) -> Iterable[dict[str, Any]]:
     source_start = source_end = None
     if start is not None and end is not None:
@@ -188,6 +200,7 @@ def _iter_live_rows(
         BUCKET_PREFIXES,
         start=source_start,
         end=source_end,
+        databases=databases,
         order="bucket",
         dedupe=False,
     )
@@ -200,9 +213,11 @@ def _iter_live_rows(
         }
 
 
-def _iter_tail_rows(*, start: date | None, end: date | None) -> Iterable[dict[str, Any]]:
+def _iter_tail_rows(
+    *, start: date | None, end: date | None, databases: tuple[Path, ...]
+) -> Iterable[dict[str, Any]]:
     assert start is not None and end is not None
-    yield from _iter_live_rows(start=start, end=end)
+    yield from _iter_live_rows(start=start, end=end, databases=databases)
 
 
 def _exclusive_window_dates(start: date | None, end: date | None) -> frozenset[date] | None:
