@@ -6,8 +6,8 @@ import logging
 import json
 from collections import defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import date
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from ._helpers import promote_rows
@@ -20,24 +20,31 @@ log = logging.getLogger(__name__)
 
 def _lineage(
     conn: "duckdb.DuckDBPyConnection", *, product: str, refresh_id: str,
-) -> list[tuple[str, date | None]]:
-    """Return newest-first product partitions, rejecting broken ancestry."""
-    result: list[tuple[str, date | None]] = []
+) -> list[tuple[str, tuple[tuple[date, date | None], ...]]]:
+    """Return newest-first product partitions with the ranges newer ones replaced.
+
+    Each partition carries every replacement range recorded by a newer partition
+    in the chain, not only its immediate child's: after a Jan20 and then a Jan10
+    replacement, a Jan15 row in the grandparent stays replaced.  An open range
+    (``None`` end) is a lineage row written before replacement ends existed.
+    """
+    result: list[tuple[str, tuple[tuple[date, date | None], ...]]] = []
     seen: set[str] = set()
     current: str | None = refresh_id
-    cutoff_for_current: date | None = None
+    replaced: tuple[tuple[date, date | None], ...] = ()
     while current is not None:
         if current in seen:
             raise ValueError(f"cycle in {product} substrate lineage at {current}")
         seen.add(current)
         row = conn.execute(
-            "SELECT predecessor_refresh_id, replacement_start FROM substrate_product_lineage "
-            "WHERE product = ? AND refresh_id = ?", [product, current]
+            "SELECT predecessor_refresh_id, replacement_start, replacement_end "
+            "FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?",
+            [product, current],
         ).fetchone()
         if row is None:
             raise ValueError(f"missing {product} substrate lineage for refresh {current}")
-        predecessor, cutoff = row
-        result.append((current, cutoff_for_current))
+        predecessor, start, end = row
+        result.append((current, replaced))
         if predecessor is not None:
             parent = conn.execute(
                 "SELECT 1 FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?",
@@ -45,42 +52,38 @@ def _lineage(
             ).fetchone()
             if parent is None:
                 raise ValueError(f"missing predecessor {predecessor!r} for {product} refresh {current}")
-        cutoff_for_current = cutoff
+        if start is not None:
+            replaced = (*replaced, (start, end))
         current = str(predecessor) if predecessor is not None else None
     return result
 
 
-def _begin_product(conn: "duckdb.DuckDBPyConnection", *, product: str, refresh_id: str) -> None:
-    conn.execute("DELETE FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?", [product, refresh_id])
-    conn.execute("DELETE FROM substrate_product_tombstone WHERE product = ? AND refresh_id = ?", [product, refresh_id])
-
-
-def _record_product(
-    conn: "duckdb.DuckDBPyConnection", *, product: str, refresh_id: str,
-    predecessor_refresh_id: str | None, replacement_start: date | None,
-    input_fingerprint: str | None, mode: str,
-) -> None:
-    conn.execute(
-        "INSERT INTO substrate_product_lineage VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-        [product, refresh_id, predecessor_refresh_id, replacement_start, input_fingerprint, mode],
-    )
+# The column that places a row inside a replacement range. Title metadata is
+# undated: its partitions replace keys through rows and tombstones only.
+_PRODUCT_DATE_COLUMN = {
+    "activity_title_usage": "last_date",
+    "title_metadata": None,
+}
 
 
 def _resolved_rows(
     conn: "duckdb.DuckDBPyConnection", *, product: str, refresh_id: str,
     table: str, columns: tuple[str, ...], key,
 ) -> list[tuple[Any, ...]]:
+    date_column = _PRODUCT_DATE_COLUMN.get(product, "date")
     chosen: dict[Any, tuple[Any, ...]] = {}
     blocked: set[Any] = set()
-    for partition, cutoff in _lineage(conn, product=product, refresh_id=refresh_id):
+    for partition, replaced in _lineage(conn, product=product, refresh_id=refresh_id):
         sql = f"SELECT {', '.join(columns)} FROM {table} WHERE refresh_id = ?"
         params: list[Any] = [partition]
-        if cutoff is not None and product == "activity_title_usage":
-            sql += " AND last_date < ?"
-            params.append(cutoff)
-        elif cutoff is not None and product != "title_metadata":
-            sql += " AND date < ?"
-            params.append(cutoff)
+        if date_column is not None:
+            for start, end in replaced:
+                if end is None:
+                    sql += f" AND {date_column} < ?"
+                    params.append(start)
+                else:
+                    sql += f" AND NOT ({date_column} >= ? AND {date_column} < ?)"
+                    params.extend((start, end))
         for row in conn.execute(sql, params).fetchall():
             natural_key = key(row)
             if natural_key not in blocked:
@@ -96,43 +99,128 @@ def _resolved_rows(
     return [chosen[natural_key] for natural_key in sorted(chosen, key=repr)]
 
 
-def _promote_tail_rows(
+def _commit_product(
     conn: "duckdb.DuckDBPyConnection", *, product: str, table: str,
-    columns: tuple[str, ...], refresh_id: str, rows: Iterable[Any], extractor,
-    previous_refresh_id: str | None, tail_start: date | None, batch_size: int | None = None,
-    date_getter=None,
+    columns: tuple[str, ...], refresh_id: str, rows: list[tuple[Any, ...]],
+    predecessor_refresh_id: str | None,
+    replacement: tuple[date, date] | None,
+    tombstones: Iterable[str] = (),
+    input_fingerprint: str | None = None,
+    logical_row_count: int | None = None,
+    batch_size: int | None = None,
 ) -> int:
-    if tail_start is None:
-        _begin_product(conn, product=product, refresh_id=refresh_id)
-        count = promote_rows(conn, table=table, columns=columns, refresh_id=refresh_id,
-                             rows=rows, extractor=extractor, batch_size=batch_size)
-        _record_product(conn, product=product, refresh_id=refresh_id,
-                        predecessor_refresh_id=None, replacement_start=None,
-                        input_fingerprint=None, mode="full")
-        return count
-    if previous_refresh_id is None:
-        raise ValueError(f"incremental {product} promotion requires a predecessor refresh_id")
-    if previous_refresh_id == refresh_id:
-        old = conn.execute(
-            "SELECT predecessor_refresh_id, replacement_start FROM substrate_product_lineage "
-            "WHERE product = ? AND refresh_id = ?", [product, refresh_id]
-        ).fetchone()
-        if old is None:
-            raise ValueError(f"missing {product} substrate lineage for refresh {refresh_id}")
-        previous_refresh_id = old[0]
-    _lineage(conn, product=product, refresh_id=previous_refresh_id)
-    _begin_product(conn, product=product, refresh_id=refresh_id)
-    def row_date(row: Any) -> date:
-        if date_getter is not None:
-            return date_getter(row)
-        return row.date if hasattr(row, "date") else row[1]
-    filtered = (row for row in rows if row_date(row) >= tail_start)
-    count = promote_rows(conn, table=table, columns=columns, refresh_id=refresh_id,
-                         rows=filtered, extractor=extractor, batch_size=batch_size)
-    _record_product(conn, product=product, refresh_id=refresh_id,
-                    predecessor_refresh_id=previous_refresh_id, replacement_start=tail_start,
-                    input_fingerprint=None, mode="incremental")
+    """Publish one product partition: rows, tombstones and lineage together.
+
+    Callers build ``rows`` completely before calling, so a failing input
+    leaves any earlier partition and its metadata untouched.  A failed write
+    rolls the whole partition back; the promotion then records an error and
+    the outer candidate generation is rejected.
+    """
+    if predecessor_refresh_id is not None and predecessor_refresh_id == refresh_id:
+        raise ValueError(f"{product} refresh {refresh_id} cannot be its own predecessor")
+    if replacement is not None and predecessor_refresh_id is None:
+        raise ValueError(f"{product} replacement range requires a predecessor refresh_id")
+    if replacement is not None and not replacement[0] < replacement[1]:
+        raise ValueError(f"empty {product} replacement range {replacement[0]}..{replacement[1]}")
+    if predecessor_refresh_id is not None:
+        _lineage(conn, product=product, refresh_id=predecessor_refresh_id)
+    existing = conn.execute(
+        "SELECT 1 FROM substrate_product_lineage WHERE product = ? AND refresh_id = ? "
+        f"UNION ALL SELECT 1 FROM {table} WHERE refresh_id = ? LIMIT 1",
+        [product, refresh_id, refresh_id],
+    ).fetchone()
+    if existing is not None:
+        # DuckDB 1.1 rejects deleting and re-inserting one primary key in a
+        # single transaction (tests/substrate/test_product_lineage.py reproduces
+        # it natively), so a re-promoted partition is retired as one committed
+        # unit before its replacement commits as another.
+        conn.execute("BEGIN TRANSACTION")
+        try:
+            conn.execute(f"DELETE FROM {table} WHERE refresh_id = ?", [refresh_id])
+            conn.execute(
+                "DELETE FROM substrate_product_tombstone WHERE product = ? AND refresh_id = ?",
+                [product, refresh_id],
+            )
+            conn.execute(
+                "DELETE FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?",
+                [product, refresh_id],
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        count = promote_rows(
+            conn, table=table, columns=columns, refresh_id=refresh_id, rows=rows,
+            extractor=lambda row: row, batch_size=batch_size,
+            delete_existing=False, wrap_transaction=False,
+        )
+        keys = sorted(set(tombstones))
+        if keys:
+            conn.executemany(
+                "INSERT INTO substrate_product_tombstone (product, refresh_id, natural_key) VALUES (?, ?, ?)",
+                [(product, refresh_id, natural_key) for natural_key in keys],
+            )
+        conn.execute(
+            "INSERT INTO substrate_product_lineage (product, refresh_id, predecessor_refresh_id, "
+            "replacement_start, replacement_end, input_fingerprint, logical_row_count, mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                product, refresh_id, predecessor_refresh_id,
+                replacement[0] if replacement else None,
+                replacement[1] if replacement else None,
+                input_fingerprint, logical_row_count,
+                "full" if predecessor_refresh_id is None else "incremental",
+            ],
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
     return count
+
+
+def _replacement(
+    product: str, previous_refresh_id: str | None,
+    replacement_start: date | None, replacement_end: date | None,
+) -> tuple[date, date] | None:
+    if replacement_start is None and replacement_end is None:
+        return None
+    if replacement_start is None or replacement_end is None:
+        raise ValueError(f"{product} replacement needs both a start and an end")
+    if previous_refresh_id is None:
+        raise ValueError(f"bounded {product} replacement requires a predecessor refresh_id")
+    return replacement_start, replacement_end
+
+
+def _promote_dated_product(
+    conn: "duckdb.DuckDBPyConnection", *, product: str, table: str,
+    columns: tuple[str, ...], refresh_id: str, rows: Iterable[tuple[Any, ...]],
+    previous_refresh_id: str | None, replacement_start: date | None,
+    replacement_end: date | None, row_date, tombstones: Iterable[str] = (),
+    batch_size: int | None = None, clip_end: bool = True,
+) -> int:
+    """Promote a full partition, or one replacing ``[start, end)`` of its predecessor.
+
+    Predecessor rows outside the range stay visible to readers, so a finite
+    historical correction never removes later data it did not read.
+    ``clip_end=False`` keeps rows whose date lies past the range: a title-usage
+    aggregate that overlaps the range carries its last date beyond it.
+    """
+    replacement = _replacement(product, previous_refresh_id, replacement_start, replacement_end)
+    built = list(rows)
+    if replacement is not None:
+        start, end = replacement
+        built = [
+            row for row in built
+            if row_date(row) >= start and (not clip_end or row_date(row) < end)
+        ]
+    return _commit_product(
+        conn, product=product, table=table, columns=columns, refresh_id=refresh_id,
+        rows=built, predecessor_refresh_id=previous_refresh_id if replacement else None,
+        replacement=replacement, tombstones=tombstones, batch_size=batch_size,
+    )
 
 
 # ── spotify_daily ─────────────────────────────────────────────────────────────
@@ -374,8 +462,8 @@ __all__ = [
     "promote_personal_daily_signals",
     "promote_sinnix_generations",
     "promote_spotify_daily_rows",
-    "promote_title_classifications",
     "promote_title_classifications_from_path",
+    "TitleClassificationPromotion",
     "verify_activity_content_integrity",
 ]
 
@@ -399,70 +487,27 @@ def promote_personal_daily_signals(
     refresh_id: str,
     rows: Iterable[tuple[str, date, str, float, dict[str, Any]]],
     previous_refresh_id: str | None = None,
-    incremental_tail_start: date | None = None,
+    replacement_start: date | None = None,
+    replacement_end: date | None = None,
 ) -> int:
-    """INSERT normalized daily personal-source signals.
+    """INSERT normalized daily personal-source signals as one product partition.
 
-    An incremental snapshot is a new refresh partition.  Copy the verified
-    predecessor before the tail, then replace only ``[incremental_tail_start,
-    end)`` with the newly coalesced rows.  This keeps sparse coverage and
-    makes an empty tail an intentional replacement rather than a reason to
-    retain stale dates.
+    With a replacement range the partition holds only the newly coalesced
+    rows for ``[replacement_start, replacement_end)``; readers carry the
+    verified predecessor outside that range.  An empty range is an intentional
+    replacement rather than a reason to retain stale dates inside it.
     """
-    if incremental_tail_start is not None:
-        if previous_refresh_id is None:
-            raise ValueError("incremental daily-signal promotion requires a predecessor refresh_id")
-        return _promote_incremental_personal_daily_signals(
-            conn,
-            refresh_id=refresh_id,
-            previous_refresh_id=previous_refresh_id,
-            tail_start=incremental_tail_start,
-            rows=rows,
-        )
-
-    def extract(row: tuple[str, date, str, float, dict[str, Any]]) -> tuple[Any, ...]:
-        dimensions = json.dumps(row[4], sort_keys=True)
-        return (
-            row[0],
-            row[1],
-            row[2],
-            float(row[3]),
-            dimensions,
-            dimensions,
-        )
-
-    count = promote_rows(
-        conn,
-        table="personal_daily_signal",
-        columns=_PERSONAL_DAILY_SIGNAL_COLUMNS,
-        refresh_id=refresh_id,
-        rows=_coalesce_daily_signals(rows),
-        extractor=extract,
-    )
-    _begin_product(conn, product="personal_daily_signals", refresh_id=refresh_id)
-    _record_product(conn, product="personal_daily_signals", refresh_id=refresh_id,
-                    predecessor_refresh_id=None, replacement_start=None,
-                    input_fingerprint=None, mode="full")
-    return count
-
-
-def _promote_incremental_personal_daily_signals(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-    previous_refresh_id: str,
-    tail_start: date,
-    rows: Iterable[tuple[str, date, str, float, dict[str, Any]]],
-) -> int:
-    """Promote only the replacement tail; readers carry the predecessor."""
     def extract(row: tuple[str, date, str, float, dict[str, Any]]) -> tuple[Any, ...]:
         dimensions = json.dumps(row[4], sort_keys=True)
         return row[0], row[1], row[2], float(row[3]), dimensions, dimensions
-    return _promote_tail_rows(
+
+    return _promote_dated_product(
         conn, product="personal_daily_signals", table="personal_daily_signal",
         columns=_PERSONAL_DAILY_SIGNAL_COLUMNS, refresh_id=refresh_id,
-        rows=_coalesce_daily_signals(rows), extractor=extract,
-        previous_refresh_id=previous_refresh_id, tail_start=tail_start,
+        rows=(extract(row) for row in _coalesce_daily_signals(rows)),
+        previous_refresh_id=previous_refresh_id,
+        replacement_start=replacement_start, replacement_end=replacement_end,
+        row_date=lambda row: row[1],
     )
 
 
@@ -519,53 +564,12 @@ _TITLE_CLASSIFICATION_COLUMNS = (
 )
 
 
-def promote_title_classifications(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-    rows: Iterable[Any],
-    previous_refresh_id: str | None = None,
-    incremental_tail_start: date | None = None,
-) -> int:
-    """INSERT canonical title classifications."""
+@dataclass(frozen=True)
+class TitleClassificationPromotion:
+    """Rows one refresh wrote, and the titles readers resolve through it."""
 
-    def extract(row: Any) -> tuple[Any, ...]:
-        return (
-            row.title_hash,
-            row.app,
-            row.raw_title,
-            row.normalized_title,
-            row.activity,
-            row.subject,
-            row.content_type,
-            row.attention_level,
-            row.topic_category,
-            row.platform,
-            row.mode,
-            row.app_kind,
-            row.tool,
-            row.domain,
-            row.domain_category,
-            row.is_ai_tool,
-            row.is_ai_active,
-            row.productivity_score,
-            row.focus_score,
-            row.confidence,
-            row.classification_source,
-            row.model_version,
-            json.dumps(row.extra or {}, sort_keys=True),
-        )
-
-    return _promote_tail_rows(
-        conn,
-        product="title_metadata", table="title_classification",
-        columns=_TITLE_CLASSIFICATION_COLUMNS,
-        refresh_id=refresh_id,
-        rows=rows,
-        extractor=extract,
-        batch_size=10_000,
-        previous_refresh_id=previous_refresh_id, tail_start=incremental_tail_start,
-    )
+    written: int
+    logical: int
 
 
 def promote_title_classifications_from_path(
@@ -575,57 +579,62 @@ def promote_title_classifications_from_path(
     path: str,
     previous_refresh_id: str | None = None,
     input_fingerprint: str | None = None,
-) -> int:
-    """Promote only changed title keys, with tombstones for removals."""
+) -> TitleClassificationPromotion:
+    """Promote only changed title keys, with tombstones for removals.
+
+    An unchanged input fingerprint writes no rows and inherits every title
+    from the predecessor, whose lineage already records how many there are.
+    """
     predecessor = previous_refresh_id
-    if predecessor == refresh_id:
-        old = conn.execute(
-            "SELECT predecessor_refresh_id FROM substrate_product_lineage WHERE product='title_metadata' AND refresh_id=?",
-            [refresh_id],
-        ).fetchone()
-        predecessor = old[0] if old else None
-    previous_fingerprint = None
+    if predecessor is not None and predecessor == refresh_id:
+        raise ValueError(f"title_metadata refresh {refresh_id} cannot be its own predecessor")
+    inherited: tuple[Any, ...] | None = None
     if predecessor is not None:
         _lineage(conn, product="title_metadata", refresh_id=predecessor)
-        previous_fingerprint = conn.execute(
-            "SELECT input_fingerprint FROM substrate_product_lineage WHERE product='title_metadata' AND refresh_id=?",
+        inherited = conn.execute(
+            "SELECT input_fingerprint, logical_row_count FROM substrate_product_lineage "
+            "WHERE product = 'title_metadata' AND refresh_id = ?",
             [predecessor],
-        ).fetchone()[0]
-    _begin_product(conn, product="title_metadata", refresh_id=refresh_id)
-    conn.execute("DELETE FROM title_classification WHERE refresh_id = ?", [refresh_id])
-    if predecessor is not None and input_fingerprint is not None and input_fingerprint == previous_fingerprint:
-        _record_product(conn, product="title_metadata", refresh_id=refresh_id,
-                        predecessor_refresh_id=predecessor, replacement_start=None,
-                        input_fingerprint=input_fingerprint, mode="incremental")
-        return 0
-    result = conn.execute(
+        ).fetchone()
+    if (
+        inherited is not None
+        and input_fingerprint is not None
+        and inherited[0] == input_fingerprint
+        and inherited[1] is not None
+    ):
+        logical = int(inherited[1])
+        _commit_product(
+            conn, product="title_metadata", table="title_classification",
+            columns=_TITLE_CLASSIFICATION_COLUMNS, refresh_id=refresh_id, rows=[],
+            predecessor_refresh_id=predecessor, replacement=None,
+            input_fingerprint=input_fingerprint, logical_row_count=logical,
+        )
+        return TitleClassificationPromotion(written=0, logical=logical)
+    current = conn.execute(
         """SELECT title_hash, COALESCE(app, ''), raw_title, COALESCE(normalized_title, ''), activity, subject,
         content_type, attention_level, topic_category, platform, mode, app_kind, tool, domain,
         domain_category, is_ai_tool, is_ai_active, productivity_score, focus_score, confidence,
         classification_source, model_version, '{}'::JSON FROM read_json_auto(?)
         WHERE title_hash IS NOT NULL QUALIFY ROW_NUMBER() OVER
         (PARTITION BY title_hash ORDER BY confidence DESC NULLS LAST, app, normalized_title) = 1""", [path]
-    )
-    current = result.fetchall()
+    ).fetchall()
     old_rows = {} if predecessor is None else {
         row[0]: row for row in _resolved_rows(
             conn, product="title_metadata", refresh_id=predecessor,
-            table="title_classification", columns=(*_TITLE_CLASSIFICATION_COLUMNS,), key=lambda row: row[0]
+            table="title_classification", columns=_TITLE_CLASSIFICATION_COLUMNS, key=lambda row: row[0]
         )
     }
     current_keys = {row[0] for row in current}
-    changed = [SimpleNamespace(**dict(zip(_TITLE_CLASSIFICATION_COLUMNS, row)))
-               for row in current if row[0] not in old_rows or tuple(row) != old_rows[row[0]]]
-    count = promote_title_classifications(conn, refresh_id=refresh_id, rows=changed)
-    for title_hash in sorted(set(old_rows) - current_keys):
-        conn.execute("INSERT INTO substrate_product_tombstone VALUES ('title_metadata', ?, ?, CURRENT_TIMESTAMP)",
-                     [refresh_id, title_hash])
-    # promote_title_classifications recorded a self-contained lineage; replace it with the overlay metadata.
-    conn.execute("DELETE FROM substrate_product_lineage WHERE product='title_metadata' AND refresh_id=?", [refresh_id])
-    _record_product(conn, product="title_metadata", refresh_id=refresh_id,
-                    predecessor_refresh_id=predecessor, replacement_start=None,
-                    input_fingerprint=input_fingerprint, mode="incremental" if predecessor else "full")
-    return count
+    written = _commit_product(
+        conn, product="title_metadata", table="title_classification",
+        columns=_TITLE_CLASSIFICATION_COLUMNS, refresh_id=refresh_id,
+        rows=[tuple(row) for row in current if old_rows.get(row[0]) != tuple(row)],
+        predecessor_refresh_id=predecessor, replacement=None,
+        tombstones=set(old_rows) - current_keys,
+        input_fingerprint=input_fingerprint, logical_row_count=len(current_keys),
+        batch_size=10_000,
+    )
+    return TitleClassificationPromotion(written=written, logical=len(current_keys))
 
 
 _ACTIVITY_CONTENT_DAY_COLUMNS = (
@@ -646,28 +655,31 @@ def promote_activity_content_days(
     refresh_id: str,
     rows: Iterable[Any],
     previous_refresh_id: str | None = None,
-    incremental_tail_start: date | None = None,
+    replacement_start: date | None = None,
+    replacement_end: date | None = None,
 ) -> int:
-    count = _promote_tail_rows(
+    return _promote_dated_product(
         conn,
         product="activity_content_day", table="activity_content_day",
         columns=_ACTIVITY_CONTENT_DAY_COLUMNS,
         refresh_id=refresh_id,
-        rows=rows,
-        extractor=lambda row: (
-            row.date,
-            row.focused_seconds,
-            row.matched_seconds,
-            row.gpt_matched_seconds,
-            row.unmatched_seconds,
-            row.matched_ratio,
-            row.gpt_matched_ratio,
-            json.dumps(row.source_counts, sort_keys=True),
+        rows=(
+            (
+                row.date,
+                row.focused_seconds,
+                row.matched_seconds,
+                row.gpt_matched_seconds,
+                row.unmatched_seconds,
+                row.matched_ratio,
+                row.gpt_matched_ratio,
+                json.dumps(row.source_counts, sort_keys=True),
+            )
+            for row in rows
         ),
-        previous_refresh_id=previous_refresh_id, tail_start=incremental_tail_start,
-        date_getter=lambda row: row.date,
+        previous_refresh_id=previous_refresh_id,
+        replacement_start=replacement_start, replacement_end=replacement_end,
+        row_date=lambda row: row[0],
     )
-    return count
 
 
 def promote_activity_content_buckets(
@@ -676,7 +688,8 @@ def promote_activity_content_buckets(
     refresh_id: str,
     rows: Iterable[Any],
     previous_refresh_id: str | None = None,
-    incremental_tail_start: date | None = None,
+    replacement_start: date | None = None,
+    replacement_end: date | None = None,
 ) -> int:
     def bucket_rows() -> Iterable[tuple[date, str, str, float]]:
         dimensions = (
@@ -692,15 +705,15 @@ def promote_activity_content_buckets(
                 for label, seconds in values.items():
                     yield row.date, dimension, label, float(seconds)
 
-    return _promote_tail_rows(
+    return _promote_dated_product(
         conn,
         product="activity_content_bucket", table="activity_content_bucket",
         columns=("date", "dimension", "label", "seconds"),
         refresh_id=refresh_id,
         rows=bucket_rows(),
-        extractor=lambda row: row,
-        previous_refresh_id=previous_refresh_id, tail_start=incremental_tail_start,
-        date_getter=lambda row: row[0],
+        previous_refresh_id=previous_refresh_id,
+        replacement_start=replacement_start, replacement_end=replacement_end,
+        row_date=lambda row: row[0],
     )
 
 
@@ -724,31 +737,21 @@ _ACTIVITY_TITLE_USAGE_COLUMNS = (
 )
 
 
+def _title_usage_key(row: tuple[Any, ...]) -> str:
+    return f"{row[0]}\x1f{row[1]}"
+
+
 def promote_activity_title_usage(
     conn: "duckdb.DuckDBPyConnection",
     *,
     refresh_id: str,
     rows: Iterable[Any],
     previous_refresh_id: str | None = None,
-    incremental_tail_start: date | None = None,
+    replacement_start: date | None = None,
+    replacement_end: date | None = None,
 ) -> int:
-    materialized_rows = list(rows) if incremental_tail_start is not None else rows
-    predecessor_keys: set[tuple[str, str]] = set()
-    if incremental_tail_start is not None and previous_refresh_id is not None:
-        predecessor_keys = {
-            (row[0], row[1]) for row in _resolved_rows(
-                conn, product="activity_title_usage", refresh_id=previous_refresh_id,
-                table="activity_title_usage", columns=_ACTIVITY_TITLE_USAGE_COLUMNS,
-                key=lambda row: f"{row[0]}\x1f{row[1]}",
-            ) if row[7] is not None and row[7] >= incremental_tail_start
-        }
-    count = _promote_tail_rows(
-        conn,
-        product="activity_title_usage", table="activity_title_usage",
-        columns=_ACTIVITY_TITLE_USAGE_COLUMNS,
-        refresh_id=refresh_id,
-        rows=materialized_rows,
-        extractor=lambda row: (
+    built = [
+        (
             row.title_hash,
             row.app,
             row.normalized_title,
@@ -765,19 +768,39 @@ def promote_activity_title_usage(
             row.attention_level,
             row.topic_category,
             row.platform,
-        ),
-        batch_size=10_000,
-        previous_refresh_id=previous_refresh_id, tail_start=incremental_tail_start,
-        date_getter=lambda row: row.last_date,
+        )
+        for row in rows
+    ]
+    replacement = _replacement(
+        "activity_title_usage", previous_refresh_id, replacement_start, replacement_end,
     )
-    if predecessor_keys:
-        current_keys = {(row.title_hash, row.app) for row in materialized_rows}
-        for title_hash, app in sorted(predecessor_keys - current_keys):
-            conn.execute(
-                "INSERT INTO substrate_product_tombstone VALUES ('activity_title_usage', ?, ?, CURRENT_TIMESTAMP)",
-                [refresh_id, f"{title_hash}\x1f{app}"],
+    removed: set[str] = set()
+    if replacement is not None and previous_refresh_id is not None:
+        # Predecessor titles last seen inside the range that this read no
+        # longer reports are removed; titles last seen elsewhere were not read.
+        start, end = replacement
+        current_keys = {_title_usage_key(row) for row in built}
+        removed = {
+            _title_usage_key(row) for row in _resolved_rows(
+                conn, product="activity_title_usage", refresh_id=previous_refresh_id,
+                table="activity_title_usage", columns=_ACTIVITY_TITLE_USAGE_COLUMNS,
+                key=_title_usage_key,
             )
-    return count
+            if row[7] is not None and start <= row[7] < end
+        } - current_keys
+    return _promote_dated_product(
+        conn,
+        product="activity_title_usage", table="activity_title_usage",
+        columns=_ACTIVITY_TITLE_USAGE_COLUMNS,
+        refresh_id=refresh_id,
+        rows=built,
+        previous_refresh_id=previous_refresh_id,
+        replacement_start=replacement_start, replacement_end=replacement_end,
+        row_date=lambda row: row[7],
+        tombstones=removed,
+        batch_size=10_000,
+        clip_end=False,
+    )
 
 
 # ── sinnix_generation ──────────────────────────────────────────────────────────

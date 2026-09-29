@@ -52,9 +52,22 @@ def test_snapshot_promotion_counts_keep_unknown_for_partial_sources(
                 "SELECT status, counts FROM substrate_promotion_run WHERE refresh_id = ?",
                 [refresh_id],
             ).fetchone()
+            typed_statuses = conn.execute(
+                "SELECT source, status FROM substrate_source_status WHERE refresh_id = ? "
+                "AND source IN ('commits', 'file_changes', 'symbols', 'ai_work_events', "
+                "'work_observations') ORDER BY source",
+                [refresh_id],
+            ).fetchall()
     finally:
         connection._substrate_path_override.reset(token)
     assert status == "degraded"
+    assert typed_statuses == [
+        ("ai_work_events", "unavailable"),
+        ("commits", "unavailable"),
+        ("file_changes", "unavailable"),
+        ("symbols", "unavailable"),
+        ("work_observations", "unavailable"),
+    ]
     payload = json.loads(counts)
     assert payload["evidence_graph_nodes"] is None
     assert payload["evidence_graph_edges"] is None
@@ -474,7 +487,7 @@ def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch) -
     monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Connect())
     monkeypatch.setattr(
         "lynchpin.substrate.personal.promote_title_classifications_from_path",
-        lambda *_args, **_kwargs: 0,
+        lambda *_args, **_kwargs: SimpleNamespace(written=0, logical=0),
     )
     monkeypatch.setattr("lynchpin.substrate.personal.promote_activity_content_days", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr("lynchpin.substrate.personal.promote_activity_content_buckets", lambda *_args, **_kwargs: 0)

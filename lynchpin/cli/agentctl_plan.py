@@ -286,7 +286,6 @@ def run_promotion_node(
                 file_changes_file=str(resolve_analysis_path("active_file_change_facts.json")),
                 symbol_changes_file=str(resolve_analysis_path("active_symbol_changes.json")),
                 ai_attribution_file=str(resolve_analysis_path("active_ai_attribution.json")),
-                pr_review_file=str(resolve_analysis_path("active_pr_review_topology.json")),
                 refresh_id=refresh_id,
                 window_start=start,
                 window_end=end,

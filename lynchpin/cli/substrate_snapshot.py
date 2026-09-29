@@ -9,6 +9,7 @@ import logging
 import sys
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 from .current_state import main as current_state_main
 
@@ -371,7 +372,7 @@ def _promote_snapshot_daily_signals(
             manifest_fingerprint = hashlib.sha256(
                 json.dumps(json.loads(manifest_path.read_text(encoding="utf-8")), sort_keys=True).encode()
             ).hexdigest()
-        title_count = promote_title_classifications_from_path(
+        titles = promote_title_classifications_from_path(
             conn,
             refresh_id=refresh_id,
             path=str(title_metadata_path()),
@@ -385,14 +386,16 @@ def _promote_snapshot_daily_signals(
             refresh_id=refresh_id,
             rows=content_rows,
             previous_refresh_id=previous_refresh_id,
-            incremental_tail_start=incremental_tail_start,
+            replacement_start=incremental_tail_start,
+            replacement_end=end if incremental_tail_start is not None else None,
         )
         bucket_count = promote_activity_content_buckets(
             conn,
             refresh_id=refresh_id,
             rows=content_rows,
             previous_refresh_id=previous_refresh_id,
-            incremental_tail_start=incremental_tail_start,
+            replacement_start=incremental_tail_start,
+            replacement_end=end if incremental_tail_start is not None else None,
         )
         usage_count = promote_activity_title_usage(
             conn,
@@ -403,22 +406,24 @@ def _promote_snapshot_daily_signals(
                 if row.last_date is not None and row.first_date is not None
             ),
             previous_refresh_id=previous_refresh_id,
-            incremental_tail_start=incremental_tail_start,
+            replacement_start=incremental_tail_start,
+            replacement_end=end if incremental_tail_start is not None else None,
         )
         count = promote_personal_daily_signals(
             conn,
             refresh_id=refresh_id,
             rows=rows,
             previous_refresh_id=previous_refresh_id,
-            incremental_tail_start=incremental_tail_start,
+            replacement_start=incremental_tail_start,
+            replacement_end=end if incremental_tail_start is not None else None,
         )
         record_source_status(
             conn,
             refresh_id=refresh_id,
             source="title_classification",
-            status="ok" if title_count else "empty",
-            reason=None if title_count else "no title classifications available",
-            row_count=title_count,
+            status="ok" if titles.logical else "empty",
+            reason=None if titles.logical else "no title classifications available",
+            row_count=titles.logical,
             window_start=start,
             window_end=end,
         )
@@ -444,6 +449,51 @@ def _promote_snapshot_daily_signals(
         )
 
 
+def _record_absent_typed_projections(conn: Any, *, refresh_id: str, start: date, end: date) -> None:
+    """Mark typed fact relations this refresh did not populate as unavailable.
+
+    The snapshot writes the evidence graph and personal products only.  Commit,
+    AI-work and work-observation facts come from the full substrate promotion;
+    without its status rows an empty typed table would read as no activity
+    while graph nodes for the same work exist.
+    """
+    from lynchpin.analysis.active.substrate_promote_status import (
+        SOURCE_AI_WORK_EVENTS,
+        SOURCE_COMMITS,
+        SOURCE_FILE_CHANGES,
+        SOURCE_SYMBOLS,
+        SOURCE_WORK_OBSERVATIONS,
+        record_source_status,
+    )
+
+    recorded = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT source FROM substrate_source_status WHERE refresh_id = ?",
+            [refresh_id],
+        ).fetchall()
+    }
+    for source in (
+        SOURCE_COMMITS,
+        SOURCE_FILE_CHANGES,
+        SOURCE_SYMBOLS,
+        SOURCE_AI_WORK_EVENTS,
+        SOURCE_WORK_OBSERVATIONS,
+    ):
+        if source in recorded:
+            continue
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source=source,
+            status="unavailable",
+            reason="typed projection not produced by this refresh; evidence-graph nodes are not typed facts",
+            row_count=None,
+            window_start=start,
+            window_end=end,
+        )
+
+
 def _record_snapshot_promotion_run(
     *,
     start: date,
@@ -459,6 +509,7 @@ def _record_snapshot_promotion_run(
     refresh_id = _snapshot_refresh_id(**refresh_kwargs)
     with connect(substrate_path()) as conn:
         apply_schema(conn)
+        _record_absent_typed_projections(conn, refresh_id=refresh_id, start=start, end=end)
         status_rows = conn.execute(
             """
             SELECT source, status, reason
