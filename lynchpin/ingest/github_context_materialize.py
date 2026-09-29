@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -65,6 +66,7 @@ def materialize_github_context(
     projects: set[str] | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
+    materialization_started = time.perf_counter()
     output = output or github_context_path()
     if (start is None) != (end is None):
         raise MaterializationError("github_context_materialize", reason="GitHub context materialization requires both start and end")
@@ -91,6 +93,9 @@ def materialize_github_context(
     missing_commit_refs_attempted = 0
     missing_commit_refs_fetched = 0
     missing_commit_refs_deferred = 0
+    provider_inventory_fetch_seconds = 0.0
+    provider_detail_fetch_seconds = 0.0
+    provider_missing_ref_fetch_seconds = 0.0
 
     active_paths = _active_repo_paths()
     if projects is not None:
@@ -116,7 +121,9 @@ def materialize_github_context(
         for kind, state, requested_limit, refresh in inventories:
             if progress is not None:
                 progress(f"GitHub context: fetching {project} {kind}s {state} inventory")
+            fetch_started = time.perf_counter()
             result = refresh()
+            provider_inventory_fetch_seconds += time.perf_counter() - fetch_started
             limit_reached = result.status == "ok" and len(result.items) >= requested_limit
             inventory_coverage.setdefault(project, {})[kind] = {
                 "state": state,
@@ -160,9 +167,12 @@ def materialize_github_context(
                 if progress is not None:
                     progress(f"GitHub context: hydrating {project} {inventory.kind} #{inventory.number} ({decision.reason})")
                 if inventory.kind == "pr":
+                    fetch_started = time.perf_counter()
                     item = fetch_pr(path, inventory.number, use_cache=False, include_review_comments=True)
                 else:
+                    fetch_started = time.perf_counter()
                     item = fetch_issue(path, inventory.number, use_cache=False)
+                provider_detail_fetch_seconds += time.perf_counter() - fetch_started
                 if item is None:
                     detail_misses += 1
                     continue
@@ -186,7 +196,9 @@ def materialize_github_context(
                 missing_commit_refs_deferred += 1
                 continue
             missing_commit_refs_attempted += 1
+            fetch_started = time.perf_counter()
             item = fetch_pr(path, number, use_cache=False, include_review_comments=True)
+            provider_missing_ref_fetch_seconds += time.perf_counter() - fetch_started
             if item is not None:
                 rows[(project, "pr", number)] = github_item_to_payload(project=project, item=item)
                 missing_commit_refs_fetched += 1
@@ -198,7 +210,9 @@ def materialize_github_context(
                 missing_commit_refs_deferred += 1
                 continue
             missing_commit_refs_attempted += 1
+            fetch_started = time.perf_counter()
             item = fetch_issue(path, number, use_cache=False)
+            provider_missing_ref_fetch_seconds += time.perf_counter() - fetch_started
             if item is not None:
                 rows[(project, "issue", number)] = github_item_to_payload(project=project, item=item)
                 missing_commit_refs_fetched += 1
@@ -246,10 +260,23 @@ def materialize_github_context(
         "missing_commit_refs_deferred": missing_commit_refs_deferred,
         "commit_ref_fetch_limit": commit_ref_fetch_limit,
         "project_counts": dict(Counter(str(row["project"]) for row in ordered)),
+        "timings_seconds": {
+            "provider_inventory_fetch": round(provider_inventory_fetch_seconds, 3),
+            "provider_detail_fetch": round(provider_detail_fetch_seconds, 3),
+            "provider_missing_ref_fetch": round(provider_missing_ref_fetch_seconds, 3),
+        },
     }
+    product_write_started = time.perf_counter()
     _write_product(output=output, rows=ordered, manifest=manifest)
+    manifest["timings_seconds"]["product_write"] = round(
+        time.perf_counter() - product_write_started, 3
+    )
 
+    promotion_started = time.perf_counter()
     promotion = _promote_github_context_with_retry(output)
+    manifest["timings_seconds"]["substrate_promotion"] = round(
+        time.perf_counter() - promotion_started, 3
+    )
     manifest["substrate_rows"] = promotion.rows
     manifest["substrate_status"] = promotion.status
     manifest["substrate_attempts"] = promotion.attempts
@@ -258,6 +285,10 @@ def materialize_github_context(
         manifest["substrate_quarantined_path"] = promotion.quarantined_path
     if promotion.error is not None:
         manifest["substrate_error"] = promotion.error
+    manifest["timings_seconds"]["total"] = round(
+        time.perf_counter() - materialization_started, 3
+    )
+    write_manifest(output.with_suffix(".manifest.json"), manifest)
 
     return manifest
 

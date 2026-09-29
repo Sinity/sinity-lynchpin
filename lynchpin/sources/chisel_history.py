@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -499,16 +500,26 @@ def build_history(
             "frozen-history-product-v1"], sort_keys=True).encode()).hexdigest()
         product_cache = Path(cache_dir) / "products" / key
         hashes_path = product_cache / "hashes.json"
+        cache_validation_started = time.perf_counter()
         if hashes_path.exists():
             try:
                 hashes = json.loads(hashes_path.read_text())
                 if all(hashlib.sha256((product_cache / name).read_bytes()).hexdigest() == expected for name, expected in hashes.items()):
+                    coverage_path = product_cache / "history/coverage.json"
+                    coverage = json.loads(coverage_path.read_text())
+                    cache_validation_seconds = round(time.perf_counter() - cache_validation_started, 3)
+                    cache_restore_started = time.perf_counter()
                     for name in hashes:
                         target = package_dir / name
                         target.parent.mkdir(parents=True, exist_ok=True)
                         copy_file(product_cache / name, target)
-                    coverage = json.loads((history_dir / "coverage.json").read_text())
+                    cache_restore_seconds = round(time.perf_counter() - cache_restore_started, 3)
                     coverage["product_cache_hit"] = True
+                    coverage["product_cache_validation_seconds"] = cache_validation_seconds
+                    coverage["product_cache_restore_seconds"] = cache_restore_seconds
+                    coverage["product_cache_artifact_bytes"] = sum(
+                        (product_cache / name).stat().st_size for name in hashes
+                    )
                     coverage["immutable_commit_cache_rows_reused"] = coverage["commit_count"]
                     (history_dir / "coverage.json").write_text(json.dumps(coverage, indent=2) + "\n")
                     return coverage
@@ -640,6 +651,7 @@ def build_history(
         "classification_policy_version": POLICY_VERSION,
         "committed_diffs": {"storage": "all-refs Git bundle", "individual_patch_files": False},
         "immutable_commit_cache_rows_reused": cached_commit_rows,
+        "product_cache_hit": False,
         "dirty_worktree": {"staged_patch_present": dirty["staged"], "unstaged_patch_present": dirty["unstaged"], "tracked_changed_paths": changed_paths,
                            "untracked_files_included": False,
                            "scope": "worktree overlay is recorded separately" if frozen else "live endpoint capture"},
