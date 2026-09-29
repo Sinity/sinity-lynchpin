@@ -44,10 +44,28 @@ class _MutableCorrelatedWorkDay:
     ai_event_kind_breakdown: Counter[str] = field(default_factory=Counter)
     ai_event_kind_weighted: dict[str, float] = field(default_factory=dict)
     raw_log_refs: set[str] = field(default_factory=set)
-    focus_minutes: float = 0.0
+    # Atomic focus spans and per-day focus rollups describe the same time.
+    # They are kept apart and resolved in ``focus_minutes`` so a rollup never
+    # adds to the spans it summarizes.
+    focus_span_minutes: float = 0.0
+    focus_rollup_minutes: float | None = None
     shell_minutes: float = 0.0
     shell_command_count: int = 0
     sources: set[str] = field(default_factory=set)
+
+    def add_focus_span(self, duration_s: float) -> None:
+        self.focus_span_minutes += duration_s / 60.0
+
+    def add_focus_rollup(self, duration_s: float) -> None:
+        self.focus_rollup_minutes = (self.focus_rollup_minutes or 0.0) + duration_s / 60.0
+
+    @property
+    def focus_minutes(self) -> float:
+        # The day rollup is the complete aggregate; spans are a filtered
+        # detail view of the same interval (short spans are dropped).
+        if self.focus_rollup_minutes is not None:
+            return self.focus_rollup_minutes
+        return self.focus_span_minutes
 
 
 @dataclass(frozen=True)
@@ -239,7 +257,11 @@ def correlate_work_days(
             continue
         bucket = row(day, project)
         bucket.sources.add("activitywatch")
-        bucket.focus_minutes += float(getattr(span, "duration_s", 0.0) or 0.0) / 60.0
+        duration_s = float(getattr(span, "duration_s", 0.0) or 0.0)
+        if isinstance(start, datetime):
+            bucket.add_focus_span(duration_s)
+        else:
+            bucket.add_focus_rollup(duration_s)
 
     for session in shell_sessions:
         project = _normalize_project(getattr(session, "project", None))
@@ -383,9 +405,12 @@ def _correlations_from_graph(
             source_path = str(payload.get("source_path") or "")
             line_no = str(payload.get("line_no") or "")
             bucket.raw_log_refs.add(f"{source_path}:{line_no}" if source_path and line_no else getattr(node, "id", ""))
-        elif kind in {"focus_day", "focus_span"}:
+        elif kind == "focus_span":
             bucket.sources.add("activitywatch")
-            bucket.focus_minutes += float(payload.get("duration_s") or 0.0) / 60.0
+            bucket.add_focus_span(float(payload.get("duration_s") or 0.0))
+        elif kind == "focus_day":
+            bucket.sources.add("activitywatch")
+            bucket.add_focus_rollup(float(payload.get("duration_s") or 0.0))
         elif kind == "terminal_session":
             bucket.sources.add("terminal")
             bucket.shell_minutes += float(payload.get("duration_s") or 0.0) / 60.0

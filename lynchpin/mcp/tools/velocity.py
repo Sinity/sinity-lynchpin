@@ -24,19 +24,26 @@ def velocity_series(
     refresh_id: str | None = None,
     window_days: int = 7,
 ) -> list[dict[str, Any]]:
-    """Project velocity time-series with rolling windows (Arc D.4).
+    """Project velocity time-series over trailing calendar-day windows (Arc D.4).
 
-    SQL window functions over project_day_correlation. Returns daily commit
-    counts with rolling average and cumulative count per project.
+    ``rolling_avg`` is commits in the last ``window_days`` calendar days
+    divided by ``window_days``. Days without commits inside the graph's
+    coverage window count as zeros; when the window reaches outside
+    coverage (or coverage is unknown) ``rolling_avg`` is null and
+    ``window_days_covered`` says how much was covered. ``active_day_avg`` is
+    the separate commits-per-active-day intensity. Days whose whole trailing
+    window is zero are omitted.
 
     Parameters:
         projects:     filter to specific projects; None = all.
         refresh_id:   materialized substrate snapshot to query; default = best current snapshot.
-        window_days:  rolling-average window size (default 7).
+        window_days:  trailing window size in calendar days (default 7).
 
     Returns:
         [{"project": str, "date": "YYYY-MM-DD", "commit_count": int,
-          "rolling_avg": float, "cumulative": int, "source_count": int}]
+          "rolling_avg": float | None, "cumulative": int, "source_count": int,
+          "window_days_covered": int | None, "active_days": int,
+          "active_day_avg": float | None}]
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_velocity import load_velocity_series
@@ -58,7 +65,10 @@ def velocity_series(
             projects=projs,
         )
 
-    cols = ["project", "date", "commit_count", "rolling_avg", "cumulative", "source_count"]
+    cols = [
+        "project", "date", "commit_count", "rolling_avg", "cumulative", "source_count",
+        "window_days_covered", "active_days", "active_day_avg",
+    ]
     return [
         {c: _json_safe(v) for c, v in zip(cols, row)}
         for row in rows
@@ -80,8 +90,10 @@ def velocity_narrative(
 
     Aggregates project_day_correlation into a narrative summary: total
     commits, active days, peak day, per-project breakdown, and the
-    dominant project. Renders as structured text suitable for inclusion
-    in a context pack or seed note.
+    dominant project. ``window`` is the graph's declared coverage window
+    (null when unknown); ``avg_per_calendar_day`` divides by its length,
+    ``avg_per_active_day`` only by days with commits. Renders as structured
+    text suitable for inclusion in a context pack or seed note.
 
     Parameters:
         projects:   filter to specific projects; None = top 8 by commits.
@@ -89,17 +101,19 @@ def velocity_narrative(
 
     Returns:
         {
-            "window": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},
+            "window": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} | None,
             "total_commits": int,
             "total_active_days": int,
             "peak": {"project": str, "date": "YYYY-MM-DD", "commits": int},
-            "projects": [{"project": str, "commits": int, "active_days": int}],
+            "projects": [{"project": str, "commits": int, "active_days": int,
+                          "avg_per_active_day": float,
+                          "avg_per_calendar_day": float | None}],
             "summary_text": str,
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_velocity import (
-        load_velocity_window,
+        load_graph_coverage_window,
         load_velocity_project_summary,
         load_velocity_peak,
     )
@@ -120,30 +134,41 @@ def velocity_narrative(
                     "materialization": materialization,
                 }
 
-        # Window bounds
-        win = load_velocity_window(conn, refresh_id=refresh_id)
+        win = load_graph_coverage_window(conn, refresh_id=refresh_id)
         proj_rows = load_velocity_project_summary(conn, refresh_id=refresh_id, projects=projs)
         peak = load_velocity_peak(conn, refresh_id=refresh_id, projects=projs)
 
         total_commits = sum(r[1] for r in proj_rows)
         total_days = sum(r[2] for r in proj_rows)
 
+        calendar_days = (win[1] - win[0]).days + 1 if win is not None else None
         projects_list = [
             {"project": r[0], "commits": r[1],
-             "active_days": r[2], "avg_daily": r[3]}
+             "active_days": r[2], "avg_per_active_day": r[3],
+             "avg_per_calendar_day": round(r[1] / calendar_days, 2) if calendar_days else None}
             for r in proj_rows
         ]
 
         # Build narrative text
         if proj_rows:
             top = proj_rows[0]
+            window_text = (
+                f"In the window {win[0]} → {win[1]}"
+                if win is not None
+                else "In a window of unknown coverage"
+            )
+            pace = (
+                f"; {projects_list[0]['avg_per_calendar_day']}/calendar day"
+                if calendar_days
+                else ""
+            )
             lines = [
-                f"In the window {win[0]} → {win[1]}: "
+                f"{window_text}: "
                 f"{total_commits} commits across {len(proj_rows)} projects "
                 f"({total_days} active project-days).",
                 "",
                 f"**{top[0]}** led with {top[1]} commits over "
-                f"{top[2]} active days (avg {top[3]}/day).",
+                f"{top[2]} active days (avg {top[3]}/active day{pace}).",
             ]
             if peak:
                 lines.append(
@@ -167,7 +192,11 @@ def velocity_narrative(
         "materialized_refresh_id": refresh_id,
         "refresh_id": refresh_id,
         "materialization": materialization,
-        "window": {"start": _json_safe(win[0]), "end": _json_safe(win[1])},
+        "window": (
+            {"start": _json_safe(win[0]), "end": _json_safe(win[1])}
+            if win is not None
+            else None
+        ),
         "total_commits": total_commits,
         "total_active_days": total_days,
         "peak": {
@@ -177,10 +206,6 @@ def velocity_narrative(
         "projects": projects_list,
         "summary_text": summary,
     }
-
-
-# ── A.1 D.3 WorkPackageDurability ────────────────────────────────────────────
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════

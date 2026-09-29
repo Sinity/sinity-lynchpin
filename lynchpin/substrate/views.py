@@ -242,8 +242,14 @@ VIEW_DEFINITIONS: dict[str, str] = {
             ARRAY_AGG(DISTINCT json_extract_string(payload, '$.conversation_id'))
                 FILTER (WHERE kind IN ('ai_session','ai_work_event') AND payload IS NOT NULL) AS conversation_ids,
             ARRAY_AGG(DISTINCT id) FILTER (WHERE kind IN ('github_issue','github_pr','github_ref')) AS github_node_ids,
-            SUM(CAST(json_extract(payload, '$.duration_s') AS DOUBLE))
-                FILTER (WHERE kind IN ('focus_day','focus_span') AND payload IS NOT NULL) AS focus_seconds,
+            -- A focus_day rollup summarizes the same time as that day's
+            -- focus_span details; prefer the rollup, never add both.
+            COALESCE(
+                SUM(CAST(json_extract(payload, '$.duration_s') AS DOUBLE))
+                    FILTER (WHERE kind = 'focus_day' AND payload IS NOT NULL),
+                SUM(CAST(json_extract(payload, '$.duration_s') AS DOUBLE))
+                    FILTER (WHERE kind = 'focus_span' AND payload IS NOT NULL)
+            ) AS focus_seconds,
             SUM(CAST(json_extract(payload, '$.duration_s') AS DOUBLE))
                 FILTER (WHERE kind = 'terminal_session' AND payload IS NOT NULL) AS shell_seconds,
             COUNT(DISTINCT CASE

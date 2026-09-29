@@ -63,7 +63,9 @@ def _pr(*, number: int, project: str = "demo", title: str = "feat: do thing #1",
 
 
 def _commit(*, sha: str, project: str = "demo", issue_refs: tuple[int, ...] = (),
-            authored: datetime | None = None) -> EvidenceNode:
+            authored: datetime | None = None, closing: bool = True) -> EvidenceNode:
+    verb = "fixes" if closing else "refs"
+    subject = f"feat: do thing, {verb} #{issue_refs[0]}" if issue_refs else "feat: do thing"
     return EvidenceNode(
         id=f"git:{project}:{sha}",
         kind="commit",
@@ -72,7 +74,7 @@ def _commit(*, sha: str, project: str = "demo", issue_refs: tuple[int, ...] = ()
         project=project,
         start=authored,
         end=authored,
-        summary=f"feat: do thing (#{issue_refs[0]})" if issue_refs else "feat: do thing",
+        summary=subject,
         payload={
             "commit": sha,
             "github_refs": {"issues": list(issue_refs), "prs": []},
@@ -86,7 +88,7 @@ def test_complete_when_closed_issue_has_merged_pr_and_commit():
     nodes = [
         _issue(number=1, state="closed", opened=base, closed=base + timedelta(days=2),
                lifecycle="executed"),
-        _pr(number=10, title="feat: implement #1", merged=True,
+        _pr(number=10, title="feat: implement, closes #1", merged=True,
             opened=base + timedelta(hours=1), closed=base + timedelta(days=2)),
         _commit(sha="abc123", issue_refs=(1,), authored=base + timedelta(days=2)),
     ]
@@ -101,7 +103,7 @@ def test_orphaned_when_closed_issue_has_no_pr_or_commit():
     base = datetime(2026, 5, 1, 10, tzinfo=UTC)
     nodes = [
         _issue(number=2, state="closed", opened=base, closed=base + timedelta(days=1),
-               lifecycle="retired"),
+               lifecycle="unclear"),
     ]
     chains = detect_closure_chains(_graph(nodes), reference=date(2026, 5, 7))
     assert chains[0].closure_status == "orphaned"
@@ -112,7 +114,7 @@ def test_broken_when_closed_issue_only_has_unmerged_pr():
     base = datetime(2026, 5, 1, 10, tzinfo=UTC)
     nodes = [
         _issue(number=3, state="closed", opened=base, closed=base + timedelta(days=2)),
-        _pr(number=11, title="wip: try #3", state="closed", merged=False,
+        _pr(number=11, title="wip: try, fixes #3", state="closed", merged=False,
             opened=base + timedelta(hours=1), closed=base + timedelta(days=2)),
     ]
     chains = detect_closure_chains(_graph(nodes), reference=date(2026, 5, 7))
@@ -124,7 +126,7 @@ def test_partial_when_open_issue_has_unmerged_linked_pr():
     base = datetime(2026, 5, 1, 10, tzinfo=UTC)
     nodes = [
         _issue(number=4, state="open", opened=base),
-        _pr(number=12, title="feat: in-progress #4", state="open", opened=base + timedelta(hours=1)),
+        _pr(number=12, title="feat: in-progress, resolves #4", state="open", opened=base + timedelta(hours=1)),
     ]
     chains = detect_closure_chains(_graph(nodes), reference=date(2026, 5, 7))
     assert chains[0].closure_status == "partial"
@@ -134,7 +136,7 @@ def test_stale_pr_for_open_issue_adds_caveat():
     base = datetime(2026, 4, 1, 10, tzinfo=UTC)  # > 30 days before reference
     nodes = [
         _issue(number=5, state="open", opened=base),
-        _pr(number=13, title="wip #5", state="open", opened=base),
+        _pr(number=13, title="wip: closes #5", state="open", opened=base),
     ]
     chains = detect_closure_chains(_graph(nodes), reference=date(2026, 5, 7))
     assert chains[0].closure_status == "partial"
@@ -151,26 +153,85 @@ def test_open_issue_with_only_stale_referencing_commit_is_broken():
     assert chains[0].closure_status == "broken"
 
 
-def test_pr_might_close_rejects_substring_matches():
-    """Verify that _pr_might_close uses word boundaries to avoid false positives.
-
-    Issue #15 should NOT match PR "#150" (a common false positive).
-    """
+def test_pr_might_close_requires_closing_keyword_and_exact_number():
     issue_15 = _issue(number=15)
     issue_150 = _issue(number=150)
 
-    # PR title containing #150 should NOT match issue #15
-    pr_150 = _pr(number=1, title="feat: implement ledger (#150)")
-    assert not _pr_might_close(pr_150, issue_15), "PR #150 should NOT match issue #15"
+    assert not _pr_might_close(_pr(number=1, title="feat: closes #150"), issue_15)
+    assert _pr_might_close(_pr(number=2, title="fix: off-by-one, fixes #15"), issue_15)
+    both = _pr(number=3, title="chore: closes #15, resolves #150")
+    assert _pr_might_close(both, issue_15)
+    assert _pr_might_close(both, issue_150)
+    # A bare or parenthesized number is a mention, not a closing reference.
+    assert not _pr_might_close(_pr(number=4, title="fix: off-by-one (#15)"), issue_15)
 
-    # PR title containing #15 should match issue #15
-    pr_15 = _pr(number=2, title="fix: off-by-one error (#15)")
-    assert _pr_might_close(pr_15, issue_15), "PR #15 should match issue #15"
 
-    # PR title containing both #15 and #150 should match issue #15
-    pr_both = _pr(number=3, title="chore: refactor (#15, #150)")
-    assert _pr_might_close(pr_both, issue_15), "PR with both #15 and #150 should match issue #15"
-    assert _pr_might_close(pr_both, issue_150), "PR with both #15 and #150 should match issue #150"
+def test_other_repository_evidence_cannot_close_or_stale_flag_an_issue():
+    base = datetime(2026, 3, 1, 10, tzinfo=UTC)
+    nodes = [
+        _issue(number=42, project="demo", state="closed", opened=base,
+               closed=base + timedelta(days=2), lifecycle="unclear"),
+        _issue(number=42, project="other", state="open", opened=base),
+        _pr(number=7, project="other", title="feat: closes #42", merged=True,
+            opened=base, closed=base + timedelta(days=1)),
+        _commit(sha="c0ffee", project="other", issue_refs=(42,), authored=base),
+    ]
+    chains = {c.project: c for c in detect_closure_chains(_graph(nodes), reference=date(2026, 5, 7))}
+
+    # demo#42 has no evidence in its own repository.
+    assert chains["demo"].closure_status == "orphaned"
+    assert chains["demo"].linked_pr_refs == ()
+    assert chains["demo"].closing_commit_shas == ()
+    # other#42 keeps its own repository's evidence.
+    assert chains["other"].linked_pr_refs == ("pr#7",)
+    assert chains["other"].closing_commit_shas == ("c0ffee",)
+
+
+def test_mentions_are_reported_but_never_complete_a_chain():
+    base = datetime(2026, 5, 1, 10, tzinfo=UTC)
+    nodes = [
+        _issue(number=8, state="closed", opened=base, closed=base + timedelta(days=2),
+               lifecycle="unclear"),
+        _pr(number=30, title="docs: follow-up to #8", merged=True,
+            opened=base, closed=base + timedelta(days=1)),
+        _commit(sha="feed", issue_refs=(8,), authored=base, closing=False),
+    ]
+    chain = detect_closure_chains(_graph(nodes), reference=date(2026, 5, 7))[0]
+
+    assert chain.closure_status == "partial"
+    assert chain.linked_pr_refs == ()
+    assert chain.closing_commit_shas == ()
+    assert chain.mentioning_pr_refs == ("pr#30",)
+    assert chain.mentioning_commit_shas == ("feed",)
+
+
+def test_old_mention_of_open_issue_is_not_stale_closure():
+    base = datetime(2026, 3, 1, 10, tzinfo=UTC)
+    nodes = [
+        _issue(number=9, state="open", opened=base),
+        _commit(sha="beef", issue_refs=(9,), authored=base, closing=False),
+    ]
+    chain = detect_closure_chains(_graph(nodes), reference=date(2026, 5, 7))[0]
+
+    assert chain.closure_status == "partial"
+    assert chain.caveats == ()
+
+
+def test_superseded_or_retired_issue_is_dispositioned_not_failed():
+    base = datetime(2026, 5, 1, 10, tzinfo=UTC)
+    nodes = [
+        _issue(number=40, state="closed", opened=base, closed=base + timedelta(days=1),
+               lifecycle="folded_or_consolidated"),
+        _issue(number=41, state="closed", opened=base, closed=base + timedelta(days=1),
+               lifecycle="retired_stale"),
+        _pr(number=140, title="wip: fixes #41", state="closed", merged=False,
+            opened=base, closed=base + timedelta(days=1)),
+    ]
+    chains = detect_closure_chains(_graph(nodes), reference=date(2026, 5, 7))
+
+    assert [c.closure_status for c in chains] == ["dispositioned", "dispositioned"]
+    summary = closure_chain_summary(chains)
+    assert summary["broken_or_orphaned"] == 0
 
 
 def test_summary_aggregates_status_counts():
@@ -192,11 +253,11 @@ def test_render_prioritizes_broken_then_partial():
     nodes = [
         # broken
         _issue(number=20, state="closed", opened=base, closed=base + timedelta(days=2)),
-        _pr(number=120, title="wip #20", state="closed", merged=False,
+        _pr(number=120, title="wip: fixes #20", state="closed", merged=False,
             opened=base, closed=base + timedelta(days=2)),
         # complete
         _issue(number=21, state="closed", opened=base, closed=base + timedelta(days=2)),
-        _pr(number=121, title="feat: #21", merged=True, opened=base, closed=base + timedelta(days=2)),
+        _pr(number=121, title="feat: closes #21", merged=True, opened=base, closed=base + timedelta(days=2)),
         _commit(sha="x", issue_refs=(21,), authored=base + timedelta(days=2)),
     ]
     chains = detect_closure_chains(_graph(nodes), reference=date(2026, 5, 7))

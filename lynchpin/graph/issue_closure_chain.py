@@ -1,28 +1,33 @@
 """Issue closure-chain detection (Arc C.2).
 
 Walks the evidence graph and synthesizes a typed view of how each GitHub
-issue closed (or didn't): linked PRs, closing commits, lifecycle status.
-Surfaces closure-integrity gaps the original prep doc explicitly anticipated:
+issue closed (or didn't): closing PRs, closing commits, lifecycle status.
 
-- ``complete``  — issue is closed AND has a merged PR/commit referencing it
-- ``partial``   — open issue with linked but unmerged PR, or closed issue
-                  whose linked PR closed-without-merge but a commit
-                  references it
-- ``broken``    — closed issue with **only** non-merged PR closure (i.e.,
-                  ``Closes #N`` reference but the PR was closed without
-                  merge), or an open issue with stale closing reference
-                  (commit referenced ≥30 days ago, issue still open)
-- ``orphaned``  — closed issue with **no** linked PR or closing commit
+Only evidence from the issue's own repository counts; issue numbers are
+repository-local. A closing reference uses a GitHub closing keyword
+(``closes``/``fixes``/``resolves #N``); a bare ``#N`` or ``refs #N`` is an
+ordinary mention and is reported separately, never as closure.
+
+- ``complete``      — closed issue with a merged closing PR or closing commit
+- ``dispositioned`` — closed issue whose lifecycle says it was folded,
+                      superseded, retired or misframed, with no closing
+                      evidence; no implementation is expected
+- ``partial``       — open issue with an unmerged closing PR, a recent
+                      closing commit, or mentions only; or a closed issue
+                      with mentions but no closing reference
+- ``broken``        — closed issue whose only closing PR closed without
+                      merge, or an open issue with a closing commit
+                      ≥30 days old
+- ``orphaned``      — no closing reference or mention in the graph
 
 Inputs are pulled from ``EvidenceGraph`` nodes:
-- ``github_issue`` / ``github_pr`` nodes carry state + lifecycle (Arc K-
-  agnostic; lifecycle comes from ``classify_lifecycle``).
-- ``commit`` nodes carry ``payload.github_refs.{prs, issues}``.
-- ``references`` edges already link commits to github_refs.
+- ``github_issue`` / ``github_pr`` nodes carry state + lifecycle
+  (``classify_lifecycle``); a PR's ``summary`` is its title.
+- ``commit`` nodes carry ``payload.github_refs.issues`` and the subject as
+  ``summary``.
 
-Output is purely derivative — does not write JSON artifacts in this
-revision; consumers are the context-pack renderer (this commit) and a
-follow-up analysis-artifact promoter (M.9 / E.1).
+Output is purely derivative; consumers are the context-pack renderer and
+the current-state timeline.
 """
 
 from __future__ import annotations
@@ -35,9 +40,14 @@ from typing import Any, Literal, Sequence
 
 from ..core.evidence import EvidenceCaveat
 from ..core.evidence_graph import EvidenceGraph, EvidenceNode
+from ..sources.github import extract_closing_refs
 
 
-ClosureStatus = Literal["complete", "partial", "broken", "orphaned"]
+ClosureStatus = Literal["complete", "dispositioned", "partial", "broken", "orphaned"]
+
+# Issue lifecycles (``classify_lifecycle``) that close work without
+# implementing it.
+_NON_IMPLEMENTATION_LIFECYCLES = frozenset({"folded_or_consolidated", "retired_stale", "misframed"})
 
 
 @dataclass(frozen=True)
@@ -53,6 +63,8 @@ class IssueClosureChain:
     closure_status: ClosureStatus
     evidence_node_ids: tuple[str, ...]
     caveats: tuple[EvidenceCaveat, ...]
+    mentioning_pr_refs: tuple[str, ...] = ()
+    mentioning_commit_shas: tuple[str, ...] = ()
 
 
 _STALE_REFERENCE_DAYS = 30
@@ -71,7 +83,7 @@ def detect_closure_chains(
     """
     ref_date = reference or datetime.now(timezone.utc).date()
 
-    issues, prs, commits, refs_index = _index_graph(graph)
+    issues, prs, commits = _index_graph(graph)
     chains: list[IssueClosureChain] = []
 
     for issue in issues:
@@ -81,16 +93,17 @@ def detect_closure_chains(
             continue
         issue_ref = f"issue#{number}"
 
-        linked_prs = _linked_prs(issue, prs, refs_index)
-        closing_commits = _commits_referencing_issue(number, commits)
+        closing_prs, mentioning_prs = _related_prs(issue, prs)
+        closing_commits, mentioning_commits = _related_commits(issue, commits)
         evidence_ids: list[str] = [issue.id]
-        evidence_ids.extend(pr.id for pr in linked_prs)
-        evidence_ids.extend(c.id for c in closing_commits)
+        evidence_ids.extend(pr.id for pr in (*closing_prs, *mentioning_prs))
+        evidence_ids.extend(c.id for c in (*closing_commits, *mentioning_commits))
 
         closure_status, caveats = _classify_closure(
             issue=issue,
-            linked_prs=linked_prs,
+            linked_prs=closing_prs,
             closing_commits=closing_commits,
+            has_mentions=bool(mentioning_prs or mentioning_commits),
             reference_date=ref_date,
         )
 
@@ -101,11 +114,13 @@ def detect_closure_chains(
             issue_lifecycle=str(_payload(issue).get("lifecycle") or "unclear"),
             opened_at=issue.start,
             closed_at=issue.end,
-            linked_pr_refs=tuple(sorted(f"pr#{_payload_int(pr, 'number')}" for pr in linked_prs)),
-            closing_commit_shas=tuple(sorted(_payload_str(c, "commit") for c in closing_commits if _payload_str(c, "commit"))),
+            linked_pr_refs=_pr_refs(closing_prs),
+            closing_commit_shas=_commit_shas(closing_commits),
             closure_status=closure_status,
             evidence_node_ids=tuple(evidence_ids),
             caveats=caveats,
+            mentioning_pr_refs=_pr_refs(mentioning_prs),
+            mentioning_commit_shas=_commit_shas(mentioning_commits),
         ))
 
     return tuple(chains)
@@ -120,9 +135,9 @@ def render_issue_closure_chains(
     if not chains:
         return "_No GitHub issues in the evidence graph for closure-chain analysis._"
 
-    # Order: broken first, then partial, then orphaned, then complete; within
-    # each band, prefer recent closure / opening dates.
-    status_order = {"broken": 0, "partial": 1, "orphaned": 2, "complete": 3}
+    # Order: broken first, then partial, then orphaned, then settled chains;
+    # within each band, prefer recent closure / opening dates.
+    status_order = {"broken": 0, "partial": 1, "orphaned": 2, "dispositioned": 3, "complete": 4}
     ordered = sorted(
         chains,
         key=lambda c: (
@@ -169,78 +184,84 @@ def closure_chain_summary(chains: Sequence[IssueClosureChain]) -> dict[str, Any]
 
 def _index_graph(
     graph: EvidenceGraph,
-) -> tuple[list[EvidenceNode], list[EvidenceNode], list[EvidenceNode], dict[str, EvidenceNode]]:
-    """Return (issues, prs, commits, ref_id → node) — a cheap multi-pass scan."""
+) -> tuple[list[EvidenceNode], list[EvidenceNode], list[EvidenceNode]]:
+    """Return (issues, prs, commits) in one pass."""
     issues: list[EvidenceNode] = []
     prs: list[EvidenceNode] = []
     commits: list[EvidenceNode] = []
-    refs_index: dict[str, EvidenceNode] = {}
     for node in graph.nodes:
         if node.kind == "github_issue":
             issues.append(node)
-            refs_index[node.id] = node
         elif node.kind == "github_pr":
             prs.append(node)
-            refs_index[node.id] = node
-        elif node.kind == "github_ref":
-            refs_index[node.id] = node
         elif node.kind == "commit":
             commits.append(node)
-    return issues, prs, commits, refs_index
+    return issues, prs, commits
 
 
-def _linked_prs(
+def _related_prs(
     issue: EvidenceNode,
     prs: Sequence[EvidenceNode],
-    refs_index: dict[str, EvidenceNode],
-) -> list[EvidenceNode]:
-    """Find PRs linked to this issue.
+) -> tuple[list[EvidenceNode], list[EvidenceNode]]:
+    """Split same-repository PRs into closing references and mentions.
 
-    The current evidence graph doesn't model an explicit "issue-references-PR"
-    edge (PR-body parsing isn't wired). Use a same-project / same-window
-    heuristic: any PR whose project matches and whose body or title (via
-    ``payload``) suggests a linkage. As a conservative starting point we
-    accept any PR whose lifecycle classification points to this issue's
-    project — refined when the GitHub source layer grows explicit linkage.
+    The graph carries PR titles, not bodies, so a closing keyword in the
+    title is the only closing link visible here.
     """
-    issue_project = issue.project
-    if not issue_project:
-        return []
-    return [
-        pr for pr in prs
-        if pr.project == issue_project and _pr_might_close(pr, issue)
-    ]
+    if not issue.project:
+        return [], []
+    closing: list[EvidenceNode] = []
+    mentioning: list[EvidenceNode] = []
+    for pr in prs:
+        if pr.project != issue.project:
+            continue
+        if _pr_might_close(pr, issue):
+            closing.append(pr)
+        elif _mentions_issue(pr.summary or "", _payload_int(issue, "number")):
+            mentioning.append(pr)
+    return closing, mentioning
 
 
 def _pr_might_close(pr: EvidenceNode, issue: EvidenceNode) -> bool:
-    """Heuristic: PR title or summary mentions the issue number.
+    """True when the PR title names this issue with a closing keyword.
 
-    The summary on a github_pr node is the PR title (set by
-    ``_github_item_node`` from ``GitHubItem.title``). PR titles in this repo
-    family commonly include the issue number as ``#N``, ``(#N)`` or
-    ``Closes #N``. False-positive risk is non-zero; chain caveats note the
-    heuristic basis.
-
-    Regex avoids false positives: issue #15 should NOT match PR "#150".
+    ``closes #15`` does not close issue #150, and a bare ``#15`` is only a
+    mention.
     """
     issue_number = _payload_int(issue, "number")
     if issue_number == 0:
         return False
-    title = pr.summary or ""
-    # Negative lookbehind/lookahead ensures #N is not part of a larger number
-    pattern = rf"(?<!\d)#{issue_number}(?!\d)"
-    return bool(re.search(pattern, title))
+    return issue_number in extract_closing_refs(pr.summary or "")
 
 
-def _commits_referencing_issue(issue_number: int, commits: Sequence[EvidenceNode]) -> list[EvidenceNode]:
-    matched: list[EvidenceNode] = []
+def _mentions_issue(text: str, issue_number: int) -> bool:
+    # ``owner/repo#N`` and ``repo#N`` name another repository's item.
+    return bool(re.search(rf"(?<![\w/])#{issue_number}(?!\d)", text))
+
+
+def _related_commits(
+    issue: EvidenceNode,
+    commits: Sequence[EvidenceNode],
+) -> tuple[list[EvidenceNode], list[EvidenceNode]]:
+    """Split same-repository commits referencing the issue into closing and mentions."""
+    if not issue.project:
+        return [], []
+    issue_number = _payload_int(issue, "number")
+    closing: list[EvidenceNode] = []
+    mentioning: list[EvidenceNode] = []
     for commit in commits:
+        if commit.project != issue.project:
+            continue
         refs = _payload(commit).get("github_refs") or {}
-        if isinstance(refs, dict):
-            issue_refs = refs.get("issues") or []
-            if issue_number in {int(n) for n in issue_refs if isinstance(n, (int, str)) and str(n).isdigit()}:
-                matched.append(commit)
-    return matched
+        issue_refs = refs.get("issues") or [] if isinstance(refs, dict) else []
+        numbers = {int(n) for n in issue_refs if isinstance(n, (int, str)) and str(n).isdigit()}
+        if issue_number not in numbers:
+            continue
+        if issue_number in extract_closing_refs(commit.summary or ""):
+            closing.append(commit)
+        else:
+            mentioning.append(commit)
+    return closing, mentioning
 
 
 def _classify_closure(
@@ -248,10 +269,12 @@ def _classify_closure(
     issue: EvidenceNode,
     linked_prs: Sequence[EvidenceNode],
     closing_commits: Sequence[EvidenceNode],
+    has_mentions: bool,
     reference_date: date,
 ) -> tuple[ClosureStatus, tuple[EvidenceCaveat, ...]]:
     payload = _payload(issue)
     issue_state = str(payload.get("state") or "open").lower()
+    lifecycle = str(payload.get("lifecycle") or "")
     caveats: list[EvidenceCaveat] = []
 
     merged_pr = next((pr for pr in linked_prs if _pr_was_merged(pr)), None)
@@ -264,6 +287,10 @@ def _classify_closure(
     if issue_state == "closed":
         if merged_pr or closing_commits:
             return "complete", ()
+        if lifecycle in _NON_IMPLEMENTATION_LIFECYCLES:
+            return "dispositioned", (
+                EvidenceCaveat("github", "partial", f"closed as {lifecycle}; no implementation expected"),
+            )
         if closed_unmerged_pr:
             caveats.append(EvidenceCaveat(
                 "github",
@@ -271,6 +298,10 @@ def _classify_closure(
                 f"closed via PR #{_payload_int(closed_unmerged_pr, 'number')} which closed without merging — execution evidence is weak",
             ))
             return "broken", tuple(caveats)
+        if has_mentions:
+            return "partial", (
+                EvidenceCaveat("github", "partial", "closed issue is mentioned but has no closing PR or commit"),
+            )
         return "orphaned", (
             EvidenceCaveat("github", "partial", "closed without linked PR or closing commit"),
         )
@@ -292,7 +323,8 @@ def _classify_closure(
             ))
         return "partial", tuple(caveats)
 
-    # Open issue, no linked PRs at all — check stale closing-commit reference.
+    # Open issue, no open closing PR — a closing commit that did not close it
+    # is suspicious once it is old; a mention is ordinary progress.
     if closing_commits:
         latest_commit_ts = max(
             (c.start or c.end or datetime.now(timezone.utc) for c in closing_commits),
@@ -302,9 +334,11 @@ def _classify_closure(
             caveats.append(EvidenceCaveat(
                 "github",
                 "partial",
-                f"commit referenced this issue ≥{_STALE_REFERENCE_DAYS}d ago but issue is still open",
+                f"closing commit referenced this issue ≥{_STALE_REFERENCE_DAYS}d ago but issue is still open",
             ))
             return "broken", tuple(caveats)
+        return "partial", ()
+    if has_mentions:
         return "partial", ()
 
     return "orphaned", (EvidenceCaveat("github", "partial", "open issue without linked PR or referencing commit"),)
@@ -318,6 +352,14 @@ def _pr_was_merged(pr: EvidenceNode) -> bool:
     # GitHubItem state encodes "merged" explicitly; some upstream variants
     # emit lifecycle "executed" for merged PRs.
     return str(payload.get("lifecycle") or "") == "executed" and state in ("closed", "merged")
+
+
+def _pr_refs(prs: Sequence[EvidenceNode]) -> tuple[str, ...]:
+    return tuple(sorted(f"pr#{_payload_int(pr, 'number')}" for pr in prs))
+
+
+def _commit_shas(commits: Sequence[EvidenceNode]) -> tuple[str, ...]:
+    return tuple(sorted(_payload_str(c, "commit") for c in commits if _payload_str(c, "commit")))
 
 
 def _payload(node: EvidenceNode) -> dict[str, Any]:

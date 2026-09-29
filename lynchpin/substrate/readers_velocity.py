@@ -6,7 +6,7 @@ the SQL in the typed reader layer. All functions are SELECT-only.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -16,6 +16,35 @@ if TYPE_CHECKING:
 # ── velocity_series ───────────────────────────────────────────────────────────
 
 
+def load_graph_coverage_window(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+) -> tuple[date, date] | None:
+    """Return the logical graph's declared (start, end) window, or None.
+
+    Inside this window a project-day without commits is a known zero; outside
+    it (or without a build record) coverage is unknown.
+    """
+    from lynchpin.substrate.graph import _graph_lineage
+
+    head = conn.execute(
+        "SELECT end_date FROM evidence_graph_build WHERE refresh_id = ?",
+        [refresh_id],
+    ).fetchone()
+    if head is None:
+        return None
+    partitions = [partition_id for partition_id, _cutoff in _graph_lineage(conn, refresh_id=refresh_id)]
+    placeholders = ",".join(["?"] * len(partitions))
+    row = conn.execute(
+        f"SELECT MIN(start_date) FROM evidence_graph_build WHERE refresh_id IN ({placeholders})",
+        partitions,
+    ).fetchone()
+    if row is None or row[0] is None or head[0] is None:
+        return None
+    return row[0], head[0]
+
+
 def load_velocity_series(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -23,9 +52,21 @@ def load_velocity_series(
     window_days: int = 7,
     projects: tuple[str, ...] | None = None,
 ) -> list[tuple[Any, ...]]:
-    """Return (project, date, commit_count, rolling_avg, cumulative, source_count) rows."""
+    """Return trailing calendar-day commit windows per project.
+
+    Rows are ``(project, date, commit_count, rolling_avg, cumulative,
+    source_count, window_days_covered, active_days, active_day_avg)``.
+    ``rolling_avg`` is commits over the last ``window_days`` calendar days
+    divided by ``window_days``; days without commits inside the coverage
+    window count as zeros. It is None when part of the window lies outside
+    coverage. ``active_day_avg`` answers the different question of commits
+    per day that had any. Days whose whole trailing window is zero are
+    omitted.
+    """
     from lynchpin.substrate.graph import _logical_graph_relation
 
+    if window_days < 1:
+        raise ValueError("window_days must be positive")
     relation, params = _logical_graph_relation(
         conn,
         refresh_id=refresh_id,
@@ -39,49 +80,62 @@ def load_velocity_series(
         proj_filter = f"AND project IN ({placeholders})"
         params.extend(projects)
 
-    sql = f"""
-        SELECT project, date, commit_count,
-               ROUND(AVG(commit_count) OVER (
-                   PARTITION BY project ORDER BY date
-                   ROWS BETWEEN {int(window_days) - 1} PRECEDING AND CURRENT ROW
-               ), 1) AS rolling_avg,
-               SUM(commit_count) OVER (
-                   PARTITION BY project ORDER BY date
-                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-               ) AS cumulative,
-               source_count
+    rows = conn.execute(
+        f"""
+        SELECT project, date, commit_count, source_count
         FROM {relation}
         WHERE commit_count > 0 {proj_filter}
         ORDER BY project, date
-    """
-    return conn.execute(sql, params).fetchall()
+        """,
+        params,
+    ).fetchall()
+    coverage = load_graph_coverage_window(conn, refresh_id=refresh_id)
+
+    by_project: dict[str, dict[date, tuple[int, int]]] = {}
+    for project, day, commits, sources in rows:
+        by_project.setdefault(project, {})[day] = (int(commits), int(sources or 0))
+
+    result: list[tuple[Any, ...]] = []
+    for project in sorted(by_project):
+        observed = by_project[project]
+        days = set(observed)
+        if coverage is not None:
+            days.update(_date_range(*coverage))
+        cumulative = 0
+        for day in sorted(days):
+            commits, sources = observed.get(day, (0, 0))
+            cumulative += commits
+            window = [day - timedelta(days=offset) for offset in range(window_days)]
+            covered = (
+                sum(1 for d in window if coverage[0] <= d <= coverage[1])
+                if coverage is not None
+                else None
+            )
+            window_commits = [observed[d][0] for d in window if d in observed]
+            if not commits and not window_commits:
+                continue
+            total = sum(window_commits)
+            rolling_avg = round(total / window_days, 3) if covered == window_days else None
+            active_days = len(window_commits)
+            result.append((
+                project,
+                day,
+                commits,
+                rolling_avg,
+                cumulative,
+                sources,
+                covered,
+                active_days,
+                round(total / active_days, 3) if active_days else None,
+            ))
+    return result
+
+
+def _date_range(start: date, end: date) -> list[date]:
+    return [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
 
 
 # ── velocity_narrative ────────────────────────────────────────────────────────
-
-
-def load_velocity_window(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-) -> tuple[Any, Any] | None:
-    """Return (min_date, max_date) for the refresh window."""
-    from lynchpin.substrate.graph import _logical_graph_relation
-
-    relation, params = _logical_graph_relation(
-        conn,
-        refresh_id=refresh_id,
-        table="project_day_correlation",
-        columns=("project", "date"),
-        key_columns=("project", "date"),
-    )
-    return conn.execute(
-        f"""
-        SELECT MIN(date), MAX(date)
-        FROM {relation}
-        """,
-        params,
-    ).fetchone()
 
 
 def load_velocity_project_summary(
@@ -90,7 +144,7 @@ def load_velocity_project_summary(
     refresh_id: str,
     projects: tuple[str, ...] | None = None,
 ) -> list[tuple[Any, ...]]:
-    """Return (project, commits, active_days, avg_daily) per project."""
+    """Return (project, commits, active_days, avg_per_active_day) per project."""
     from lynchpin.substrate.graph import _logical_graph_relation
 
     relation, params = _logical_graph_relation(
@@ -111,7 +165,7 @@ def load_velocity_project_summary(
         SELECT project,
                SUM(commit_count) AS commits,
                COUNT(*) AS active_days,
-               ROUND(AVG(commit_count), 1) AS avg_daily
+               ROUND(AVG(commit_count), 1) AS avg_per_active_day
         FROM {relation}
         WHERE commit_count > 0 {proj_filter}
         GROUP BY project ORDER BY commits DESC
@@ -147,7 +201,7 @@ def load_velocity_peak(
         SELECT project, date, commit_count
         FROM {relation}
         WHERE TRUE {proj_filter}
-        ORDER BY commit_count DESC LIMIT 1
+        ORDER BY commit_count DESC, date, project LIMIT 1
         """,
         params,
     ).fetchone()
@@ -485,8 +539,8 @@ def load_best_coverage_refresh_id(
 
 
 __all__ = [
+    "load_graph_coverage_window",
     "load_velocity_series",
-    "load_velocity_window",
     "load_velocity_project_summary",
     "load_velocity_peak",
     "load_symbol_velocity_rows",
