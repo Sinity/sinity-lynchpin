@@ -1,6 +1,7 @@
 """Tests for core/primitives.py: TopN, group_by_gap, interval arithmetic."""
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from lynchpin.core.primitives import (
     TopN, group_by_gap,
     merge_intervals, intersect_intervals, split_by_day, split_by_hour,
@@ -46,6 +47,18 @@ class TestTopN:
 
 
 class TestGroupByGap:
+    def test_interruption_keeps_anchor_and_respects_gap(self):
+        # A/B/A must keep A; a remote short B cannot bridge a long gap.
+        base = dt(10)
+        items = [("A", base, base + timedelta(seconds=60)),
+                 ("B", base + timedelta(seconds=70), base + timedelta(seconds=80)),
+                 ("A", base + timedelta(seconds=90), base + timedelta(seconds=150)),
+                 ("B", base + timedelta(hours=1), base + timedelta(hours=1, seconds=10))]
+        groups = list(group_by_gap(items, start_of=lambda x: x[1], end_of=lambda x: x[2],
+                                   max_gap=120, absorb_interruption=30,
+                                   compatible=lambda a, b: a[0] == b[0]))
+        assert [[item[0] for item in group.items] for group in groups] == [["A", "B", "A"], ["B"]]
+
     def test_basic_grouping(self):
         items = [
             (dt(10, 0), dt(10, 10)),
@@ -99,6 +112,25 @@ class TestGroupByGap:
 
 
 class TestIntervals:
+    def test_repeated_local_hour_uses_instants(self):
+        local = ZoneInfo("Europe/Warsaw")
+        first = datetime(2026, 10, 25, 2, 30, tzinfo=local, fold=0)
+        second = datetime(2026, 10, 25, 2, 30, tzinfo=local, fold=1)
+        assert duration_s((first, second)) == 3600
+        assert len(merge_intervals([(first, first + timedelta(minutes=10)),
+                                    (second, second + timedelta(minutes=10))])) == 2
+
+    def test_logical_day_duration_tracks_short_and_long_days(self):
+        local = ZoneInfo("Europe/Warsaw")
+        spring = (datetime(2026, 3, 28, 6, tzinfo=local),
+                  datetime(2026, 3, 29, 6, tzinfo=local))
+        autumn = (datetime(2026, 10, 24, 6, tzinfo=local),
+                  datetime(2026, 10, 25, 6, tzinfo=local))
+        assert duration_s(spring) == 23 * 3600
+        assert duration_s(autumn) == 25 * 3600
+        assert sum(duration_s(iv) for _, iv in split_by_day(*spring)) == 23 * 3600
+        assert sum(duration_s(iv) for _, iv in split_by_day(*autumn)) == 25 * 3600
+
     def test_merge(self):
         ivs = [(dt(10), dt(11)), (dt(10, 30), dt(11, 30)), (dt(13), dt(14))]
         merged = merge_intervals(ivs)

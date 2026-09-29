@@ -123,6 +123,7 @@ class _WindowSpan:
 
 @dataclass(frozen=True)
 class AppSession:
+    """Grouped app observation; duration_s is observed union, start/end bound wall extent."""
     app: str
     start: datetime
     end: datetime
@@ -132,6 +133,7 @@ class AppSession:
     mode: str | None
     project: str | None
     interruptions: int
+    observed_intervals: tuple[tuple[datetime, datetime], ...] = ()
 
     def __post_init__(self) -> None:
         if self.end < self.start:

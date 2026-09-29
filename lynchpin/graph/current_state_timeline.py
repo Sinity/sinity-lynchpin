@@ -181,7 +181,7 @@ def render_current_state_timeline(timeline: CurrentStateTimeline) -> str:
                 node_refs = ", ".join(chain.node_ids)
                 gaps = ", ".join(f"{g:.0f}m" for g in chain.time_gaps_minutes)
                 lines.append(
-                    f"- {chain.summary} (confidence {chain.confidence:.0%}, "
+                    f"- {chain.summary} (temporal proximity score {chain.confidence:.0%}, "
                     f"gaps {gaps}, nodes: {node_refs})"
                 )
             lines.append("")

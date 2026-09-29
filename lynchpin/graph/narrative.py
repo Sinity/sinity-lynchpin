@@ -444,7 +444,7 @@ def _chain_section(chain) -> NarrativeSection:
         supporting_claims=(),
         summary=(
             f"{' → '.join(chain.node_kinds)} within {gaps} "
-            f"(confidence: {chain.confidence:.0%})"
+            f"(temporal proximity score: {chain.confidence:.0%})"
         ),
         score=chain.confidence * 3.0,
     )
