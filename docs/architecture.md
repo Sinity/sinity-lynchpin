@@ -184,10 +184,18 @@ The live machine telemetry SQLite database serves machine reads and graph
 promotion; nightly maintenance checks that source without rebuilding the large
 NDJSON offline copy. `python -m lynchpin.ingest.machine_materialize` can refresh
 that copy explicitly.
-The declared `lynchpin converge` operation emits one JSON progress event per
-source start and outcome, with product identity, queue wait, elapsed time, and
-the selected window. These events describe work in progress; a source success
-does not by itself establish a published graph generation.
+The nightly `lynchpin converge` operation uses the same candidate-based
+incremental route as `promote_incremental`. It clones the previous serving
+generation, refreshes selected source tails, and atomically publishes the graph
+and personal-product overlays after verification. It does not run the separate
+complete substrate import over all history. Products requiring an explicit
+schema migration or lacking verified historical input identities remain
+check-only, with their unavailable coverage recorded in the new generation.
+A source success does not by itself establish a published graph generation.
+Runtime and compact status report the recorded promotion time and freshness
+alongside the refresh ID. They expose the existing systemd timer's next trigger
+and bounded journal evidence for the latest completion and failure; an old
+serving promotion or a newer failed nightly run cannot report healthy readiness.
 For a dated source with a proven historical product more than 31 days behind,
 each maintenance pass processes one bounded window. A manifest with an
 unfinished window stays eligible on the next pass even if its input fingerprint

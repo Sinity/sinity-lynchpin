@@ -116,7 +116,7 @@ _SOURCE_HANDLERS: dict[str, Materializer] = {
 _WINDOWED = frozenset(
     name
     for name, handler in _SOURCE_HANDLERS.items()
-    if name not in {"google_takeout", "title_metadata", "spotify", "reddit", "facebook_messenger", "communications", "raindrop", "browser_bookmarks", "arbtt", "health_coverage", "code_snapshots", "ambient_intelligence"}
+    if name not in {"google_takeout", "title_metadata", "spotify", "reddit", "facebook_messenger", "communications", "raindrop", "browser_bookmarks", "arbtt", "health_coverage", "code_snapshots", "ambient_intelligence", "substack"}
 )
 _REFRESH_ID = frozenset({"activitywatch", "personal_daily_signals", "temporal_signals"})
 

@@ -1668,3 +1668,27 @@ def test_machine_work_observation_tools_read_promoted_rows(
     failures = machine_work_failures(project="sinex", package="pkg", refresh_id="r1")
     assert failures["rows"][0]["failure_kind"] == "test"
     assert failures["rows"][0]["source_id"] == "xtask:live:test:2"
+
+
+def test_runtime_status_retains_promotion_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = setup_substrate(tmp_path, monkeypatch)
+    import duckdb
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO substrate_promotion_run "
+            "(refresh_id, status, started_at, finished_at) VALUES "
+            "('fixture-generation', 'degraded', TIMESTAMPTZ '2026-01-01 00:00:00+00', "
+            "TIMESTAMPTZ '2026-01-01 00:01:00+00')"
+        )
+    from lynchpin.mcp.tools.runtime import mcp_runtime_status
+
+    status = mcp_runtime_status()["substrate"]
+    water = status["materialization"]["source_high_water"]
+    assert status["latest_materialized_refresh_id"] == "fixture-generation"
+    assert water["latest_recorded_at"] is not None
+    assert water["latest_available_recorded_at"] == water["latest_recorded_at"]
+    assert water["latest_available_status"] == "degraded"
+
+    assert status["materialization"]["status"] in {"degraded", "failed"}
+    assert status["materialization"]["serving_freshness"] == "stale"

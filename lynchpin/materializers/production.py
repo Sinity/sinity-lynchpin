@@ -61,7 +61,9 @@ def _incremental_window(
     return max(row.first_date, min(cursor, end - timedelta(days=overlap))), end
 
 
-def _unfinished_bounded_window(row: Any, *, end: date) -> date | None:
+def _unfinished_bounded_window(
+    row: Any, *, end: date, available_end: date | None = None
+) -> date | None:
     """A bounded manifest can be input-current while its later dates are unscanned."""
     for path in row.materialized_paths:
         if not (path.name == "manifest.json" or path.name.endswith(".manifest.json")) or not path.is_file():
@@ -72,6 +74,10 @@ def _unfinished_bounded_window(row: Any, *, end: date) -> date | None:
                 continue
             completed_end = date.fromisoformat(str(manifest["window_end"]))
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            continue
+        if available_end is not None and completed_end >= available_end:
+            # The complete upstream export has been scanned. Later empty
+            # dates are not new input and must not drive repeated catch-up.
             continue
         if completed_end < end and (
             row.last_date is None or row.last_date < end - timedelta(days=1)
@@ -304,16 +310,26 @@ def plan_materializations(
     end = maintenance_end or (date.today() + timedelta(days=1))
     steps: list[PlanStep] = []
     rows = tuple(audit.audit_materialization(cfg=cfg))
+    spotify = next((row for row in rows if row.name == "spotify"), None)
+    spotify_end = (
+        spotify.last_date + timedelta(days=1)
+        if spotify is not None and spotify.status == "ready" and spotify.last_date is not None
+        else None
+    )
     for row in rows:
         spec = PRODUCT_CATALOG.get(row.name)
         if spec is None:
             continue
-        unfinished_window = _unfinished_bounded_window(row, end=end) if maintenance else None
+        unfinished_window = _unfinished_bounded_window(
+            row, end=end, available_end=spotify_end if row.name == "spotify_daily" else None
+        ) if maintenance else None
         step_window: tuple[date, date] | None = None
         if force:
             action, reason = "materialize", row.reason
         elif maintenance:
-            if row.name == "code_snapshots":
+            if getattr(row, "incremental_blocked_reason", None):
+                action, reason = "check-only", row.incremental_blocked_reason
+            elif row.name == "code_snapshots":
                 action, reason = "check-only", "Chisel snapshots require an explicit build; nightly tail maintenance does not rebuild the portfolio"
             elif row.name == "machine":
                 action, reason = "check-only", "machine reads use live SQLite or the canonical fallback; building the offline NDJSON copy requires an explicit materialization"

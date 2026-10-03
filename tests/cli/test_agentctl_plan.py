@@ -473,3 +473,12 @@ def test_promotion_uses_an_immutable_generation_refresh_id(monkeypatch) -> None:
         "publication_refresh_id": expected,
     }
     assert result["refresh_id"] == expected
+
+
+def test_nightly_descriptor_uses_candidate_incremental_publication() -> None:
+    import tomllib
+
+    descriptor = tomllib.loads((Path(__file__).parents[2] / ".agentctl/project.toml").read_text())
+    nightly = descriptor["operations"]["converge"]
+    assert nightly["exec"] == descriptor["operations"]["promote_incremental"]["exec"]
+    assert nightly["result"] == "exit"

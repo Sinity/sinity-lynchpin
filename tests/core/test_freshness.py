@@ -164,7 +164,7 @@ def test_compact_materialization_status_reports_latest_snapshot(
             INSERT INTO substrate_source_status
             (refresh_id, source, kind, status, reason, row_count, recorded_at)
             VALUES ('rid-status', 'commits', 'stage', 'ok', NULL, 1,
-                    TIMESTAMPTZ '2026-06-05 12:01:00+00')
+                    CURRENT_TIMESTAMP)
             """
         )
 
@@ -211,3 +211,61 @@ def test_compact_materialization_status_reports_degraded_available_snapshot(
     assert product_status["materialization"]["latest_available_refresh_id"] == "rid-failed"
     assert product_status["materialization"]["latest_available_status"] == "error"
     assert "activity_content coverage gap" in product_status["materialization"]["reason"]
+
+
+def test_materialization_health_exposes_stale_serving_and_newer_failure() -> None:
+    from datetime import datetime, timezone
+    from lynchpin.ingest.materialization_status import materialization_health
+
+    health = materialization_health(
+        recorded_at="2026-06-01T00:00:00+00:00", available_status="ok", available_reason=None,
+        nightly={"latest_completed_run": {
+            "job_id": 42, "status": "failed", "finished_at": "2026-06-05T03:00:00+00:00",
+        }},
+        now=datetime(2026, 6, 5, 4, tzinfo=timezone.utc),
+    )
+    assert health["status"] == "failed"
+    assert health["serving_freshness"] == "stale"
+    assert "42" in health["reason"]
+
+
+def test_materialization_health_does_not_treat_historic_failure_as_current() -> None:
+    from datetime import datetime, timezone
+    from lynchpin.ingest.materialization_status import materialization_health
+
+    health = materialization_health(
+        recorded_at="2026-06-05T03:00:00+00:00", available_status="degraded",
+        available_reason="browser export coverage ends before the requested window",
+        nightly={"latest_completed_run": {
+            "job_id": 42, "status": "failed", "finished_at": "2026-06-04T03:00:00+00:00",
+        }},
+        now=datetime(2026, 6, 5, 4, tzinfo=timezone.utc),
+    )
+    assert health["status"] == "degraded"
+    assert health["serving_freshness"] == "current"
+    assert "browser export coverage" in health["reason"]
+
+
+def test_nightly_status_reports_existing_timer_and_bounded_failure(monkeypatch) -> None:
+    import json
+    from subprocess import CompletedProcess
+    from lynchpin.ingest.materialization_status import nightly_materialization_status
+
+    def run(argv, **kwargs):
+        if argv[0] == "systemctl":
+            return CompletedProcess(argv, 0, stdout=(
+                "Id=lynchpin-materialize.service\nLoadState=loaded\nActiveState=failed\n\n"
+                "Id=lynchpin-materialize.timer\nLoadState=loaded\nActiveState=active\n"
+                "NextElapseUSecRealtime=fixture-next-trigger\n"
+            ))
+        assert "-n" in argv and "20" in argv
+        return CompletedProcess(argv, 0, stdout=json.dumps({
+            "MESSAGE": "job 42 lynchpin:converge failed exit 1 finished 03:00 after 1m",
+            "__REALTIME_TIMESTAMP": "1780628400000000",
+        }))
+
+    monkeypatch.setattr("lynchpin.ingest.materialization_status.subprocess.run", run)
+    status = nightly_materialization_status()
+    assert status["latest_failed_run"]["job_id"] == 42
+    assert status["latest_completed_run"]["exit_code"] == 1
+    assert status["timer"]["NextElapseUSecRealtime"] == "fixture-next-trigger"

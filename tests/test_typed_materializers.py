@@ -661,3 +661,55 @@ def test_maintenance_debounce_uses_the_newest_product_output(tmp_path) -> None:
     assert not _recently_materialized(
         SimpleNamespace(materialized_paths=(stale, recent))
     )
+
+
+def test_nightly_defers_explicit_repair_and_reuses_current_export(monkeypatch, tmp_path) -> None:
+    from lynchpin.materializers import production
+
+    manifest = tmp_path / "spotify_daily.manifest.json"
+    manifest.write_text(json.dumps({"window_start": "2026-01-01", "window_end": "2026-02-01"}))
+    rows = [
+        SimpleNamespace(name="spotify", status="ready", reason="current export",
+                        first_date=date(2020, 1, 1), last_date=date(2026, 1, 31),
+                        materialized_paths=(), tail_stale=False, repair_required=False),
+        SimpleNamespace(name="webhistory", status="partial", reason="unverified history",
+                        first_date=date(2020, 1, 1), last_date=date(2026, 1, 1),
+                        materialized_paths=(), tail_stale=False, repair_required=False,
+                        incremental_blocked_reason="explicit repair required"),
+        SimpleNamespace(name="spotify_daily", status="ready", reason="current export",
+                        first_date=date(2020, 1, 1), last_date=date(2026, 1, 1),
+                        materialized_paths=(manifest,), tail_stale=False, repair_required=False),
+    ]
+    monkeypatch.setattr(production, "_audit", lambda: SimpleNamespace(
+        audit_materialization=lambda **_kwargs: rows,
+        _dataset_fingerprint=lambda row: row.name,
+        source_contract=lambda _name: SimpleNamespace(materialization_hint="fixture"),
+    ))
+    steps = production.plan_materializations(cfg=object(), maintenance=True, maintenance_end=date(2026, 5, 1))
+    assert [(step.product, step.action) for step in steps] == [("webhistory", "check-only")]
+    assert steps[0].reason == "explicit repair required"
+    rows[0].last_date = date(2026, 4, 1)
+    unfinished = production.plan_materializations(cfg=object(), maintenance=True, maintenance_end=date(2026, 5, 1))
+    assert "spotify_daily" in {step.product for step in unfinished}
+
+
+def test_substack_production_handler_accepts_the_archive_contract(monkeypatch, tmp_path) -> None:
+    from lynchpin.materializers import handlers, production
+
+    root = tmp_path / "archive"
+    source = root / "fixture/20260101_010203_post.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("# Neutral post\n\nContent", encoding="utf-8")
+    output = tmp_path / "posts.ndjson"
+    original = handlers.materialize_substack
+    monkeypatch.setitem(handlers._SOURCE_HANDLERS, "substack",
+                        lambda: original(root=root, output=output))
+    audit = SimpleNamespace(_dataset_fingerprint=lambda _row: "fixture",
+                            source_contract=lambda _name: SimpleNamespace(materialization_hint="fixture"))
+    monkeypatch.setattr(production, "_audit", lambda: audit)
+    step = production._step(PRODUCT_CATALOG["substack"], row=SimpleNamespace(status="partial"),
+                            action="materialize", reason="fixture", window=None)
+    from lynchpin.materializers.executor import StepContext
+    result = handlers.run_source_handler(StepContext(step, {}, {"window": (date(2026, 1, 1), date(2026, 1, 2))}))
+    assert result["row_count"] == 1
+    assert PRODUCT_CATALOG["substack"].window_policy == "unbounded"

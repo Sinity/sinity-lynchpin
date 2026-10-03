@@ -423,7 +423,7 @@ def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
 
 def _write_ndjson(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_ndjson(path, rows)
+    atomic_write_ndjson(path, rows, dumps=lambda row: json.dumps(row, ensure_ascii=True, sort_keys=True))
 
 
 def _write_manifest(

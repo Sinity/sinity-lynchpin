@@ -212,6 +212,8 @@ class MaterializedDataset:
     #: True when a bounded tail can be served but the historical carrier still
     #: needs an explicit full repair before it may be called fully verified.
     repair_required: bool = False
+    #: An explicit migration is required before routine incremental maintenance.
+    incremental_blocked_reason: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         contract = source_contract(self.name)
@@ -221,6 +223,7 @@ class MaterializedDataset:
             "status": self.status,
             "tail_stale": self.tail_stale,
             "repair_required": self.repair_required,
+            "incremental_blocked_reason": self.incremental_blocked_reason,
             "substrate_status": dataset_status_to_substrate_status(self.status),
             "kind": contract.kind,
             "required": contract.required,
@@ -1745,6 +1748,10 @@ def _webhistory_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     return MaterializedDataset(
         name="webhistory",
         status=status,
+        incremental_blocked_reason=(
+            "webhistory input identity is unverified; explicit historical repair is required"
+            if not isinstance(meta.get("input_versions"), list) else None
+        ),
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(output, manifest) if manifest else (output,),
@@ -1842,6 +1849,10 @@ def _google_takeout_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     return MaterializedDataset(
         name="google_takeout",
         status=status,
+        incremental_blocked_reason=(
+            "Gmail schema migration requires an explicit archive import; nightly maintenance preserves the existing product"
+            if gmail_manifest_valid and not gmail_schema_current else None
+        ),
         authority="raw Google Takeout archives",
         query_surface="lynchpin.sources.google_takeout plus lynchpin.sources.google_takeout_products",
         materialized_paths=(archive_rows, members, manifest, products_manifest, gmail_path, gmail_manifest),

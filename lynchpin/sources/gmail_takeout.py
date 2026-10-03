@@ -160,7 +160,7 @@ def _parse_mbox_bytes(
                     "charset": part.get_content_charset(),
                     "disposition": part.get_content_disposition(),
                     "filename": part.get_filename(),
-                    "content_id": part.get("Content-ID"),
+                    "content_id": _header_str(part.get("Content-ID")) or None,
                 }
                 for part in (msg.walk() if msg.is_multipart() else (msg,))
             )
@@ -195,7 +195,7 @@ def _parse_mbox_bytes(
                 native_labels=tuple(label.strip() for label in _header_str(msg.get("X-Gmail-Labels")).split(",") if label.strip()),
                 archive_member=archive_member,
                 occurrence_index=occurrence_index,
-                headers=tuple((name, value) for name, value in msg.items()),
+                headers=tuple((name, _header_str(value)) for name, value in msg.items()),
                 mime_parts=parts,
                 body="\n".join(body_parts) if body_parts else None,
                 raw_message_base64=base64.b64encode(raw_message).decode("ascii"),

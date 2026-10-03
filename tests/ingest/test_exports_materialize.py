@@ -363,3 +363,12 @@ def test_reddit_materializer_merges_arctic_shift_content(tmp_path: Path, monkeyp
     assert rows[0]["permalink"] == "https://www.reddit.com/r/x/c1"
     assert report["files"]["comments.csv"]["row_count"] == 2
     assert str(arctic / "comments.jsonl") in (processed / "canonical" / "manifest.json").read_text()
+
+
+def test_export_carrier_preserves_surrogate_native_locator(tmp_path: Path) -> None:
+    from lynchpin.ingest.exports_materialize import _write_ndjson
+
+    output = tmp_path / "messages.ndjson"
+    row = {"source_locator": "fixture\udce1:message:0", "text": "neutral"}
+    _write_ndjson(output, [row])
+    assert json.loads(output.read_text(encoding="utf-8")) == row

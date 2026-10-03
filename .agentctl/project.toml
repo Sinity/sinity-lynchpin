@@ -28,6 +28,20 @@ pool = "bulk"
 result = "exit"
 cache = "tree+environment"
 
+[operations.verify_incremental]
+description = "Verify nightly incremental planning, source boundaries, and publication routes"
+exec = ["pytest", "-q", "tests/test_typed_materializers.py", "tests/cli/test_materialize.py", "tests/cli/test_agentctl_plan.py", "tests/ingest/test_exports_materialize.py", "tests/ingest/test_gmail_takeout_materialize.py", "tests/mcp/test_mcp_substrate.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
+[operations.verify_runtime_status]
+description = "Verify nightly failure and serving freshness status"
+exec = ["pytest", "-q", "tests/core/test_freshness.py", "tests/mcp/test_mcp_substrate.py", "-k", "materialization_status or materialization_health or nightly_status or runtime_status"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
 [operations.lint]
 description = "Run Lynchpin Ruff checks"
 exec = ["just", "lint"]
@@ -59,9 +73,9 @@ cache = "none"
 
 [operations.converge]
 description = "Materialize, verify, and publish the complete Lynchpin maintenance snapshot"
-exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "converge"]
+exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--promote", "--history", "incremental", "--progress", "plain"]
 pool = "bulk"
-result = "json"
+result = "exit"
 cache = "none"
 timeout_seconds = 14400
 

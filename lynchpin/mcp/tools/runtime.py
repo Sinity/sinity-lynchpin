@@ -10,11 +10,13 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from lynchpin.mcp.tools._utils import latest_materialized_refresh_id
+from lynchpin.substrate.snapshots import latest_materialized_snapshot, latest_promotion_snapshot
 from lynchpin.mcp.tools._utils import mcp_tool_registry_summary
 from lynchpin.mcp.tools._utils import registered_tool_names
 from lynchpin.ingest.materialization_status import (
     compact_materialization_status,
+    materialization_health,
+    nightly_materialization_status,
     diagnostic_ledger_status_payload,
 )
 from lynchpin.core.freshness import (
@@ -51,14 +53,43 @@ def mcp_runtime_status() -> dict[str, Any]:
     git_branch = _git_value(repo_root, "branch", "--show-current") if repo_root else None
     git_status = _git_value(repo_root, "status", "--short") if repo_root else None
 
+    nightly = nightly_materialization_status()
     try:
         with serving_generation() as generation:
             conn = generation.connection
-            latest_materialized = latest_materialized_refresh_id(conn, caller="mcp_runtime_status")
+            latest = latest_materialized_snapshot(conn, caller="mcp_runtime_status")
+            attempt = latest_promotion_snapshot(conn, caller="mcp_runtime_status")
+            latest_materialized = latest[0] if latest else None
             materialization = substrate_materialization_snapshot(
                 generation.database_path,
                 latest_materialized_refresh_id=latest_materialized,
+                latest_recorded_at=latest[1] if latest else None,
+                latest_available_refresh_id=attempt[0] if attempt else None,
+                latest_available_recorded_at=attempt[1] if attempt else None,
+                latest_available_status=attempt[2] if attempt else None,
+                latest_available_reason=attempt[3] if attempt else None,
             ).to_json()
+            if latest:
+                materialization.update(materialization_health(
+                    recorded_at=latest[1],
+                    available_status=attempt[2] if attempt else None,
+                    available_reason=attempt[3] if attempt else None,
+                    nightly=nightly,
+                ))
+                materialization["coverage"]["interpretation"] = materialization["reason"]
+                try:
+                    bounds = conn.execute(
+                        "SELECT window_start, window_end FROM substrate_promotion_run "
+                        "WHERE refresh_id = ? ORDER BY finished_at DESC LIMIT 1",
+                        [latest_materialized],
+                    ).fetchone()
+                except Exception:
+                    bounds = None
+                if bounds:
+                    materialization["coverage"].update(
+                        start=str(bounds[0]) if bounds[0] is not None else None,
+                        end=str(bounds[1]) if bounds[1] is not None else None,
+                    )
     except Exception as exc:  # noqa: BLE001 - status tool should report broken substrate access.
         latest_materialized = None
         substrate_error = f"{type(exc).__name__}: {exc}"
@@ -82,6 +113,7 @@ def mcp_runtime_status() -> dict[str, Any]:
         "mcp": {
             "registered_tool_count": len(live_tools),
         },
+        "nightly": nightly,
         "substrate": {
             "path": str(substrate_path()),
             "latest_materialized_refresh_id": latest_materialized,

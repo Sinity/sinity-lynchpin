@@ -6,6 +6,9 @@ the substrate layer, which core is not permitted to do per the layering rules.
 
 from __future__ import annotations
 
+import json
+import re
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -81,9 +84,17 @@ def _compact_materialization_snapshot(status: dict[str, Any]) -> dict[str, Any]:
     snapshot_id = status.get("latest_materialized_refresh_id")
     available_id = status.get("latest_available_refresh_id")
     ready = bool(product_present and snapshot_id)
+    nightly = nightly_materialization_status()
+    health = {}
     if ready:
-        reason = "substrate has a recorded promotion snapshot"
-        materialization_status = "ready"
+        health = materialization_health(
+            recorded_at=status.get("latest_recorded_at"),
+            available_status=status.get("latest_available_status"),
+            available_reason=status.get("latest_available_reason"),
+            nightly=nightly,
+        )
+        reason = health["reason"]
+        materialization_status = health["status"]
     elif status.get("status_error"):
         reason = f"could not inspect substrate promotion snapshot: {status['status_error']}"
         materialization_status = "blocked"
@@ -103,6 +114,8 @@ def _compact_materialization_snapshot(status: dict[str, Any]) -> dict[str, Any]:
         materialization_status = "blocked"
     return {
         "status": materialization_status,
+        **health,
+        "nightly": nightly,
         "primary_product": "evidence_graph_substrate",
         "reason": reason,
         "latest_materialized_refresh_id": snapshot_id,
@@ -122,6 +135,103 @@ def _compact_materialization_snapshot(status: dict[str, Any]) -> dict[str, Any]:
                 "modified_at_utc": status["snapshot_modified_at_utc"],
             },
         },
+    }
+
+
+def nightly_materialization_status() -> dict[str, Any]:
+    """Read the existing systemd schedule and bounded completion journal."""
+    service = "lynchpin-materialize.service"
+    timer = "lynchpin-materialize.timer"
+    fields = "Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,NextElapseUSecRealtime,LastTriggerUSec"
+    try:
+        shown = subprocess.run(
+            ["systemctl", "show", service, timer, f"--property={fields}"],
+            check=True, capture_output=True, text=True, timeout=5,
+        )
+        units = {}
+        for block in shown.stdout.strip().split("\n\n"):
+            values = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+            if values.get("Id"):
+                units[values["Id"]] = values
+        if units.get(timer, {}).get("LoadState") != "loaded":
+            return {"state": "unavailable", "reason": "nightly systemd timer is not installed"}
+        payload: dict[str, Any] = {
+            "state": units.get(service, {}).get("ActiveState"),
+            "service": units.get(service, {}),
+            "timer": units.get(timer, {}),
+            "latest_completed_run": None,
+            "latest_failed_run": None,
+        }
+        journal = subprocess.run(
+            ["journalctl", "-u", service, "--no-pager", "-o", "json", "-n", "20",
+             "--grep=job [0-9]+ lynchpin:converge (failed|succeeded)"],
+            check=True, capture_output=True, text=True, timeout=5,
+        )
+        runs = []
+        for line in journal.stdout.splitlines():
+            try:
+                row = json.loads(line)
+                match = re.match(r"job (\d+) lynchpin:converge (failed|succeeded) exit (\d+)", row.get("MESSAGE", ""))
+                if match is None:
+                    continue
+                runs.append({
+                    "job_id": int(match[1]), "status": match[2], "exit_code": int(match[3]),
+                    "finished_at": datetime.fromtimestamp(
+                        int(row["__REALTIME_TIMESTAMP"]) / 1_000_000, tz=timezone.utc,
+                    ).isoformat(),
+                })
+            except (ValueError, KeyError, TypeError):
+                continue
+        runs.sort(key=lambda run: run["finished_at"], reverse=True)
+        payload["latest_completed_run"] = runs[0] if runs else None
+        payload["latest_failed_run"] = next((run for run in runs if run["status"] == "failed"), None)
+        return payload
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"state": "unavailable", "reason": f"nightly status unavailable: {type(exc).__name__}"}
+
+
+def materialization_health(
+    *, recorded_at: Any, available_status: str | None, available_reason: str | None,
+    nightly: dict[str, Any], now: datetime | None = None,
+) -> dict[str, Any]:
+    """Keep successful publication, current freshness, and job outcome distinct."""
+    observed_at = now or datetime.now(timezone.utc)
+    try:
+        recorded = datetime.fromisoformat(str(recorded_at))
+        if recorded.tzinfo is None:
+            recorded = recorded.replace(tzinfo=timezone.utc)
+    except ValueError:
+        recorded = None
+    age_hours = max(0.0, (observed_at - recorded).total_seconds() / 3600) if recorded else None
+    freshness = "unknown" if age_hours is None else "stale" if age_hours > 48 else "current"
+    reasons = []
+    state = "ready"
+    if freshness == "stale":
+        state = "degraded"
+        reasons.append(f"serving promotion is {age_hours:.1f} hours old; nightly freshness is stale")
+    elif freshness == "unknown":
+        state = "degraded"
+        reasons.append("serving promotion time is unknown")
+    if available_status and available_status != "ok":
+        state = "degraded"
+        reasons.append(f"latest promotion status is {available_status}")
+        if available_reason:
+            reasons.append(available_reason)
+    completed = nightly.get("latest_completed_run")
+    if isinstance(completed, dict) and completed.get("status") == "failed":
+        try:
+            failed_at = datetime.fromisoformat(completed["finished_at"])
+        except (KeyError, TypeError, ValueError):
+            failed_at = None
+        if recorded is None or (failed_at is not None and failed_at > recorded):
+            state = "failed"
+            reasons.append(f"nightly job {completed.get('job_id')} failed after the serving promotion")
+    return {
+        "status": state,
+        "reason": "; ".join(reasons) if reasons else "substrate has a recent successful promotion",
+        "serving_freshness": freshness,
+        "serving_age_hours": round(age_hours, 2) if age_hours is not None else None,
+        "nightly_max_age_hours": 48,
     }
 
 

@@ -140,3 +140,15 @@ def test_exact_retained_search_finds_beyond_preview_and_unknown_identity(monkeyp
     assert hit.raw_message_base64 and b"fixture attachment" not in base64.b64decode(hit.raw_message_base64)
     assert b"sample.bin" in base64.b64decode(hit.raw_message_base64)
     assert list(find_materialized_gmail_messages("absent content", path=output, ensure=False)) == []
+
+
+def test_gmail_parser_serializes_non_ascii_raw_headers() -> None:
+    from lynchpin.sources.gmail_takeout import _parse_mbox_bytes
+
+    raw = (b"From sender@example.com Mon Apr 21 10:00:00 2025\n"
+           b"From: sender@example.com\nSubject: fixture \xff\n"
+           b"Content-Type: text/plain\n\nneutral body\n")
+    message = next(_parse_mbox_bytes(raw, "Mail", "fixture.zip", "Mail.mbox"))
+    payload = gmail_takeout_materialize._message_payload(message)
+    assert all(isinstance(value, str) for _name, value in payload["headers"])
+    json.dumps(payload)
