@@ -4075,3 +4075,25 @@ def test_substack_audit_reports_current_canonical_index(monkeypatch, tmp_path) -
     assert row.status == "ready"
     assert row.row_count == 1
     assert row.first_date == date(2026, 1, 2)
+
+
+def test_polylogue_dataset_normalizes_unavailable_without_claiming_zero(monkeypatch, tmp_path):
+    from lynchpin import materialization
+    from lynchpin.core.source_contracts import dataset_status_to_substrate_status
+
+    cfg = SimpleNamespace(polylogue_archive_root=tmp_path / "archive", polylogue_root=tmp_path / "state")
+    for owner_status, expected_status, expected_count in (
+        ("unavailable", "missing", None),
+        ("degraded", "partial", 3),
+        ("unexpected", "error", None),
+    ):
+        readiness = SimpleNamespace(db_path=tmp_path / "archive.db", status=owner_status,
+                                    reason="neutral provider availability", session_profile_count=3)
+        monkeypatch.setattr(materialization, "archive_readiness", lambda: readiness)
+        row = materialization._polylogue_dataset(cfg)
+        assert row.status == expected_status
+        assert row.row_count == expected_count
+        assert row.first_date is None and row.last_date is None
+        assert dataset_status_to_substrate_status(row.status) == (
+            "error" if expected_status == "error" else "unavailable"
+        )

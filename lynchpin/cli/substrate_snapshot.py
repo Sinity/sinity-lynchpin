@@ -555,7 +555,18 @@ def _record_snapshot_promotion_run(
         reason = None
         bad = [row for row in status_rows if row[1] not in {"ok", "empty"}]
         if bad:
-            status = "error" if any(row[1] == "error" for row in bad) else "degraded"
+            from lynchpin.core.source_contracts import source_contract
+
+            def required_error(row: tuple[str, str, str | None]) -> bool:
+                if row[1] != "error":
+                    return False
+                try:
+                    return source_contract(row[0]).required
+                except KeyError:
+                    # Unknown and projection errors retain the strict boundary.
+                    return True
+
+            status = "error" if any(required_error(row) for row in bad) else "degraded"
             reason = "; ".join(f"{row[0]}: {row[2] or row[1]}" for row in bad[:6])
         conn.execute("DELETE FROM substrate_promotion_run WHERE refresh_id = ?", [refresh_id])
         conn.execute(

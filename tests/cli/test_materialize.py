@@ -645,3 +645,42 @@ def test_selected_plan_rejects_unknown_products(monkeypatch):
     monkeypatch.setattr(materialize, "plan_materializations", lambda **kwargs: [])
     with pytest.raises(SystemExit, match="2"):
         materialize.main(["--all", "--plan-json", "--only", "misspelled"])
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (("polylogue_verification", "degraded"), ("polylogue", "error"), ("evidence_graph", "error"), ("unknown_source", "error")),
+)
+def test_snapshot_promotion_preserves_optional_errors_without_vetoing_graph(monkeypatch, tmp_path, source, expected):
+    from lynchpin.cli import substrate_snapshot
+    import lynchpin.substrate.connection as connection
+
+    database = tmp_path / "substrate.duckdb"
+    monkeypatch.setattr(connection, "substrate_path", lambda: database)
+    start, end = date(2026, 1, 1), date(2026, 1, 2)
+    rid = substrate_snapshot._snapshot_refresh_id(start=start, end=end, projects=())
+    token = connection._substrate_path_override.set(database)
+    try:
+        with connection.connect(database) as conn:
+            connection.apply_schema(conn)
+            conn.execute(
+                "INSERT INTO evidence_graph_build "
+                "(refresh_id,start_date,end_date,mode,projects,node_count,edge_count,caveats,generated_at) "
+                "VALUES (?, ?, ?, 'materialized', [], 1, 0, '[]', now())",
+                [rid, start, end],
+            )
+            for name, status in (("evidence_graph", "ok"), (source, "error")):
+                conn.execute("DELETE FROM substrate_source_status WHERE refresh_id=? AND source=?", [rid, name])
+                conn.execute(
+                    "INSERT INTO substrate_source_status "
+                    "(refresh_id,source,kind,status,reason,row_count,window_start,window_end,recorded_at) "
+                    "VALUES (?, ?, 'dataset', ?, 'neutral source failure', NULL, ?, ?, now())",
+                    [rid, name, status, start, end],
+                )
+        substrate_snapshot._record_snapshot_promotion_run(start=start, end=end, projects=())
+        with connection.connect(database, read_only=True) as conn:
+            assert conn.execute("SELECT status FROM substrate_promotion_run WHERE refresh_id=?", [rid]).fetchone()[0] == expected
+            assert conn.execute("SELECT status,row_count FROM substrate_source_status WHERE refresh_id=? AND source=?",
+                                [rid, source]).fetchone() == ("error", None)
+    finally:
+        connection._substrate_path_override.reset(token)

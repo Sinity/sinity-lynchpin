@@ -201,6 +201,9 @@ The explicit `repair_webhistory_base` operation calls the existing merge with
 records their current identities, and skips raw browser extraction. Verify that
 candidate before replacing a legacy merged carrier; its identities describe the
 new base rather than an earlier run.
+Unavailable owner readiness becomes missing dataset coverage with an unknown
+count. Optional source errors remain visible and degrade the snapshot; required
+source and graph errors still reject publication.
 A source success does not by itself establish a published graph generation.
 Runtime and compact status report the recorded promotion time and freshness
 alongside the refresh ID. They expose the existing systemd timer's next trigger

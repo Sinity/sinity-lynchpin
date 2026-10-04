@@ -1867,15 +1867,24 @@ def _google_takeout_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 def _polylogue_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     readiness = archive_readiness()
-    first, last = _polylogue_date_bounds() if readiness.status == "ready" else (None, None)
+    status: Status
+    if readiness.status in {"unavailable", "missing"}:
+        status = "missing"
+    elif readiness.status in {"degraded", "partial"}:
+        status = "partial"
+    elif readiness.status in {"ready", "empty"}:
+        status = readiness.status
+    else:
+        status = "error"
+    first, last = _polylogue_date_bounds() if status == "ready" else (None, None)
     return MaterializedDataset(
         name="polylogue",
-        status="ready" if readiness.status == "ready" else readiness.status,
+        status=status,
         authority="Polylogue archive database",
         query_surface="lynchpin.sources.polylogue",
         materialized_paths=(readiness.db_path,),
         raw_roots=(cfg.polylogue_archive_root, cfg.polylogue_root),
-        row_count=readiness.session_profile_count,
+        row_count=readiness.session_profile_count if status in {"ready", "empty", "partial"} else None,
         first_date=first,
         last_date=last,
         materialization_hint="polylogue doctor --repair --target session_insights",
