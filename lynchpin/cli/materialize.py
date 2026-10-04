@@ -201,6 +201,16 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         with generation_context as generation:
+            if isinstance(generation, CandidateGeneration) and args.history == "incremental":
+                from .substrate_snapshot import _snapshot_refresh_id
+
+                publication_refresh_id = _snapshot_refresh_id(
+                    start=date.fromisoformat(args.start),
+                    end=date.fromisoformat(args.end),
+                    projects=(),
+                    generation=generation.refresh_id,
+                )
+                generation.receipt_refresh_id = publication_refresh_id
             # Independent source reads/computations share waves; canonical
             # product writes and receipt writes are serialized by their own
             # paths/locks. Graph construction remains a barrier after them.
@@ -266,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
                     "--progress",
                     args.progress,
                 ]
+                if isinstance(generation, CandidateGeneration) and args.history == "incremental":
+                    forwarded.extend(("--graph-generation", generation.refresh_id))
                 if incremental_tail_start is not None:
                     forwarded.extend(("--incremental-tail-start", incremental_tail_start.isoformat()))
                 if args.weak_tags:
@@ -290,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
 
                     bind_candidate_publication(
                         generation,
-                        _snapshot_refresh_id(
+                        publication_refresh_id or _snapshot_refresh_id(
                             start=date.fromisoformat(args.start),
                             end=date.fromisoformat(args.end),
                             projects=(),

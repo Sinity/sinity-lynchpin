@@ -58,7 +58,7 @@ cache = "tree+environment"
 
 [operations.verify_partial_publication]
 description = "Verify unavailable Polylogue status and optional-feed publication policy"
-exec = ["pytest", "-q", "tests/cli/test_materialize.py", "tests/test_materialization.py", "-k", "snapshot_promotion or polylogue_dataset or incremental_graph_tail"]
+exec = ["pytest", "-q", "tests/cli/test_materialize.py", "tests/test_materialization.py", "-k", "snapshot_promotion or polylogue_dataset or incremental_graph_tail or incremental_candidate_identity"]
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"

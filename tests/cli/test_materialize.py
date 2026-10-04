@@ -721,3 +721,32 @@ def test_incremental_graph_tail_covers_publication_gap_without_accepting_failed_
             conn, refresh_id="new", full_start=date(2026, 1, 1),
             requested_tail_start=date(2026, 1, 5),
         ) == date(2026, 1, 5)
+
+
+def test_incremental_candidate_identity_is_shared_by_sources_graph_and_publication(monkeypatch, tmp_path):
+    from lynchpin.cli import materialize, substrate_snapshot
+    from lynchpin.substrate import connection
+
+    generation = connection.CandidateGeneration(
+        candidate=tmp_path / "candidate.duckdb", canonical=tmp_path / "serving.duckdb",
+        refresh_id="fixture-attempt", seed_source=tmp_path / "serving.duckdb",
+        seed_mode="reflink", seed_logical_rows=0,
+    )
+    observed = {}
+    monkeypatch.setattr(materialize, "_all_history_window", lambda: (date(2026, 1, 1), date(2026, 1, 3)))
+    monkeypatch.setattr(materialize, "plan_materializations", lambda **kwargs: [])
+    monkeypatch.setattr(materialize, "audit_materialization", lambda: [])
+    monkeypatch.setattr(materialize, "_record_incremental_phase", lambda *args, **kwargs: None)
+    monkeypatch.setattr(materialize, "_incremental_graph_tail_start", lambda *args, **kwargs: date(2026, 1, 2))
+    monkeypatch.setattr(materialize, "run_materialization_plan", lambda *args, **kwargs: observed.update(source=kwargs["refresh_id"]) or [])
+    monkeypatch.setattr(connection, "candidate_generation", lambda **kwargs: nullcontext(generation))
+    monkeypatch.setattr(connection, "connect", lambda *args, **kwargs: nullcontext(None))
+    monkeypatch.setattr(connection, "generation_refresh_id", lambda *args: observed["source"])
+    monkeypatch.setattr(substrate_snapshot, "main", lambda argv: observed.update(argv=argv) or 0)
+    assert materialize.main(["--all", "--promote", "--history", "incremental", "--progress", "quiet"]) == 0
+    argv = observed["argv"]
+    assert argv[argv.index("--graph-generation")+1] == generation.refresh_id
+    expected = substrate_snapshot._snapshot_refresh_id(
+        start=date(2026, 1, 1), end=date(2026, 1, 3), projects=(), generation=generation.refresh_id,
+    )
+    assert observed["source"] == generation.receipt_refresh_id == generation.expected_refresh_id == expected

@@ -171,11 +171,12 @@ def nightly_materialization_status() -> dict[str, Any]:
         for line in journal.stdout.splitlines():
             try:
                 row = json.loads(line)
-                match = re.match(r"job (\d+) lynchpin:converge (failed|succeeded) exit (\d+)", row.get("MESSAGE", ""))
+                match = re.match(r"job (\d+) lynchpin:converge (failed|succeeded)(?: exit (\d+))?(?: |$)", row.get("MESSAGE", ""))
                 if match is None:
                     continue
                 runs.append({
-                    "job_id": int(match[1]), "status": match[2], "exit_code": int(match[3]),
+                    "job_id": int(match[1]), "status": match[2],
+                    "exit_code": int(match[3]) if match[3] else 0 if match[2] == "succeeded" else None,
                     "finished_at": datetime.fromtimestamp(
                         int(row["__REALTIME_TIMESTAMP"]) / 1_000_000, tz=timezone.utc,
                     ).isoformat(),

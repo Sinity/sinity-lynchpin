@@ -269,3 +269,26 @@ def test_nightly_status_reports_existing_timer_and_bounded_failure(monkeypatch) 
     assert status["latest_failed_run"]["job_id"] == 42
     assert status["latest_completed_run"]["exit_code"] == 1
     assert status["timer"]["NextElapseUSecRealtime"] == "fixture-next-trigger"
+
+
+def test_nightly_status_reads_success_without_exit_clause(monkeypatch):
+    import json
+    from subprocess import CompletedProcess
+    from lynchpin.ingest.materialization_status import nightly_materialization_status
+
+    def run(argv, **kwargs):
+        if argv[0] == "systemctl":
+            return CompletedProcess(argv, 0, stdout="Id=lynchpin-materialize.timer\nLoadState=loaded\nActiveState=active\n")
+        rows = [
+            {"MESSAGE": "job 42 lynchpin:converge failed exit 1 finished 03:00 after 1m",
+             "__REALTIME_TIMESTAMP": "1780628400000000"},
+            {"MESSAGE": "job 43 lynchpin:converge succeeded finished 03:01 after 1m",
+             "__REALTIME_TIMESTAMP": "1780628460000000"},
+        ]
+        return CompletedProcess(argv, 0, stdout="\n".join(json.dumps(row) for row in rows))
+
+    monkeypatch.setattr("lynchpin.ingest.materialization_status.subprocess.run", run)
+    status = nightly_materialization_status()
+    assert status["latest_completed_run"]["job_id"] == 43
+    assert status["latest_completed_run"]["exit_code"] == 0
+    assert status["latest_failed_run"]["job_id"] == 42
