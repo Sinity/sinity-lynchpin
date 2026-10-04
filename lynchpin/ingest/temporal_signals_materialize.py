@@ -36,6 +36,7 @@ def materialize_temporal_signals(
     end: date | None = None,
     output: Path | None = None,
     refresh_id: str | None = None,
+    ensure_inputs: bool = True,
 ) -> dict[str, Any]:
     output = output or temporal_signals_path()
     start, end = _default_window(start, end)
@@ -43,7 +44,8 @@ def materialize_temporal_signals(
         raise MaterializationError("temporal_signals_materialize", reason="temporal signal materialization end must be after start")
     inclusive_end = end - timedelta(days=1)
     history_start = start - timedelta(days=ANOMALY_BASELINE_DAYS)
-    _ensure_temporal_inputs(history_start, inclusive_end)
+    if ensure_inputs:
+        _ensure_temporal_inputs(history_start, inclusive_end)
     window_rows = [
         _event_row(event)
         for event in detect_temporal_signals(

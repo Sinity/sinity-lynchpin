@@ -232,3 +232,44 @@ def test_materialize_activity_content_reprocessing_a_window_is_idempotent(monkey
     second_run = json.loads(output.read_text(encoding="utf-8").strip())
 
     assert first_run["focused_seconds"] == second_run["focused_seconds"]
+
+
+def test_failed_title_usage_replacement_rolls_back_existing_facts(tmp_path):
+    import pytest
+    from lynchpin.ingest.activity_content_materialize import _TitleUsageStore
+
+    path = tmp_path / "title_usage.facts.sqlite3"
+    store = _TitleUsageStore(path)
+    store.ensure_row(title_hash="fixture", app="fixture", normalized_title="neutral",
+                     example_title="neutral", classification=None)
+    store.add(title_hash="fixture", app="fixture", day=date(2026, 1, 1), seconds=60)
+    store.close()
+    with pytest.raises(RuntimeError, match="source failed"):
+        with _TitleUsageStore(path) as replacement:
+            replacement.reset_window(date(2026, 1, 1), date(2026, 1, 2))
+            replacement.commit()
+            raise RuntimeError("source failed")
+    retained = _TitleUsageStore(path)
+    try:
+        assert list(retained.iter_rows())[0]["focused_seconds"] == 60
+    finally:
+        retained.close()
+
+
+def test_corrupt_usage_export_migrates_from_retained_facts(tmp_path):
+    from lynchpin.ingest.activity_content_materialize import _TitleUsageStore, _migrate_usage_store
+    from lynchpin.materializers.partition_store import ArtifactStore
+
+    output = tmp_path / "title_usage.ndjson"
+    output.write_text('{"incomplete":')
+    store = _TitleUsageStore(output.with_name("title_usage.facts.sqlite3"))
+    store.ensure_row(title_hash="fixture", app="fixture", normalized_title="neutral",
+                     example_title="neutral", classification=None)
+    store.add(title_hash="fixture", app="fixture", day=date(2026, 1, 1), seconds=60)
+    store.close()
+    artifacts = ArtifactStore(tmp_path / "usage-partitions")
+    _migrate_usage_store(artifacts, output)
+    rows = [json.loads(line) for ref in artifacts.logical_partitions().values()
+            for line in artifacts.read(ref).decode().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["focused_seconds"] == 60

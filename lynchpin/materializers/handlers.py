@@ -133,6 +133,9 @@ def run_source_handler(context: StepContext) -> Any:
     window = context.runtime.get("window", context.step.effective_window)
     if name in _WINDOWED and window is not None:
         kwargs.update(start=window[0], end=window[1])
+    if name == "temporal_signals" and context.runtime.get("refresh_id") is not None:
+        # Explicit plans own their upstream refreshes and failure decisions.
+        kwargs["ensure_inputs"] = False
     if name == "activitywatch_event_index":
         kwargs["full"] = bool(context.runtime.get("full", False))
     if name in _REFRESH_ID and context.runtime.get("refresh_id") is not None:

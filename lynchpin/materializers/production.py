@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from threading import Lock
 from typing import Any, Callable, Iterable, Literal, TYPE_CHECKING
 
+from ..core.primitives import logical_date
 from .catalog import PRODUCT_CATALOG, handler_registry
 from .executor import StepContext, validate_step_contract
 from .specs import PlanStep, ProductSpec, StepResult
@@ -307,7 +308,7 @@ def plan_materializations(
         raise ValueError("maintenance planning and an explicit window are mutually exclusive")
     audit = _audit()
     cfg = cfg or audit.get_config()
-    end = maintenance_end or (date.today() + timedelta(days=1))
+    end = maintenance_end or (logical_date(datetime.now(timezone.utc)) + timedelta(days=1))
     steps: list[PlanStep] = []
     rows = tuple(audit.audit_materialization(cfg=cfg))
     spotify = next((row for row in rows if row.name == "spotify"), None)

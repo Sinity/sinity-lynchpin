@@ -191,6 +191,16 @@ and personal-product overlays after verification. It does not run the separate
 complete substrate import over all history. Products requiring an explicit
 schema migration or lacking verified historical input identities remain
 check-only, with their unavailable coverage recorded in the new generation.
+Explicit plans read their selected upstream products during temporal and
+ActivityContent computation, rather than starting recursive refreshes. The
+nightly source window ends at the current logical day boundary. ActivityContent
+keeps title-use fact replacements in one SQLite transaction and can migrate a
+damaged compatibility export from its retained facts.
+The explicit `repair_webhistory_base` operation calls the existing merge with
+`--merge-only --output <candidate>`: it reads every retained canonical segment,
+records their current identities, and skips raw browser extraction. Verify that
+candidate before replacing a legacy merged carrier; its identities describe the
+new base rather than an earlier run.
 A source success does not by itself establish a published graph generation.
 Runtime and compact status report the recorded promotion time and freshness
 alongside the refresh ID. They expose the existing systemd timer's next trigger

@@ -76,6 +76,7 @@ class _TitleUsageStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._transactional = False
         path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(path)
         self.connection.execute(
@@ -122,7 +123,7 @@ class _TitleUsageStore:
             "DELETE FROM title_usage_daily WHERE day >= ? AND day < ?",
             (start.isoformat(), end.isoformat()),
         )
-        self.connection.commit()
+        self.commit()
 
     def ensure_row(
         self,
@@ -181,8 +182,22 @@ class _TitleUsageStore:
             (title_hash, app, day_s, seconds),
         )
 
+    def __enter__(self) -> _TitleUsageStore:
+        self._transactional = True
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        try:
+            if exc_type is None:
+                self.connection.commit()
+            else:
+                self.connection.rollback()
+        finally:
+            self.connection.close()
+
     def commit(self) -> None:
-        self.connection.commit()
+        if not self._transactional:
+            self.connection.commit()
 
     def iter_rows(self) -> Any:
         query = """
@@ -326,160 +341,159 @@ def materialize_activity_content(
     existing_by_day = {day: row for day, row in existing_by_day.items() if day not in reprocessed_days}
 
     by_day: dict[date, dict[str, Any]] = {}
-    title_usage = _TitleUsageStore(facts_path)
-    title_usage.reset_window(start, end)
-    cursor = start
-    processed_days = 0
-    recent_start = end - timedelta(days=RECENT_WINDOW_DAYS)
-    while cursor < end:
-        if cursor < recent_start:
-            chunk_end = min(cursor + timedelta(days=DEFAULT_CHUNK_DAYS), recent_start)
-        else:
-            chunk_end = min(cursor + timedelta(days=RECENT_CHUNK_DAYS), end)
-        span_start = datetime.combine(cursor, time.min, tzinfo=local_tz())
-        span_end = datetime.combine(chunk_end, time.min, tzinfo=local_tz())
-        for span in focus_spans(start=span_start, end=span_end, enrich_polylogue=False):
-            if span.kind != "focused" or not span.title or not span.app or span.duration_s <= 0:
-                continue
-            normalized = normalize_title(span.app, span.title)
-            key = hash_title(span.app, normalized)
-            classification = classifications.get(key)
-            if classification is None:
-                # Fallback: in-Lynchpin rules layer. Covers kitty + project-slug,
-                # Claude Code session-prefix sentinels, and topic slugs.
-                classification = classify_title_via_rules(span.app, span.title, normalized)
-            title_usage.ensure_row(
-                title_hash=key,
-                app=span.app,
-                normalized_title=normalized,
-                example_title=span.title,
-                classification=classification,
-            )
-            for day, segment in split_by_day(span.start, span.end):
-                if day < start or day >= end:
+    with _TitleUsageStore(facts_path) as title_usage:
+        title_usage.reset_window(start, end)
+        cursor = start
+        processed_days = 0
+        recent_start = end - timedelta(days=RECENT_WINDOW_DAYS)
+        while cursor < end:
+            if cursor < recent_start:
+                chunk_end = min(cursor + timedelta(days=DEFAULT_CHUNK_DAYS), recent_start)
+            else:
+                chunk_end = min(cursor + timedelta(days=RECENT_CHUNK_DAYS), end)
+            span_start = datetime.combine(cursor, time.min, tzinfo=local_tz())
+            span_end = datetime.combine(chunk_end, time.min, tzinfo=local_tz())
+            for span in focus_spans(start=span_start, end=span_end, enrich_polylogue=False, ensure=False):
+                if span.kind != "focused" or not span.title or not span.app or span.duration_s <= 0:
                     continue
-                seconds = duration_s(segment)
-                if seconds <= 0:
-                    continue
-                title_usage.add(title_hash=key, app=span.app, day=day, seconds=seconds)
-                day_row = by_day.setdefault(day, _empty_day(day))
-                day_row["focused_seconds"] += seconds
+                normalized = normalize_title(span.app, span.title)
+                key = hash_title(span.app, normalized)
+                classification = classifications.get(key)
                 if classification is None:
-                    continue
-                day_row["matched_seconds"] += seconds
-                source = classification.classification_source or "unknown"
-                day_row["source_counts"][source] += 1
-                if source == "gpt":
-                    day_row["gpt_matched_seconds"] += seconds
-                _add_bucket(day_row["activity_seconds"], classification.activity, seconds)
-                _add_bucket(day_row["content_type_seconds"], classification.content_type, seconds)
-                _add_bucket(day_row["attention_seconds"], classification.attention_level, seconds)
-                _add_bucket(day_row["topic_seconds"], classification.topic_category, seconds)
-                _add_bucket(day_row["platform_seconds"], classification.platform, seconds)
-        cursor = chunk_end
-        processed_days += (chunk_end - span_start.date()).days
-        title_usage.commit()
-        _progress(f"processed {processed_days} day(s) through {chunk_end.isoformat()}")
+                    # Fallback: in-Lynchpin rules layer. Covers kitty + project-slug,
+                    # Claude Code session-prefix sentinels, and topic slugs.
+                    classification = classify_title_via_rules(span.app, span.title, normalized)
+                title_usage.ensure_row(
+                    title_hash=key,
+                    app=span.app,
+                    normalized_title=normalized,
+                    example_title=span.title,
+                    classification=classification,
+                )
+                for day, segment in split_by_day(span.start, span.end):
+                    if day < start or day >= end:
+                        continue
+                    seconds = duration_s(segment)
+                    if seconds <= 0:
+                        continue
+                    title_usage.add(title_hash=key, app=span.app, day=day, seconds=seconds)
+                    day_row = by_day.setdefault(day, _empty_day(day))
+                    day_row["focused_seconds"] += seconds
+                    if classification is None:
+                        continue
+                    day_row["matched_seconds"] += seconds
+                    source = classification.classification_source or "unknown"
+                    day_row["source_counts"][source] += 1
+                    if source == "gpt":
+                        day_row["gpt_matched_seconds"] += seconds
+                    _add_bucket(day_row["activity_seconds"], classification.activity, seconds)
+                    _add_bucket(day_row["content_type_seconds"], classification.content_type, seconds)
+                    _add_bucket(day_row["attention_seconds"], classification.attention_level, seconds)
+                    _add_bucket(day_row["topic_seconds"], classification.topic_category, seconds)
+                    _add_bucket(day_row["platform_seconds"], classification.platform, seconds)
+            cursor = chunk_end
+            processed_days += (chunk_end - span_start.date()).days
+            title_usage.commit()
+            _progress(f"processed {processed_days} day(s) through {chunk_end.isoformat()}")
 
-    for day_row in by_day.values():
-        _finish_day(day_row)
+        for day_row in by_day.values():
+            _finish_day(day_row)
 
-    merged_by_day = {**existing_by_day, **by_day}
+        merged_by_day = {**existing_by_day, **by_day}
 
-    atomic_write_ndjson(output, (merged_by_day[day] for day in sorted(merged_by_day)))
+        atomic_write_ndjson(output, (merged_by_day[day] for day in sorted(merged_by_day)))
 
-    def usage_rows() -> Iterator[dict[str, Any]]:
-        for row in title_usage.iter_rows():
-            row["focused_seconds"] = round(float(row["focused_seconds"]), 3)
-            yield row
+        def usage_rows() -> Iterator[dict[str, Any]]:
+            for row in title_usage.iter_rows():
+                row["focused_seconds"] = round(float(row["focused_seconds"]), 3)
+                yield row
 
-    usage_payloads = list(usage_rows())
-    atomic_write_ndjson(usage_output, usage_payloads)
+        usage_payloads = list(usage_rows())
+        atomic_write_ndjson(usage_output, usage_payloads)
 
-    usage_selected: dict[ProductPartitionKey, list[dict[str, Any]]] = {}
-    for row in usage_payloads:
-        first_date = str(row.get("first_date") or "0000-01")
-        month = first_date[:7] if len(first_date) >= 7 else "unknown"
-        partition_key = ProductPartitionKey.month("activity_content.title_usage", month)
-        usage_selected.setdefault(partition_key, [])
-        usage_selected[partition_key].append(row)
-    usage_refs: dict[ProductPartitionKey, Any] = {}
-    for partition_key, rows in usage_selected.items():
-        usage_refs[partition_key] = usage_partition_store.put(
-            partition_key, _encode_rows(rows), format="ndjson", input_digest=input_signature,
-            row_count=len(rows),
+        usage_selected: dict[ProductPartitionKey, list[dict[str, Any]]] = {}
+        for row in usage_payloads:
+            first_date = str(row.get("first_date") or "0000-01")
+            month = first_date[:7] if len(first_date) >= 7 else "unknown"
+            partition_key = ProductPartitionKey.month("activity_content.title_usage", month)
+            usage_selected.setdefault(partition_key, [])
+            usage_selected[partition_key].append(row)
+        usage_refs: dict[ProductPartitionKey, Any] = {}
+        for partition_key, rows in usage_selected.items():
+            usage_refs[partition_key] = usage_partition_store.put(
+                partition_key, _encode_rows(rows), format="ndjson", input_digest=input_signature,
+                row_count=len(rows),
+            )
+        usage_partition_store.publish(
+            usage_refs,
+            metadata={"dataset": "lynchpin.activity_content.title_usage", "input_signature": input_signature},
         )
-    usage_partition_store.publish(
-        usage_refs,
-        metadata={"dataset": "lynchpin.activity_content.title_usage", "input_signature": input_signature},
-    )
 
-    selected: dict[ProductPartitionKey, Any] = partition_store.logical_partitions()
-    if not bounded_request:
-        selected = {}
-        publish_days = merged_by_day
-    else:
-        affected = {start + timedelta(days=offset) for offset in range((end - start).days)}
-        selected = {
-            key: ref for key, ref in selected.items()
-            if key.value not in {day.isoformat() for day in affected}
+        selected: dict[ProductPartitionKey, Any] = partition_store.logical_partitions()
+        if not bounded_request:
+            selected = {}
+            publish_days = merged_by_day
+        else:
+            affected = {start + timedelta(days=offset) for offset in range((end - start).days)}
+            selected = {
+                key: ref for key, ref in selected.items()
+                if key.value not in {day.isoformat() for day in affected}
+            }
+            publish_days = by_day
+        for day, row in publish_days.items():
+            partition_key = ProductPartitionKey.day("activity_content.daily", day)
+            selected[partition_key] = partition_store.put(
+                partition_key, _encode_row(row), format="ndjson", input_digest=input_signature,
+                row_count=1, first_date=day, last_date=day,
+            )
+        partition_store.publish(
+            selected,
+            metadata={"dataset": "lynchpin.activity_content_daily", "input_signature": input_signature},
+        )
+
+        title_usage_count = title_usage.count()
+        unmatched_title_count = title_usage.unmatched_count()
+        top_unmatched_titles = title_usage.top_unmatched()
+
+        # Manifest totals describe the whole product (matching first_date/last_date
+        # below), not just the window this call reprocessed — summed from the
+        # merged day-rows rather than tracked incrementally during the loop.
+        focused_seconds_total = sum(row["focused_seconds"] for row in merged_by_day.values())
+        matched_seconds_total = sum(row["matched_seconds"] for row in merged_by_day.values())
+        source_counts: Counter[str] = Counter()
+        for row in merged_by_day.values():
+            source_counts.update(row["source_counts"])
+
+        manifest = {
+            "dataset": "lynchpin.activity_content_daily",
+            "schema_version": ACTIVITY_CONTENT_SCHEMA_VERSION,
+            "materialized_path": str(output),
+            "title_usage_path": str(usage_output),
+            "row_count": len(merged_by_day),
+            "title_usage_count": title_usage_count,
+            "unmatched_title_count": unmatched_title_count,
+            "top_unmatched_titles": top_unmatched_titles,
+            "first_date": min(merged_by_day).isoformat() if merged_by_day else None,
+            "last_date": max(merged_by_day).isoformat() if merged_by_day else None,
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+            "focused_seconds": round(focused_seconds_total, 3),
+            "matched_seconds": round(matched_seconds_total, 3),
+            "matched_ratio": round(matched_seconds_total / focused_seconds_total, 6) if focused_seconds_total else 0.0,
+            "source_counts": dict(sorted(source_counts.items())),
+            "input_files": [str(path) for path in input_files],
+            "input_file_count": len(input_files),
+            "input_latest_mtime": latest_mtime_iso(input_files),
+            "partition_store": str(partition_store.root),
+            "partition_scheme": "logical_day",
+            "product_paths": {
+                key.value: str(partition_store.root / ref.path)
+                for key, ref in sorted(selected.items(), key=lambda item: item[0].value)
+            },
+            "title_usage_partition_store": str(usage_partition_store.root),
         }
-        publish_days = by_day
-    for day, row in publish_days.items():
-        partition_key = ProductPartitionKey.day("activity_content.daily", day)
-        selected[partition_key] = partition_store.put(
-            partition_key, _encode_row(row), format="ndjson", input_digest=input_signature,
-            row_count=1, first_date=day, last_date=day,
-        )
-    partition_store.publish(
-        selected,
-        metadata={"dataset": "lynchpin.activity_content_daily", "input_signature": input_signature},
-    )
-
-    title_usage_count = title_usage.count()
-    unmatched_title_count = title_usage.unmatched_count()
-    top_unmatched_titles = title_usage.top_unmatched()
-    title_usage.close()
-
-    # Manifest totals describe the whole product (matching first_date/last_date
-    # below), not just the window this call reprocessed — summed from the
-    # merged day-rows rather than tracked incrementally during the loop.
-    focused_seconds_total = sum(row["focused_seconds"] for row in merged_by_day.values())
-    matched_seconds_total = sum(row["matched_seconds"] for row in merged_by_day.values())
-    source_counts: Counter[str] = Counter()
-    for row in merged_by_day.values():
-        source_counts.update(row["source_counts"])
-
-    manifest = {
-        "dataset": "lynchpin.activity_content_daily",
-        "schema_version": ACTIVITY_CONTENT_SCHEMA_VERSION,
-        "materialized_path": str(output),
-        "title_usage_path": str(usage_output),
-        "row_count": len(merged_by_day),
-        "title_usage_count": title_usage_count,
-        "unmatched_title_count": unmatched_title_count,
-        "top_unmatched_titles": top_unmatched_titles,
-        "first_date": min(merged_by_day).isoformat() if merged_by_day else None,
-        "last_date": max(merged_by_day).isoformat() if merged_by_day else None,
-        "window_start": start.isoformat(),
-        "window_end": end.isoformat(),
-        "focused_seconds": round(focused_seconds_total, 3),
-        "matched_seconds": round(matched_seconds_total, 3),
-        "matched_ratio": round(matched_seconds_total / focused_seconds_total, 6) if focused_seconds_total else 0.0,
-        "source_counts": dict(sorted(source_counts.items())),
-        "input_files": [str(path) for path in input_files],
-        "input_file_count": len(input_files),
-        "input_latest_mtime": latest_mtime_iso(input_files),
-        "partition_store": str(partition_store.root),
-        "partition_scheme": "logical_day",
-        "product_paths": {
-            key.value: str(partition_store.root / ref.path)
-            for key, ref in sorted(selected.items(), key=lambda item: item[0].value)
-        },
-        "title_usage_partition_store": str(usage_partition_store.root),
-    }
-    write_manifest(output.with_suffix(".manifest.json"), manifest)
-    return manifest
+        write_manifest(output.with_suffix(".manifest.json"), manifest)
+        return manifest
 
 
 def _input_signature(input_files: tuple[Path, ...]) -> str:
@@ -527,7 +541,17 @@ def _read_partitioned_daily(store: ArtifactStore) -> dict[date, dict[str, Any]]:
 def _migrate_usage_store(store: ArtifactStore, output: Path) -> None:
     if store.manifest_path.exists() or not output.exists():
         return
-    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines() if line.strip()]
+    facts_path = output.with_name(f"{output.stem}.facts.sqlite3")
+    if facts_path.exists():
+        # The accumulator owns lifetime facts. A damaged compatibility export
+        # must not block migration or force raw-history recomputation.
+        usage = _TitleUsageStore(facts_path)
+        try:
+            rows = list(usage.iter_rows())
+        finally:
+            usage.close()
+    else:
+        rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines() if line.strip()]
     by_month: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         if not isinstance(row, dict):

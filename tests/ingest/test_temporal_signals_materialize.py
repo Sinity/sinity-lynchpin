@@ -316,3 +316,19 @@ def test_iter_temporal_signals_converges_default_materialization(monkeypatch, tm
     calls.clear()
     assert [row.summary for row in temporal_signals.iter_temporal_signals(product)] == ["focus changed"]
     assert calls == []
+
+
+def test_explicit_temporal_plan_uses_retained_inputs(monkeypatch, tmp_path):
+    from lynchpin.ingest import temporal_signals_materialize as materializer
+
+    def unexpected_refresh(*args):
+        raise AssertionError("explicit plan must own upstream refreshes")
+
+    monkeypatch.setattr(materializer, "_ensure_temporal_inputs", unexpected_refresh)
+    monkeypatch.setattr(materializer, "detect_temporal_signals", lambda **kwargs: [])
+    monkeypatch.setattr(materializer, "_temporal_input_files", lambda *args: ())
+    result = materializer.materialize_temporal_signals(
+        start=date(2026, 1, 1), end=date(2026, 1, 2),
+        output=tmp_path / "temporal.ndjson", ensure_inputs=False,
+    )
+    assert result["row_count"] == 0

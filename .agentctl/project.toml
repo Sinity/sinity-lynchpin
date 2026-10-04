@@ -42,6 +42,20 @@ pool = "pytest"
 result = "exit"
 cache = "tree+environment"
 
+[operations.verify_plan_boundaries]
+description = "Verify explicit temporal inputs and ActivityContent recovery boundaries"
+exec = ["pytest", "-q", "tests/ingest/test_activity_content_materialize.py", "tests/ingest/test_temporal_signals_materialize.py", "tests/test_typed_materializers.py", "tests/cli/test_materialize.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
+[operations.verify_webhistory_base]
+description = "Verify retained-segment candidate merge and input identity contracts"
+exec = ["pytest", "-q", "tests/ingest/test_webhistory.py", "tests/test_materialization.py", "-k", "webhistory"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
 [operations.lint]
 description = "Run Lynchpin Ruff checks"
 exec = ["just", "lint"]
@@ -89,6 +103,16 @@ cache = "none"
 # finishes in seconds. The budget covers a cold cache, which reparses the whole
 # 14-day window at roughly 11 MB/s.
 timeout_seconds = 1800
+
+[operations.repair_webhistory_base]
+description = "Merge retained browser segments into an explicit candidate output without raw extraction"
+exec = ["python", "-m", "lynchpin.ingest.webhistory", "--merge-only"]
+arguments = "required"
+pool = "bulk"
+result = "exit"
+cache = "none"
+timeout_seconds = 1800
+admission = { memory_mib = 6144 }
 
 [operations.materialize_node]
 description = "Execute one typed canonical-product materialization node"

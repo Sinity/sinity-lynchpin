@@ -362,9 +362,12 @@ def build_full_history(
 
     if not data_dir.is_dir():
         return {"output": str(output), "row_count": 0, "duplicate_count": 0, "skipped": True}
+    excluded_outputs = {output, full_history_manifest_path(output)}
+    if cfg.webhistory_ndjson is not None:
+        excluded_outputs.update((cfg.webhistory_ndjson, full_history_manifest_path(cfg.webhistory_ndjson)))
     all_input_files = tuple(
         path for path in _candidate_segment_files(data_dir, start=None, end=None)
-        if path not in {output, full_history_manifest_path(output)}
+        if path not in excluded_outputs
     )
     initial_input_versions = input_versions(all_input_files)
     if start is not None and end is not None:
@@ -382,7 +385,7 @@ def build_full_history(
         start, end = expanded
     input_files = tuple(
         path for path in _candidate_segment_files(data_dir, start=start, end=end)
-        if path not in {output, full_history_manifest_path(output)}
+        if path not in excluded_outputs
     )
 
     segment_visits = _load_segment_visits(input_files, start=start, end=end)
@@ -842,6 +845,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-dir", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--tolerance-seconds", type=int, default=DEFAULT_DEDUP_TOLERANCE_S)
+    parser.add_argument("--merge-only", action="store_true", help="merge retained canonical segments without raw browser extraction; requires explicit output")
     parser.add_argument("--start", type=date.fromisoformat)
     parser.add_argument("--end", type=date.fromisoformat)
     parser.add_argument(
@@ -859,6 +863,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         sys.stdout.write(json.dumps(status, indent=2, sort_keys=True) + "\n")
         return 0 if status["status"] == "ok" else 1
+    if args.merge_only:
+        if args.output is None:
+            parser.error("--merge-only requires --output")
+        report = build_full_history(
+            data_dir=args.data_dir, output=args.output,
+            tolerance_seconds=args.tolerance_seconds, dry_run=args.dry_run,
+            start=args.start, end=args.end,
+        )
+        sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        return 0
     report = run(
         raw_dir=args.raw_dir,
         data_dir=args.data_dir,

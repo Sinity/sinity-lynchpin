@@ -285,3 +285,36 @@ class _FixedDateTime(datetime):
     @classmethod
     def now(cls, tz=None):
         return cls.current.astimezone(tz) if tz else cls.current.replace(tzinfo=None)
+
+def test_merge_only_cli_uses_retained_merge_without_raw_extraction(monkeypatch, tmp_path):
+    def unexpected_raw(**kwargs):
+        raise AssertionError("merge-only must not extract raw inputs")
+
+    observed = {}
+    def merge(**kwargs):
+        observed.update(kwargs)
+        return {"row_count": 2}
+
+    monkeypatch.setattr(webhistory, "run", unexpected_raw)
+    monkeypatch.setattr(webhistory, "build_full_history", merge)
+    output = tmp_path / "candidate.ndjson"
+    assert webhistory.main(["--merge-only", "--output", str(output)]) == 0
+    assert observed["output"] == output
+    assert observed["start"] is None and observed["end"] is None
+
+
+def test_candidate_merge_does_not_reimport_the_serving_carrier(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    segment = tmp_path / "browser_unique_2026-01-01_to_2026-01-01.ndjson"
+    segment.write_text(json.dumps({"iso_time": "2026-01-01T12:00:00+00:00",
+                                 "url": "https://example.com/neutral", "title": "neutral", "source": "fixture"})+"\n")
+    old = tmp_path / "full_history.ndjson"
+    old.write_text(json.dumps({"iso_time": "2010-01-01T12:00:00+00:00",
+                              "url": "https://example.com/old", "title": "old", "source": "fixture"})+"\n")
+    monkeypatch.setattr(webhistory, "get_config", lambda: SimpleNamespace(webhistory_ndjson=old))
+    candidate = tmp_path / "candidate" / "full_history.ndjson"
+    report = webhistory.build_full_history(data_dir=tmp_path, output=candidate)
+    assert report["row_count"] == 1
+    assert report["input_files"] == [str(segment)]
+    assert old.exists()

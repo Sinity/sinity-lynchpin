@@ -15,6 +15,7 @@ from typing import Any
 
 from ..core.config import get_config
 from ..core.errors import MaterializationError
+from ..core.primitives import logical_date
 from ..materialization import (
     audit_materialization,
     materializer_dependency_model,
@@ -139,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
                 force=args.force,
                 window=window,
                 maintenance=True,
-                maintenance_end=date.fromisoformat(args.end),
+                maintenance_end=min(date.fromisoformat(args.end), logical_date(datetime.now().astimezone()) + timedelta(days=1)),
             )
         else:
             plan = plan_materializations(force=args.force, window=window)
