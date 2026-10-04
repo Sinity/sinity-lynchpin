@@ -684,3 +684,40 @@ def test_snapshot_promotion_preserves_optional_errors_without_vetoing_graph(monk
                                 [rid, source]).fetchone() == ("error", None)
     finally:
         connection._substrate_path_override.reset(token)
+
+
+def test_incremental_graph_tail_covers_publication_gap_without_accepting_failed_build(tmp_path):
+    from lynchpin.cli.materialize import _incremental_graph_tail_start
+    from lynchpin.substrate.connection import apply_schema
+
+    with duckdb.connect(str(tmp_path / "candidate.duckdb")) as conn:
+        apply_schema(conn)
+        for rid, end, status in (
+            ("serving", date(2026, 1, 10), "degraded"),
+            ("failed-attempt", date(2026, 1, 30), "error"),
+        ):
+            conn.execute(
+                "INSERT INTO evidence_graph_build "
+                "(refresh_id,start_date,end_date,mode,projects,node_count,edge_count,caveats,generated_at) "
+                "VALUES (?, ?, ?, 'materialized', [], 1, 0, '[]', now())",
+                [rid, date(2026, 1, 1), end],
+            )
+            conn.execute(
+                "INSERT INTO substrate_promotion_run "
+                "(refresh_id,status,counts,started_at,finished_at) VALUES (?, ?, '{}', now(), now())",
+                [rid, status],
+            )
+            conn.execute(
+                "INSERT INTO substrate_source_status "
+                "(refresh_id,source,kind,status,reason,row_count,recorded_at) "
+                "VALUES (?, 'evidence_graph', 'graph', 'ok', NULL, 1, now())",
+                [rid],
+            )
+        assert _incremental_graph_tail_start(
+            conn, refresh_id="new", full_start=date(2026, 1, 1),
+            requested_tail_start=date(2026, 1, 20),
+        ) == date(2026, 1, 10)
+        assert _incremental_graph_tail_start(
+            conn, refresh_id="new", full_start=date(2026, 1, 1),
+            requested_tail_start=date(2026, 1, 5),
+        ) == date(2026, 1, 5)

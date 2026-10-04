@@ -121,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.promote:
         if args.history in {"all", "incremental"}:
             start_d, end_d = _all_history_window()
+            if args.history == "incremental":
+                end_d = min(end_d, logical_date(datetime.now().astimezone()) + timedelta(days=1))
             args.start = start_d.isoformat()
             args.end = end_d.isoformat()
         elif not args.start or not args.end:
@@ -231,6 +233,16 @@ def main(argv: list[str] | None = None) -> int:
                         (item[0] for item in refreshed_windows),
                         default=max(date.fromisoformat(args.start), date.fromisoformat(args.end) - timedelta(days=7)),
                     )
+                    if isinstance(generation, CandidateGeneration):
+                        from lynchpin.substrate.connection import connect
+
+                        with connect(generation.candidate, read_only=True) as conn:
+                            incremental_tail_start = _incremental_graph_tail_start(
+                                conn,
+                                refresh_id=publication_refresh_id,
+                                full_start=date.fromisoformat(args.start),
+                                requested_tail_start=incremental_tail_start,
+                            )
                     _progress(
                         "derived incremental graph tail: "
                         f"{incremental_tail_start.isoformat()}..{args.end}"
@@ -409,6 +421,31 @@ def _record_incremental_phase(
         )
     generation.phase_evidence.append(payload)
     log_phase_evidence(measurement, metrics=metrics, evidence=evidence)
+
+
+def _incremental_graph_tail_start(
+    conn: Any,
+    *,
+    refresh_id: str | None,
+    full_start: date,
+    requested_tail_start: date,
+) -> date:
+    from lynchpin.substrate.graph import compatible_graph_predecessor
+
+    predecessor = compatible_graph_predecessor(
+        conn,
+        current_refresh_id=refresh_id or "",
+        full_start=full_start,
+        tail_start=full_start,
+        projects=(),
+    )
+    if predecessor is None:
+        raise MaterializationError("incremental_graph", reason="no compatible published graph predecessor")
+    predecessor_end = conn.execute(
+        "SELECT end_date FROM evidence_graph_build WHERE refresh_id = ?",
+        [predecessor],
+    ).fetchone()[0]
+    return max(full_start, min(requested_tail_start, predecessor_end))
 
 
 def _all_history_window() -> tuple[date, date]:

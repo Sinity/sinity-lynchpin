@@ -204,6 +204,9 @@ new base rather than an earlier run.
 Unavailable owner readiness becomes missing dataset coverage with an unknown
 count. Optional source errors remain visible and degrade the snapshot; required
 source and graph errors still reject publication.
+The incremental graph tail starts no later than the last compatible published
+graph coverage end, even when source checkpoints advanced during a failed
+publication. Its nightly window is capped at the current logical day boundary.
 A source success does not by itself establish a published graph generation.
 Runtime and compact status report the recorded promotion time and freshness
 alongside the refresh ID. They expose the existing systemd timer's next trigger
