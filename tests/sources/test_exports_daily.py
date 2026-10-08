@@ -39,7 +39,7 @@ def test_raindrop_day_activity_fields():
 
 def test_messenger_default_reader_materializes(monkeypatch, tmp_path):
     calls = []
-    product = tmp_path / "account/facebook-messenger/processed/canonical/messages.ndjson"
+    product = tmp_path / "accounts/facebook-messenger/processed/canonical/messages.ndjson"
     product.parent.mkdir(parents=True)
     product.write_text(
         json.dumps(

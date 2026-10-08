@@ -1256,7 +1256,7 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(
         encoding="utf-8",
     )
     (out_dir / "reports").mkdir()
-    (out_dir / "report/snapshot-differences.jsonl").write_text("{}\n", encoding="utf-8")
+    (out_dir / "reports/snapshot-differences.jsonl").write_text("{}\n", encoding="utf-8")
     (out_dir / "example-tokei-stats.json").write_text(
         chisel.json.dumps(
             {
@@ -1325,7 +1325,7 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(
     assert "example-beads.md" not in payload["open_first"]
     assert payload["attention"]["large_artifacts"][0]["name"] == "example-core.xml"
     assert "`example-prs-open.xml`" in markdown
-    assert "report/snapshot-differences.jsonl" in payload["open_first"]
+    assert "reports/snapshot-differences.jsonl" in payload["open_first"]
     assert chisel._file_scope_and_purpose(plan, "snapshot-differences.jsonl")[0] == "captured-snapshots"
     assert "| Beads blocked | 1 |" in markdown
 

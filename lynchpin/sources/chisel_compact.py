@@ -69,7 +69,7 @@ def compact_jsonl(package: Path) -> dict[str, object]:
         if projection.get("edge_dataset") == "dependency_edges.jsonl" and (path.parent / "dependency_edges.jsonl.gz").is_file():
             projection["edge_dataset"] = "dependency_edges.jsonl.gz"
             path.write_text(json.dumps(projection, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    report_coverage = package / "report/coverage.json"
+    report_coverage = package / "reports/coverage.json"
     if report_coverage.is_file():
         coverage = json.loads(report_coverage.read_text(encoding="utf-8"))
         if isinstance(coverage.get("dataset_coverage"), dict):

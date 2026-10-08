@@ -2515,7 +2515,7 @@ def _generate_snapshot_overview(
     xml_snapshot_count = sum(1 for path in out_dir.glob("*.xml") if path.is_file())
     from lynchpin.sources.chisel_compact import open_text, resolved_stream
 
-    differences_path = resolved_stream(out_dir / "report/snapshot-differences.jsonl")
+    differences_path = resolved_stream(out_dir / "reports/snapshot-differences.jsonl")
     snapshot_difference_count = 0
     if differences_path.is_file():
         with open_text(differences_path) as differences:

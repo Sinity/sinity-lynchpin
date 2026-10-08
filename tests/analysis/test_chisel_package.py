@@ -172,7 +172,7 @@ def test_bundle_accepts_linked_worktree_head_pseudoref(tmp_path):
     bundle = tmp_path / "demo-all-refs.bundle"
     git(repo, "bundle", "create", str(bundle), "--all")
     heads = git(repo, "bundle", "list-heads", str(bundle)).splitlines()
-    assert any(name == "worktree/linked-worktree/HEAD"
+    assert any(name == "worktrees/linked-worktree/HEAD"
                for _, name in (line.split(" ", 1) for line in heads))
     refs = [line.split(" ", 1) for line in git(repo, "for-each-ref",
                                                 "--format=%(objectname) %(refname)").splitlines()]

@@ -719,7 +719,7 @@ _plan(
         "Local package implementations, device tooling, tests, and documentation",
         (
             "pkgs/**",
-            "device/**",
+            "devices/**",
             "browser-extensions/**",
             "tests/**",
             "docs/**",

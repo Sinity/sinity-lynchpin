@@ -180,7 +180,7 @@ def canonical_project_name(value: object, *, include_inactive: bool = False) -> 
     text = text.rstrip("/").removesuffix(".git")
     text = text.split("#", 1)[0]
 
-    marker = next((root for root in ("/realm/project/", "/realm/project/") if root in text), None)
+    marker = next((root for root in ("/realm/project/", "/realm/projects/") if root in text), None)
     if marker is not None:
         rel = text.split(marker, 1)[1]
         head = rel.split("/", 1)[0]

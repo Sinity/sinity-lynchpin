@@ -109,7 +109,7 @@ def test_compacted_streams_remain_browsable_without_sqlite(tmp_path: Path) -> No
     assert (package / "history/commits.jsonl.gz").is_file()
     assert not (package / "history/commits.jsonl").exists()
     assert (package / "source/structure.jsonl").read_text() == "source bytes remain direct\n"
-    coverage = json.loads((package / "report/coverage.json").read_text())
+    coverage = json.loads((package / "reports/coverage.json").read_text())
     assert coverage["schema_version"] == 4
     assert "structure/dependency_edges.jsonl.gz" in coverage["dataset_coverage"]
 

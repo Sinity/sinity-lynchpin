@@ -171,7 +171,7 @@ def query_records(package: Path, command: str, value: str | None, limit: int, of
     elif command == "blockers":
         if snapshot != "primary":
             raise ValueError("task blockers use an owner snapshot, not a source snapshot")
-        graph = json.loads((package / "report/task-dependencies.json").read_text())
+        graph = json.loads((package / "reports/task-dependencies.json").read_text())
         edges = graph["edges"]
         pending = [value]
         seen = set()
@@ -190,9 +190,9 @@ def query_records(package: Path, command: str, value: str | None, limit: int, of
         if command == "tasks" and snapshot != "primary":
             raise ValueError("tasks use an owner snapshot, not a source snapshot")
         dataset = {"tasks": "trackers/beads-export.jsonl", "symbols": "structure/symbols.jsonl",
-                   "references": "report/references.jsonl", "neighbors": "structure/dependency_edges.jsonl",
-                   "candidate-evidence": "report/candidate-evidence.jsonl",
-                   "differences": "report/snapshot-differences.jsonl"}[command]
+                   "references": "reports/references.jsonl", "neighbors": "structure/dependency_edges.jsonl",
+                   "candidate-evidence": "reports/candidate-evidence.jsonl",
+                   "differences": "reports/snapshot-differences.jsonl"}[command]
         path = package / dataset
         if snapshot != "primary" and command in {"symbols", "neighbors", "references"}:
             path = package / "snapshots" / snapshot / dataset
@@ -227,7 +227,7 @@ def query_records(package: Path, command: str, value: str | None, limit: int, of
     response = {"rows": result[offset:offset + limit], "total": len(result),
                 "next_offset": offset + limit if offset + limit < len(result) else None}
     if command == "candidate-evidence":
-        coverage = package / "report/coverage.json"
+        coverage = package / "reports/coverage.json"
         declared = json.loads(coverage.read_text()).get("candidate_evidence") if coverage.is_file() else None
         response["evidence_coverage"] = declared or {
             "status": "legacy_report_binding_unavailable",
