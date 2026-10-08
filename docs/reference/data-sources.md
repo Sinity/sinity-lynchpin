@@ -40,6 +40,13 @@ The exact filesystem roots come from `LynchpinConfig`. Tests use temporary
 roots and neutral fixtures; the public source tree does not depend on one
 operator's data layout.
 
+Managed Sinnix captures resolve placement from `/etc/sinnix/filesystem-layout.json`.
+`LYNCHPIN_FILESYSTEM_LAYOUT` selects a registry for standalone deployments and
+tests; source-specific explicit root overrides retain precedence. A missing or
+inaccessible configured event source raises `SourceUnavailableError`, while an
+accessible empty directory returns no records. Availability and inventory
+observations preserve that distinction.
+
 Chisel uses `LYNCHPIN_CHISEL_CACHE_ROOT` for reusable caches and
 `LYNCHPIN_CHISEL_SCRATCH_ROOT` for temporary history stores. Defaults are the
 configured cache directory's `chisel` child and a task scratch directory.

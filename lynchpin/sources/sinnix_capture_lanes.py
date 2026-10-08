@@ -1,9 +1,9 @@
 """Reader for the ``sinnix-capture-v1`` desktop event-lane format.
 
-Sinnix writes several small, continuous JSON-lines lanes under
-``captures/<lane>/<lane>-YYYYMMDD.jsonl`` (plus a sibling ``<lane>-index.jsonl``
-navigation index and a ``.seq``/``.seq.lock`` sequence-counter pair). Every
-record shares one envelope::
+Sinnix writes small, continuous JSON-lines lanes at locations resolved from
+the exported filesystem-layout registry. Each contains ``<lane>-YYYYMMDD.jsonl``
+plus a sibling ``<lane>-index.jsonl`` navigation index and a
+``.seq``/``.seq.lock`` sequence-counter pair. Every record shares one envelope::
 
     {"host": ..., "lane": ..., "payload": {...}, "raw_ref": ..., "schema":
      "sinnix-capture-v1", "schema_version": 1, "seq": ..., "ts": ...}
@@ -53,7 +53,7 @@ __all__ = [
     "daily_lane_activity",
 ]
 
-#: Known lane names, matching their capture directory / file-prefix.
+#: Stable producer identities and filename prefixes; placement comes from configuration.
 LANES: tuple[str, ...] = ("notifications", "mpris", "audio-index", "audio-topology", "screen-frames")
 
 _DAY_FILE_RE = re.compile(r"-(\d{8})\.jsonl\Z")
