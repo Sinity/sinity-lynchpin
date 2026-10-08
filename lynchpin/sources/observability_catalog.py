@@ -167,7 +167,7 @@ def observability_inputs() -> tuple[ObservabilityInput, ...]:
             owner="sinnix",
             layer="raw_capture",
             integration_state="canonical",
-            path=cfg.machine_host_root / "experiments",
+            path=cfg.machine_host_root / "experiment",
             substrate_table="machine_experiment_run",
             grain="one immutable workload invocation manifest",
             state_dimensions=("planned_treatment", "observed_treatment", "cache_profile", "service_profile", "workload_identity"),

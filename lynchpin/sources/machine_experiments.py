@@ -63,7 +63,7 @@ class MachineExperimentRun:
 
 def experiment_root(path: Path | None = None) -> Path:
     """Return the canonical experiment manifest root for the configured host."""
-    return path or get_config().machine_host_root / "experiments"
+    return path or get_config().machine_host_root / "experiment"
 
 
 def _as_utc(value: object) -> datetime | None:

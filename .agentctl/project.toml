@@ -77,6 +77,13 @@ pool = "normal"
 result = "exit"
 cache = "none"
 
+[operations.verify_machine_paths]
+description = "Verify configured experiment discovery and machine source contracts"
+exec = ["pytest", "-q", "tests/sources/test_source_machine_experiments.py", "tests/core/test_config_paths.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
 [operations.verify_taxonomy]
 description = "Verify relocated configuration, historical project recognition and snapshot publication"
 exec = ["pytest", "-q", "tests/core/test_config_paths.py", "tests/analysis/test_analysis_machine_derivation_inventory.py", "tests/sources/test_source_terminal.py", "tests/analysis/test_chisel_publication.py", "tests/analysis/test_snapshot_homes.py", "tests/ingest/test_code_snapshots_materialize.py", "tests/analysis/test_chisel_currentness.py"]

@@ -107,3 +107,13 @@ def test_machine_experiments_source_reads_nested_exported_run_manifest(tmp_path)
     assert rows[0].nix_internal_json_path == "/tmp/run-1/nix-internal-json.ndjson"
     assert rows[0].manifest_path == run_dir / "manifest.json"
     assert rows[0].validation_status == "unvalidated"
+
+
+def test_default_experiment_root_follows_configured_machine_home(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from lynchpin.sources import machine_experiments
+
+    monkeypatch.setattr(machine_experiments, "get_config", lambda: SimpleNamespace(machine_host_root=tmp_path))
+    assert machine_experiments.experiment_root() == tmp_path / "experiment"
+    custom = tmp_path / "custom"
+    assert machine_experiments.experiment_root(custom) == custom
