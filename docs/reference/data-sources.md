@@ -45,7 +45,9 @@ Managed Sinnix captures resolve placement from `/etc/sinnix/filesystem-layout.js
 tests; source-specific explicit root overrides retain precedence. A missing or
 inaccessible configured event source raises `SourceUnavailableError`, while an
 accessible empty directory returns no records. Availability and inventory
-observations preserve that distinction.
+observations preserve that distinction. Transcript readiness and shared file
+readiness use unknown row counts for unavailable inputs; readable empty inputs
+retain zero counts.
 
 Chisel uses `LYNCHPIN_CHISEL_CACHE_ROOT` for reusable caches and
 `LYNCHPIN_CHISEL_SCRATCH_ROOT` for temporary history stores. Defaults are the

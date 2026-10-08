@@ -232,7 +232,7 @@ cache = "tree+environment"
 
 [operations.verify_capture_contracts]
 description = "Verify configured capture placement and unavailable versus empty inputs"
-exec = ["pytest", "-q", "tests/core/test_config_paths.py", "tests/sources/test_sinnix_capture_lanes.py", "tests/sources/test_capture_inventory.py", "tests/sources/test_source_observations.py"]
+exec = ["pytest", "-q", "tests/core/test_config_paths.py", "tests/sources/test_sinnix_capture_lanes.py", "tests/sources/test_capture_inventory.py", "tests/sources/test_source_observations.py", "tests/core/test_source.py", "tests/sources/test_source_transcripts.py", "tests/sources/test_source_readiness.py"]
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"

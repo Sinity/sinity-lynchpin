@@ -2,6 +2,7 @@
   "schema_version": 1,
   "activity_lanes": {
     "asciinema": "synthetic/asciinema",
+    "audio": "synthetic/audio",
     "keylog": "synthetic/keylog",
     "screenshot": "synthetic/screenshot",
     "transcripts": "synthetic/transcripts",

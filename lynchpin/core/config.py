@@ -294,7 +294,7 @@ class LynchpinConfig:
         )))
 
         asciinema_root = Path(os.environ.get("LYNCHPIN_ASCIINEMA_ROOT") or capture_default("asciinema"))
-        audio_root = Path(os.environ.get("LYNCHPIN_AUDIO_ROOT", data_root / "activity/audio/recording/raw"))
+        audio_root = Path(os.environ.get("LYNCHPIN_AUDIO_ROOT") or capture_default("audio") / "raw")
         screenshot_root = Path(os.environ.get("LYNCHPIN_SCREENSHOT_ROOT") or capture_default("screenshot"))
         keylog_root = Path(os.environ.get("LYNCHPIN_KEYLOG_ROOT") or capture_default("keylog"))
 

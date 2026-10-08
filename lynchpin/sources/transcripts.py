@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from ..core.config import LynchpinConfig
+from ..core.errors import SourceUnavailableError
 from ..core.parse import as_local, parse_datetime as _parse_dt, safe_float, safe_int
 from ..core.source import SourceReadiness, read_jsonl_with
 
@@ -126,10 +127,12 @@ class DailySpeech:
 
 
 def _day_files(root: Path, start: Optional[date], end: Optional[date]) -> list[Path]:
-    if not root.exists():
-        return []
+    try:
+        paths = list(root.iterdir())
+    except OSError as exc:
+        raise SourceUnavailableError("transcripts", path=str(root), reason=str(exc)) from exc
     dated: list[tuple[date, Path]] = []
-    for path in root.glob("*.jsonl"):
+    for path in paths:
         if not _DAY_FILE_RE.match(path.name):
             continue
         try:
@@ -147,11 +150,11 @@ def _day_files(root: Path, start: Optional[date], end: Optional[date]) -> list[P
 def readiness(root: Path | None = None) -> SourceReadiness:
     """Aggregate readiness across every ``YYYY-MM-DD.jsonl`` transcript log."""
     base = root or LynchpinConfig.from_env().transcripts_dir
-    if not base.exists():
-        return SourceReadiness(
-            status="missing", reason=f"{base} does not exist", path=base, row_count=0,
-        )
-    files = _day_files(base, None, None)
+    try:
+        files = _day_files(base, None, None)
+    except SourceUnavailableError as exc:
+        status = "missing" if isinstance(exc.__cause__, FileNotFoundError) else "error"
+        return SourceReadiness(status, str(exc), base, None)
     if not files:
         return SourceReadiness(
             status="empty", reason="directory present but no day-log files yet",
@@ -162,8 +165,8 @@ def readiness(root: Path | None = None) -> SourceReadiness:
         try:
             with f.open(encoding="utf-8") as fh:
                 total += sum(1 for line in fh if line.strip())
-        except OSError:
-            continue
+        except OSError as exc:
+            return SourceReadiness("error", f"could not read {f}: {exc}", base, None)
     if total == 0:
         return SourceReadiness(
             status="empty", reason="day-log files present but no rows yet",

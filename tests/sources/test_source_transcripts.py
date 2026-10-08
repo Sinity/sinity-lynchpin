@@ -24,7 +24,7 @@ def _write_ledger(path, records):
 
 def test_readiness_missing_dir(tmp_path):
     r = tr.readiness(tmp_path / "nope")
-    assert r.status == "missing"
+    assert r.status == "missing" and r.row_count is None
 
 
 def test_readiness_counts_across_day_files_only(tmp_path):
@@ -120,3 +120,37 @@ def test_transcription_ledger_dedupes_by_file(tmp_path):
     assert len(entries) == 1
     assert entries[0].bytes == 200
     assert entries[0].speech_seconds == 5.38
+
+
+def test_unavailable_transcripts_are_distinct_from_empty(tmp_path, monkeypatch):
+    import pytest
+    from pathlib import Path
+    from lynchpin.core.errors import SourceUnavailableError
+    assert list(tr.transcripts(root=tmp_path)) == []
+    empty = tr.readiness(tmp_path)
+    assert empty.status == "empty" and empty.row_count == 0
+    with pytest.raises(SourceUnavailableError):
+        list(tr.transcripts(root=tmp_path / "missing"))
+    original = Path.iterdir
+    def denied(path):
+        if path == tmp_path:
+            raise PermissionError("synthetic denied source")
+        return original(path)
+    monkeypatch.setattr(Path, "iterdir", denied)
+    unavailable = tr.readiness(tmp_path)
+    assert unavailable.status == "error" and unavailable.row_count is None
+    with pytest.raises(SourceUnavailableError):
+        list(tr.transcripts(root=tmp_path))
+
+
+def test_unreadable_transcript_file_is_not_measured_zero(tmp_path, monkeypatch):
+    from pathlib import Path
+    path = _write_day(tmp_path, "2026-08-13", [{"file": "synthetic"}])
+    original = Path.open
+    def denied(file, *args, **kwargs):
+        if file == path:
+            raise PermissionError("synthetic denied day file")
+        return original(file, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", denied)
+    report = tr.readiness(tmp_path)
+    assert report.status == "error" and report.row_count is None

@@ -23,7 +23,7 @@ def _hydrate_sample(payload: dict) -> Sample | None:
 def test_file_readiness_missing(tmp_path):
     r = file_readiness(tmp_path / "absent.jsonl")
     assert r == SourceReadiness("missing", f"{tmp_path / 'absent.jsonl'} does not exist",
-                                tmp_path / "absent.jsonl", 0)
+                                tmp_path / "absent.jsonl", None)
 
 
 def test_file_readiness_empty(tmp_path):

@@ -1,24 +1,10 @@
-"""Shallow itemization of capture roots that have no dedicated source module.
+"""Shallow live inventory for configured captures without dedicated readers.
 
-Several `activity/*` roots (audio, screenshots, screen recordings) are real,
-growing owner-native data with zero Lynchpin visibility today: they never
-show up in `available_sources()`, coverage, or any analysis. They do not
-warrant a dedicated typed source yet — deep audio/video/image processing is
-out of scope here — but "invisible" is worse than "shallow".
-
-This module answers one narrow question per root: what is there, how much,
-and over what time span, computed live from the filesystem (file count, total
-bytes, earliest/latest mtime). It intentionally does not parse audio, decode
-images, or interpret event payloads. Promote a root out of this catalog into
-a real typed source module when an analysis actually needs its content — the
-`notifications`/`mpris`/`audio-index`/`audio-topology` event lanes made that
-jump; see `lynchpin.sources.sinnix_capture_lanes`.
-
-Roots the operator has flagged as dead/unwanted (2026-08-12) are excluded
-rather than itemized as live: `input-dynamics` (dead, superseded by
-`activity/keylog`), `stability-lab` (dead/being retired), and
-`dev/tortoisesvn` (a historical import the operator does not want tracked).
-The raw directories are untouched — only this catalog stopped watching them.
+Counts, byte totals and filesystem dates describe source availability without
+parsing audio, images or event payloads. Missing or inaccessible roots retain
+unknown counts and their availability reason; accessible empty roots have zero
+counts. Managed placement comes from configuration and its exported registry.
+Typed event lanes remain owned by ``sinnix_capture_lanes``.
 """
 
 from __future__ import annotations
@@ -40,8 +26,7 @@ CaptureKind = Literal[
     "reserved_empty",
 ]
 
-#: (id, relative path under its subject root -- activity/ for every entry
-#: except comms_teams, which lives under comms/ -- kind, note)
+#: (id, configuration lane or explicit-root child, kind, note)
 #: Roots already owned by a dedicated source module (activitywatch, arbtt,
 #: asciinema/kitty-scrollback via terminal.py, atuin/zsh via shell/terminal,
 #: keylog, clipboard, irc, machine, webhistory, polylogue, syslog,
@@ -126,11 +111,7 @@ def capture_inventory(captures_root: Path | None = None) -> tuple[CaptureInvento
     Never raises for a missing root: a root that has not been provisioned yet
     reports ``exists=False`` with unknown counts and an availability reason.
     """
-    # Every registry entry lived under one shared captures_root before the
-    # 2026-08-17 subject recut. All but comms_teams moved to activity/;
-    # comms_teams is a bounded platform export under accounts/ (comms/ retired 2026-08-24).
-    # An explicit override still applies uniformly to every entry (tests rely
-    # on this to point the whole registry at one fake tree).
+    # Explicit roots retain the same per-entry children for standalone callers.
     cfg = get_config()
     items: list[CaptureInventoryItem] = []
     for item_id, rel_path, kind, note in _REGISTRY:

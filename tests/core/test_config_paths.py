@@ -200,14 +200,17 @@ def test_capture_registry_controls_defaults_and_custom_placement(monkeypatch, tm
     registry.write_text(json.dumps({"schema_version": 1, "activity_lanes": {
         "screenshot": "custom/image", "transcripts": "custom/text",
         "asciinema": "custom/terminal", "keylog": "custom/keyboard",
-        "notifications": "custom/event"}}))
+        "notifications": "custom/event", "audio": "custom/recording"}}))
     monkeypatch.setenv("LYNCHPIN_FILESYSTEM_LAYOUT", str(registry))
     monkeypatch.setenv("LYNCHPIN_DATA_ROOT", str(tmp_path))
-    for key in ("LYNCHPIN_SCREENSHOT_ROOT", "LYNCHPIN_TRANSCRIPTS_DIR", "LYNCHPIN_ASCIINEMA_ROOT", "LYNCHPIN_KEYLOG_ROOT"):
+    for key in ("LYNCHPIN_SCREENSHOT_ROOT", "LYNCHPIN_TRANSCRIPTS_DIR", "LYNCHPIN_ASCIINEMA_ROOT", "LYNCHPIN_KEYLOG_ROOT", "LYNCHPIN_AUDIO_ROOT"):
         monkeypatch.delenv(key, raising=False)
     cfg = LynchpinConfig.from_env()
     assert cfg.screenshot_root == tmp_path / "activity/custom/image"
     assert cfg.transcripts_dir == tmp_path / "activity/custom/text"
+    assert cfg.audio_root == tmp_path / "activity/custom/recording/raw"
+    monkeypatch.setenv("LYNCHPIN_AUDIO_ROOT", str(tmp_path / "explicit-audio"))
+    assert LynchpinConfig.from_env().audio_root == tmp_path / "explicit-audio"
     assert cfg.capture_path("notifications") == tmp_path / "activity/custom/event"
     from lynchpin.sources import sinnix_capture_lanes
     monkeypatch.setattr(sinnix_capture_lanes, "get_config", lambda: cfg)
