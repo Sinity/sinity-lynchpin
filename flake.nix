@@ -376,6 +376,8 @@
             "lynchpin"
             "lynchpin.cli.current_state"
           ];
+          # Import checks run without the workstation's /etc deployment files.
+          LYNCHPIN_FILESYSTEM_LAYOUT = ./tests/fixtures/capture-layout.json;
           doCheck = false;
           dontCheckRuntimeDeps = true;
 

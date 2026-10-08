@@ -7,7 +7,6 @@ long-running integrations and retain the caller's environment.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -31,10 +30,7 @@ def isolate_operator_data(
     root.mkdir(parents=True, exist_ok=True)
     registry = tmp_path_factory.mktemp("capture-registry") / "filesystem-layout.json"
     # Synthetic deployment placement, independent of the operator's registry.
-    lanes = ("asciinema", "keylog", "screenshot", "transcripts", "notifications",
-             "mpris", "audio-index", "audio-topology", "screen-frames", "replay", "a11y")
-    registry.write_text(json.dumps({"schema_version": 1, "activity_lanes": {
-        lane: "synthetic/" + lane for lane in lanes}}))
+    registry.write_bytes((Path(__file__).parent / "fixtures/capture-layout.json").read_bytes())
     isolated_paths = {
         "LYNCHPIN_FILESYSTEM_LAYOUT": registry,
         "LYNCHPIN_CHISEL_CACHE_ROOT": root / "chisel-cache",

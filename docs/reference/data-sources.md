@@ -43,6 +43,9 @@ operator's data layout.
 Chisel uses `LYNCHPIN_CHISEL_CACHE_ROOT` for reusable caches and
 `LYNCHPIN_CHISEL_SCRATCH_ROOT` for temporary history stores. Defaults are the
 configured cache directory's `chisel` child and a task scratch directory.
+Managed Chisel and convergence operations declare AgentCTL scratch; inside those
+jobs, temporary history uses `AGENTCTL_SCRATCH/chisel` so the job owner measures
+and removes it on completion. The host scratch setting applies outside jobs.
 Choosing an output directory does not relocate either store. Publication
 candidates remain beside their destination for atomic same-filesystem renames.
 

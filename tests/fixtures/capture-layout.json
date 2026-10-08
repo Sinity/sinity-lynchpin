@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "activity_lanes": {
+    "asciinema": "synthetic/asciinema",
+    "keylog": "synthetic/keylog",
+    "screenshot": "synthetic/screenshot",
+    "transcripts": "synthetic/transcripts",
+    "notifications": "synthetic/notifications",
+    "mpris": "synthetic/mpris",
+    "audio-index": "synthetic/audio-index",
+    "audio-topology": "synthetic/audio-topology",
+    "screen-frames": "synthetic/screen-frames",
+    "replay": "synthetic/replay",
+    "a11y": "synthetic/a11y"
+  }
+}

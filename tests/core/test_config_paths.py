@@ -220,8 +220,16 @@ def test_capture_registry_controls_defaults_and_custom_placement(monkeypatch, tm
 
 
 def test_chisel_storage_is_independent_of_report_destination(monkeypatch, tmp_path):
+    monkeypatch.delenv("AGENTCTL_SCRATCH", raising=False)
     monkeypatch.setenv("LYNCHPIN_CHISEL_CACHE_ROOT", str(tmp_path / "cache-owner"))
     monkeypatch.setenv("LYNCHPIN_CHISEL_SCRATCH_ROOT", str(tmp_path / "scratch-owner"))
     cfg = LynchpinConfig.from_env()
     assert cfg.chisel_cache() == tmp_path / "cache-owner"
     assert cfg.chisel_scratch() == tmp_path / "scratch-owner"
+
+
+def test_chisel_managed_job_uses_its_owned_scratch(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTCTL_SCRATCH", str(tmp_path / "job-owned"))
+    monkeypatch.setenv("LYNCHPIN_CHISEL_SCRATCH_ROOT", str(tmp_path / "host-default"))
+    cfg = LynchpinConfig.from_env()
+    assert cfg.chisel_scratch() == tmp_path / "job-owned/chisel"

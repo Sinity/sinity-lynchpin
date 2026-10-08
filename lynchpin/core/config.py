@@ -126,6 +126,9 @@ class LynchpinConfig:
 
     def chisel_scratch(self) -> Path:
         import tempfile
+        job_scratch = os.environ.get("AGENTCTL_SCRATCH")
+        if job_scratch:
+            return Path(job_scratch) / "chisel"
         return self.chisel_scratch_root or Path(tempfile.gettempdir()) / "lynchpin-chisel"
 
     def capture_path(self, lane: str) -> Path:

@@ -119,6 +119,7 @@ exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--promote", "--his
 pool = "bulk"
 result = "exit"
 cache = "none"
+scratch = "nvme"
 timeout_seconds = 14400
 
 [operations.refresh_keylog]
@@ -164,6 +165,7 @@ exec = ["just", "chisel"]
 pool = "bulk"
 result = "exit"
 cache = "none"
+scratch = "nvme"
 timeout_seconds = 900
 
 [operations.cleanup_machine_staging]
@@ -241,3 +243,11 @@ exec = ["pytest", "-q", "tests/analysis/test_chisel_history.py", "tests/analysis
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"
+
+[operations.verify_package]
+description = "Build packaged API and MCP entry points with neutral deployment configuration"
+exec = ["nix", "build", "--no-link", ".#api-python", ".#default"]
+pool = "normal"
+result = "exit"
+cache = "tree+environment"
+timeout_seconds = 1800
