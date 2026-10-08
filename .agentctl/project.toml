@@ -205,3 +205,18 @@ model = "claude-opus-5-5"
 [packets.model_policy.provider-pinned-v1]
 backend = "claude"
 model = "claude-opus-5-5"
+
+[operations.snapshot_locations]
+description = "Plan or publish current snapshot lookup address changes without rebuilding captures"
+exec = ["python", "-m", "lynchpin.cli.snapshot_locations"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+timeout_seconds = 1800
+
+[operations.verify_snapshot_locations]
+description = "Verify lookup relocation preserves captured fields and historical partitions"
+exec = ["pytest", "-q", "tests/substrate/test_snapshot_locations.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
