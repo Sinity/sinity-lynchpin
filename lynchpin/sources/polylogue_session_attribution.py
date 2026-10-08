@@ -80,7 +80,7 @@ def _project_from_root_path(root_path: str) -> str | None:
     """Resolve the ``/realm/project/<name>`` checkout a session ran in.
 
     ``root_path`` may be the checkout root itself or any subdirectory
-    inside it (e.g. a session opened in ``/realm/project/lynchpin/src``),
+    inside it (e.g. a session opened in ``/realm/projects/lynchpin/repo/src``),
     so the project is the path segment right after the prefix, not the
     working directory's own basename.
 

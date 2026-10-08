@@ -12,18 +12,20 @@ def code_snapshot_audit(project: str | None = None) -> dict[str, Any]:
     """Read generated per-project snapshot audit files from the chisel output root."""
     import json
 
-    from lynchpin.sources.code_snapshots import code_snapshots_path
+    from lynchpin.sources.code_snapshots import REPO_PLANS, code_snapshots_path
     from lynchpin.mcp.tools._utils import json_safe as _json_safe
 
-    root = code_snapshots_path()
     audits: list[dict[str, Any]] = []
-    for path in sorted(root.glob("*/*-snapshot-audit.json")):
-        if project and path.parent.name != project:
+    for name in sorted(REPO_PLANS):
+        if project and name != project:
+            continue
+        path = code_snapshots_path(name) / f"{name}-snapshot-audit.json"
+        if not path.is_file():
             continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            audits.append({"project": path.parent.name, "path": str(path), "error": str(exc)})
+            audits.append({"project": name, "path": str(path), "error": str(exc)})
             continue
         payload["path"] = str(path)
         audits.append(_json_safe(payload))

@@ -1376,7 +1376,7 @@ DDL_STATEMENTS = (
         # ────────────────────────────────────────────────────────────────────
         # sinnix_generation — one row per NixOS generation activation
         # ────────────────────────────────────────────────────────────────────
-        # Promoted from /realm/machine/generations.jsonl
+        # Promoted from /realm/devices/sinnix-prime/generations.jsonl
         # (written by sinnix's lynchpinGenerationLog activation script).
         # Provides the join surface for "what changed at generation N?"
         # queries: given a machine_metric_sample.observed_at, find the
@@ -1401,7 +1401,7 @@ DDL_STATEMENTS = (
         # ────────────────────────────────────────────────────────────────────
         # borg_drill_run — one row per random-archive deep-verify invocation
         # ────────────────────────────────────────────────────────────────────
-        # Promoted from /realm/machine/borg_drill.jsonl
+        # Promoted from /realm/devices/sinnix-prime/borg_drill.jsonl
         # written by sinnix-borg-drill (weekly oneshot). Tracks deep
         # chunk-content verification outcomes that the cheap
         # repository-only check cannot detect.

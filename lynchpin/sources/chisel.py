@@ -445,7 +445,7 @@ def _plan(
 
 _plan(
     "sinex",
-    "/realm/project/sinex",
+    "/realm/projects/sinex/repo",
     "Sinity/sinex",
     Slice(
         "code-proper",
@@ -702,7 +702,7 @@ _plan(
 
 _plan(
     "sinnix",
-    "/realm/project/sinnix",
+    "/realm/projects/sinnix/repo",
     "Sinity/sinnix",
     Slice(
         "hosts-and-modules",
@@ -774,7 +774,7 @@ _plan(
 
 _plan(
     "polylogue",
-    "/realm/project/polylogue",
+    "/realm/projects/polylogue/repo",
     "Sinity/polylogue",
     Slice(
         "core-and-storage",
@@ -1014,7 +1014,7 @@ _plan(
 
 _plan(
     "sinity-lynchpin",
-    "/realm/project/sinity-lynchpin",
+    "/realm/projects/sinity-lynchpin/repo",
     "Sinity/sinity-lynchpin",
     Slice(
         "analysis-and-core",

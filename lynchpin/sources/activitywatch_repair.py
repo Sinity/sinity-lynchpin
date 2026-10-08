@@ -92,7 +92,7 @@ def repair_input_revision() -> tuple[object, ...]:
     cfg = get_config()
     keylog_root = cfg.keylog_root / "logs"
     keylog_files = sorted(keylog_root.glob("*.jsonl")) if keylog_root.exists() else []
-    atuin_path = cfg.data_root / "activity/shell/atuin/history.ndjson"
+    atuin_path = cfg.data_root / "activity/terminal/shell/atuin/history.ndjson"
     atuin_db = getattr(cfg, "atuin_db", Path())
     paths = [
         cfg.sleep_jsonl,
@@ -111,7 +111,7 @@ def _atuin_source_signature() -> tuple[object, ...]:
     cfg = get_config()
     atuin_db = getattr(cfg, "atuin_db", Path())
     return (
-        file_signature(cfg.data_root / "activity/shell/atuin/history.ndjson"),
+        file_signature(cfg.data_root / "activity/terminal/shell/atuin/history.ndjson"),
         file_signature(atuin_db),
     )
 

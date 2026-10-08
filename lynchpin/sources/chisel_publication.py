@@ -132,10 +132,10 @@ def _validate_tree(root: Path) -> None:
             raise PublicationValidationError(f"candidate path escapes root: {path}") from exc
 
 
-def _validate_project(root: Path, name: str) -> None:
+def _validate_project(root: Path, name: str, *, project_dir: Path | None = None) -> None:
     if not name or name in {".", ".."} or "/" in name or "\\" in name:
         raise PublicationValidationError(f"invalid project name: {name!r}")
-    project_dir = root / name
+    project_dir = project_dir or root / name
     if not project_dir.is_dir() or project_dir.is_symlink():
         raise PublicationValidationError(f"candidate project directory missing: {name}")
     manifest_path = project_dir / f"{name}-manifest.json"
@@ -257,3 +257,102 @@ def publish_candidate(candidate_root: Path, output_root: Path, names: Sequence[s
         os.replace(candidate_root, output_root)
         return
     _exchange_directories(candidate_root, output_root)
+
+
+def publish_project_homes(candidate_root: Path, output_root: Path, names: Sequence[str]) -> dict[str, str]:
+    """Publish validated packages to project homes, then the shared index.
+
+    Several renames are individually atomic, not a fictitious global filesystem
+    transaction. A durable journal and retained prior generations permit recovery
+    after interruption. Substrate promotion happens only after this completes.
+    The surrounding shared-root writer lock serializes the portfolio publisher.
+    """
+    from .code_snapshots import code_snapshot_export_path, code_snapshots_path
+
+    for pending in output_root.parent.glob(".snapshot-publication-*.jsonl"):
+        rows = [json.loads(line) for line in pending.read_text().splitlines()]
+        if not rows or rows[-1].get("state") not in {"committed", "rolled-back"}:
+            raise PublicationBusyError(f"Interrupted publication needs owner recovery: {pending}")
+    _validate_tree(candidate_root)
+    for name in names:
+        _validate_project(candidate_root, name)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%S.%fZ")
+    journal = output_root.parent / f".snapshot-publication-{stamp}.jsonl"
+    completed: list[tuple[Path, Path, Path | None]] = []
+    paths = {}
+
+    def sync(directory: Path) -> None:
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def rename(source: Path, destination: Path) -> None:
+        os.rename(source, destination)
+        sync(source.parent)
+        sync(destination.parent)
+
+    def record(row: dict) -> None:
+        with journal.open("a") as stream:
+            stream.write(json.dumps(row, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        sync(journal.parent)
+
+    def publish(source: Path, destination: Path, previous: Path) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.is_symlink():
+            raise PublicationValidationError(f"canonical snapshot destination is an alias: {destination}")
+        if source.stat().st_dev != destination.parent.stat().st_dev:
+            raise PublicationValidationError("project-home publication requires same-filesystem renames")
+        old = previous if destination.exists() else None
+        record({"state": "intent", "source": str(source), "destination": str(destination),
+                "previous": str(old) if old else None})
+        if old is not None:
+            old.parent.mkdir(parents=True, exist_ok=True)
+            rename(destination, old)
+        try:
+            rename(source, destination)
+        except BaseException:
+            if old is not None:
+                rename(old, destination)
+            raise
+        completed.append((source, destination, old))
+        record({"state": "moved", "destination": str(destination)})
+
+    try:
+        for name in names:
+            destination = code_snapshots_path(name)
+            publish(candidate_root / name, destination, destination.parent / "history" / stamp / "current")
+            paths[name] = str(destination)
+            combined = candidate_root / f"{name}-all.tar.gz"
+            if combined.exists():
+                export = code_snapshot_export_path(name)
+                publish(combined, export, destination.parent / "history" / stamp / combined.name)
+        (candidate_root / "locations.json").write_text(json.dumps({
+            "schema_version": 1, "generation": stamp, "projects": paths,
+            "exports": {name: str(code_snapshot_export_path(name)) for name in names},
+            "scope": "Canonical project homes; portable attachment archives retain their self-contained package layout.",
+        }, indent=2) + "\n")
+        # Only generated shared navigation changes; project packages and their
+        # hashes remain exactly as validated and portable archives stay intact.
+        for path in candidate_root.iterdir():
+            if path.suffix not in {".md", ".html"} or not path.is_file():
+                continue
+            text = path.read_text()
+            for name, target in paths.items():
+                relative = os.path.relpath(target, output_root)
+                text = text.replace(f"]({name}/", f"]({relative}/").replace(f'href="{name}/', f'href="{relative}/')
+            path.write_text(text)
+        publish(candidate_root, output_root, output_root.parent / "history" / stamp / "snapshots")
+        record({"state": "committed", "generation": stamp, "projects": paths})
+    except BaseException:
+        for source, destination, previous in reversed(completed):
+            if not source.exists() and destination.exists():
+                rename(destination, source)
+                if previous is not None:
+                    rename(previous, destination)
+        record({"state": "rolled-back"})
+        raise
+    return paths

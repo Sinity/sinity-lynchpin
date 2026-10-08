@@ -70,6 +70,20 @@ pool = "normal"
 result = "exit"
 cache = "tree+environment"
 
+[operations.snapshot_layout]
+description = "Describe owner-led canonical snapshot placement without opening payloads"
+exec = ["python", "-m", "lynchpin.cli.chisel", "layout"]
+pool = "normal"
+result = "exit"
+cache = "none"
+
+[operations.verify_taxonomy]
+description = "Verify relocated configuration, historical project recognition and snapshot publication"
+exec = ["pytest", "-q", "tests/core/test_config_paths.py", "tests/analysis/test_analysis_machine_derivation_inventory.py", "tests/sources/test_source_terminal.py", "tests/analysis/test_chisel_publication.py", "tests/analysis/test_snapshot_homes.py", "tests/ingest/test_code_snapshots_materialize.py", "tests/analysis/test_chisel_currentness.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
 [operations.verify_owner_products]
 description = "Verify campaign owner snapshots, bounded project context, and public action contracts"
 exec = ["pytest", "-q", "tests/analysis/test_campaign_evidence.py", "tests/analysis/test_campaign_history.py", "tests/analysis/test_project_owner_products.py", "tests/mcp/test_mcp_public.py", "tests/mcp/test_mcp_registration.py"]

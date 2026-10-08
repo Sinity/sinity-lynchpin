@@ -58,7 +58,7 @@ def test_generated_roots_default_to_repo_local_dotfolder(monkeypatch, tmp_path: 
 
     assert cfg.knowledgebase_root == repo_root / ".lynchpin/generated"
     assert cfg.repo_artefacts_root == repo_root / ".lynchpin/generated"
-    assert cfg.analysis_output_dir == repo_root / ".lynchpin/generated/analysis"
+    assert cfg.analysis_output_dir == cfg.data_root / "projects/shared/analysis/lynchpin"
     assert cfg.baseline_dir == repo_root / ".lynchpin/generated/baseline/latest"
     assert cfg.velocity_output == repo_root / ".lynchpin/generated/meta/velocity.html"
     assert cfg.cache_dir == repo_root / ".lynchpin/cache/lynchpin"
@@ -84,7 +84,7 @@ def test_legacy_exported_roots_are_not_live_write_targets(monkeypatch, tmp_path:
 
 
 def test_packaged_nix_store_repo_root_defaults_to_checkout_local_root(monkeypatch, tmp_path: Path) -> None:
-    checkout = Path("/realm/project/sinity-lynchpin")
+    checkout = Path("/realm/projects/sinity-lynchpin/repo")
     original_exists = Path.exists
 
     def fake_exists(self: Path) -> bool:
@@ -98,8 +98,8 @@ def test_packaged_nix_store_repo_root_defaults_to_checkout_local_root(monkeypatc
 
     cfg = LynchpinConfig.from_env()
 
-    assert cfg.local_root == Path("/realm/project/sinity-lynchpin/.lynchpin")
-    assert cfg.cache_dir == Path("/realm/project/sinity-lynchpin/.lynchpin/cache/lynchpin")
+    assert cfg.local_root == Path("/realm/projects/sinity-lynchpin/repo/.lynchpin")
+    assert cfg.cache_dir == Path("/realm/projects/sinity-lynchpin/repo/.lynchpin/cache/lynchpin")
 
 
 def test_polylogue_db_env_override_wins(monkeypatch, tmp_path: Path) -> None:
@@ -157,7 +157,7 @@ def test_journal_default_and_override_are_shared_with_sync(monkeypatch, tmp_path
     monkeypatch.delenv("LYNCHPIN_RAW_LOG_FILE", raising=False)
     monkeypatch.delenv("RAWLOG_FILE", raising=False)
     cfg = LynchpinConfig.from_env()
-    assert cfg.raw_log_file == tmp_path / "journal/raw-log.md"
+    assert cfg.raw_log_file == tmp_path / "personal/journal/raw-log.md"
     monkeypatch.setattr(substance_log_sync, "get_config", lambda: cfg)
     assert substance_log_sync._rawlog_path() == cfg.raw_log_file
 
@@ -181,7 +181,7 @@ def test_machine_consumers_share_state_database_without_capture_alias(monkeypatc
     for key in ("LYNCHPIN_MACHINE_CAPTURE_ROOT", "LYNCHPIN_MACHINE_HOST_ROOT", "LYNCHPIN_MACHINE_TELEMETRY_DB"):
         monkeypatch.delenv(key, raising=False)
     cfg = LynchpinConfig.from_env()
-    assert cfg.machine_host_root == tmp_path / "machine"
+    assert cfg.machine_host_root == tmp_path / "devices/sinnix-prime"
     assert cfg.machine_telemetry_db == tmp_path / "state/machine-telemetry/telemetry.sqlite"
     monkeypatch.setattr("lynchpin.core.config.get_config", lambda: cfg)
     assert substrate_promote_machine._machine_sqlite_path() == cfg.machine_telemetry_db

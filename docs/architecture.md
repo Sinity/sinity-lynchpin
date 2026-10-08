@@ -252,3 +252,5 @@ Lynchpin distinguishes:
 An upstream summary never becomes raw truth merely because it is convenient.
 When evidence is incomplete, the product should say so rather than filling the
 gap with a plausible story.
+
+Canonical analyses use the configured subject analysis directory. Chisel publishes each native project package to `projects/<project>/snapshots/current`, attachment archives to its `snapshots/exports`, and earlier generations to `snapshots/history`. The shared portfolio under `projects/shared/snapshots` holds navigation and explicit package locations. Portable output roots keep their self-contained layout. Publication validates all selected packages before changing a home, retains predecessors, and records interruption evidence before substrate promotion. An unfinished publication journal prevents another writer from replacing its recovery evidence.

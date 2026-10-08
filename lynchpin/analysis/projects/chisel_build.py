@@ -4123,10 +4123,12 @@ def _publish_chisel_bundles(
     inside the published packages.
     """
     from .chisel_package import build_portfolio
-    from lynchpin.sources.chisel_publication import publish_candidate, staged_publication
+    from lynchpin.sources.chisel_publication import publish_candidate, publish_project_homes, staged_publication
+    from lynchpin.sources.code_snapshots import code_snapshots_path
 
     started = time.perf_counter()
     root = (output_root or _default_output_root()).resolve()
+    canonical = root == code_snapshots_path().resolve()
     names = list(project_names) if project_names is not None else list(chisel_options.DEFAULT_PROJECTS)
     unknown = set(names) - REPO_PLANS.keys()
     if unknown:
@@ -4134,6 +4136,12 @@ def _publish_chisel_bundles(
     warning_log = root.parent / f".{root.name}.chisel-warnings.log"
     echo = (lambda line: _print_live(f"warning: {line}", markup=False)) if verbose else None
     with captured_warnings(warning_log, echo=echo) as warnings_seen, staged_publication(root) as candidate:
+        if canonical:
+            from lynchpin.sources.chisel_cache import copy_file
+            for name in names:
+                previous = code_snapshots_path(name)
+                if previous.is_dir():
+                    shutil.copytree(previous, candidate / name, copy_function=copy_file)
         for name in names:
             (candidate / f"{name}-all.tar.gz").unlink(missing_ok=True)
         result = _build_chisel_candidate(
@@ -4158,7 +4166,10 @@ def _publish_chisel_bundles(
                     result["generated_at"],
                 )
             with chisel_terminal.timed_step("publication validation"):
-                publish_candidate(candidate, root, names)
+                if canonical:
+                    result["project_paths"] = publish_project_homes(candidate, root, names)
+                else:
+                    publish_candidate(candidate, root, names)
         result["published"] = successful
         result["output_root"] = str(root)
         result["total_elapsed_s"] = round(time.perf_counter() - started, 1)

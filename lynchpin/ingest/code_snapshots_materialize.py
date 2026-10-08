@@ -180,7 +180,7 @@ def _results_to_rows(
         elif r.get("error"):
             error_str = str(r["error"])
 
-        out_dir = output_root / project_name
+        out_dir = Path(bundle_result.get("project_paths", {}).get(project_name, output_root / project_name))
 
         run_rows.append({
             "project": project_name,
@@ -216,7 +216,9 @@ def _results_to_rows(
             })
 
         # Combined tar lives at output_root level, not inside the project dir
-        combined = output_root / f"{project_name}-all.tar.gz"
+        from lynchpin.sources.code_snapshots import code_snapshot_export_path
+        combined = (code_snapshot_export_path(project_name) if bundle_result.get("project_paths")
+                    else output_root / f"{project_name}-all.tar.gz")
         if combined.exists():
             slice_rows.append({
                 "project": project_name,

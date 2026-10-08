@@ -103,7 +103,7 @@ def test_commands_default_reader_materializes(monkeypatch, tmp_path):
     import json
 
     calls = []
-    history = tmp_path / "activity/shell/atuin/history.ndjson"
+    history = tmp_path / "activity/terminal/shell/atuin/history.ndjson"
     history.parent.mkdir(parents=True)
     history.write_text(
         json.dumps(

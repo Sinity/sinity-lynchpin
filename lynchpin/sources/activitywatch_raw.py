@@ -54,7 +54,7 @@ def _candidate_dbs(db_path: Optional[Path] = None) -> tuple[Path, ...]:
 
 
 def canonical_activitywatch_events_path() -> Path:
-    return get_config().data_root / "activity/activitywatch/events.ndjson"
+    return get_config().data_root / "activity/shared/activitywatch/events.ndjson"
 
 
 def _database_signature(path: Path) -> tuple[object, ...]:

@@ -15,7 +15,7 @@ from ..core.graph_metrics import compute_graph_metrics, distribution_stats
 from ..core.textshape import compute_repetition_metrics
 from ..maps import dependency_map as dependency_map_module
 
-SINEX_DIR_DEFAULT = '/realm/project/sinex'
+SINEX_DIR_DEFAULT = '/realm/projects/sinex/repo'
 SKIP_DIRS = {'.git', 'target', 'node_modules', '.direnv', '.sinex'}
 
 

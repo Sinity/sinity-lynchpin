@@ -32,7 +32,7 @@ from lynchpin.materializers.partition_store import (
 from lynchpin.sources import keylog
 
 DEFAULT_HYPRLAND_BINDINGS = Path(
-    "/realm/project/sinnix/modules/features/desktop/hyprland/bindings.nix"
+    "/realm/projects/sinnix/repo/modules/features/desktop/hyprland/bindings.nix"
 )
 
 MODIFIER_KEYCODES = {

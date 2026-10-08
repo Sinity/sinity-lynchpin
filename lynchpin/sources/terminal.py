@@ -77,7 +77,7 @@ class TerminalRecording:
 class KittyScrollbackCapture:
     """One periodic full-ANSI scrollback snapshot of a live kitty window.
 
-    Sourced from ``activity/kitty-scrollback/<TIMESTAMP>-<host>-pid<kitty_pid>-
+    Sourced from ``activity/terminal/scrollback/<TIMESTAMP>-<host>-pid<kitty_pid>-
     win<window_id>-<title-slug>.meta.json`` sidecars, written by
     ``sinnix-capture-kitty-scrollback`` alongside the ``.ansi`` dump. ``kitty_pid``
     identifies the owning kitty *instance* (one control socket per OS process);
@@ -157,7 +157,7 @@ def canonical_atuin_history_path() -> Path:
     # shell/atuin moved from captures/ to activity/ in the 2026-08-17
     # subject recut.
     cfg = get_config()
-    return cfg.data_root / "activity/shell/atuin/history.ndjson"
+    return cfg.data_root / "activity/terminal/shell/atuin/history.ndjson"
 
 
 def _datetime_window(start: Optional[datetime], end: Optional[datetime]) -> tuple[date, date] | None:
@@ -227,7 +227,7 @@ def _commands_from_ndjson(path: Path) -> Iterator[AtuinCommand]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 _LAST_CMD_FALLBACK = timedelta(seconds=5)
-_PROJECT_RE = re.compile(r"/realm/project/([^/]+)")
+_PROJECT_RE = re.compile(r"/realm/projects?/([^/]+)")
 
 
 def shell_sessions(
@@ -274,7 +274,7 @@ def _categorise_command(cwd: str) -> str:
         return "development:sinex"
     if "sinnix" in lowered:
         return "infrastructure:sinnix"
-    if "/realm/project/" in lowered:
+    if any(root in lowered for root in ("/realm/projects/", "/realm/project/")):
         return "development:other"
     if lowered.startswith(("/realm/home", "/home")):
         return "home"
@@ -398,7 +398,7 @@ _KITTY_META_TIMESTAMP_RE = re.compile(r"^(\d{8}T\d{6})Z$")
 
 
 def kitty_scrollback_root() -> Path:
-    return get_config().data_root / "activity/kitty-scrollback"
+    return get_config().data_root / "activity/terminal/scrollback"
 
 
 def kitty_scrollback_captures(

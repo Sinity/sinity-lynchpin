@@ -10,7 +10,7 @@ from lynchpin.core.io import resolve_analysis_path, save_json
 def register_commands(app: typer.Typer) -> None:
     @app.command("sinex", help="Sinex per-crate structural analysis")
     def _sinex(
-        repo: str = typer.Option("/realm/project/sinex", "--repo"),
+        repo: str = typer.Option("/realm/projects/sinex/repo", "--repo"),
         out: str | None = typer.Option(None, "--out"),
     ) -> None:
         from .structure import run_sinex_analysis
@@ -20,7 +20,7 @@ def register_commands(app: typer.Typer) -> None:
 
     @app.command("sinex-temporal", help="Sinex monthly velocity & crate growth")
     def _sinex_temporal(
-        repo: str = typer.Option("/realm/project/sinex", "--repo"),
+        repo: str = typer.Option("/realm/projects/sinex/repo", "--repo"),
         out: str | None = typer.Option(None, "--out"),
     ) -> None:
         from . import temporal as sinex_temporal

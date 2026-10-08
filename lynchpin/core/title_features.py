@@ -7,7 +7,7 @@ BEFORE classification, enabling much better project attribution and AI detection
 Key patterns:
 - Claude Code spinners: ⠐/✳/◇/✦ + status + optional (project)
 - Codex invocations: codex [flags] [resume] [prompt...]
-- Terminal prompts: user@host:/realm/project/X/...
+- Terminal prompts: user@host:/realm/projects/X/repo/...
 - Browser pages: Page Title - https://domain.com/path
 - Editor: nvim /path/to/file
 """
@@ -44,7 +44,7 @@ KNOWN_PROJECTS = frozenset({
 # Claude Code status messages that have (project) in parens
 _CLAUDE_PARENS_RE = re.compile(r'\(([a-z][\w-]*)\)\s*$')
 # Realm project path
-_REALM_PROJECT_RE = re.compile(r'/realm/project/([^/\s:;]+)')
+_REALM_PROJECT_RE = re.compile(r'/realm/projects?/([^/\s:;]+)')
 # Domain from URL in browser title
 _TITLE_URL_RE = re.compile(r' - https?://([^/\s]+)')
 _URL_RE = re.compile(r'https?://([^/\s]+)')
@@ -100,7 +100,7 @@ class TitleFeatures:
     """Structured features extracted from a window title."""
     app_kind: str              # terminal, browser, editor, media_player, system, other
     tool: Optional[str]        # codex, claude-code, nvim, bat, git, btop, etc.
-    project: Optional[str]     # from /realm/project/X or Claude Code (project) parens
+    project: Optional[str]     # from /realm/projects/X/repo or Claude Code (project) parens
     domain: Optional[str]      # from URL in browser title
     domain_category: Optional[str]  # ai, code, docs, reading, social, media, admin
     is_ai_tool: bool           # codex/claude in title

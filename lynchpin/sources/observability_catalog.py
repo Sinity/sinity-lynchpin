@@ -86,7 +86,7 @@ def observability_inputs() -> tuple[ObservabilityInput, ...]:
                 "cgroup_memory_split",
                 "network_link_quality",
             ),
-            retention="canonical raw capture under /realm/machine",
+            retention="canonical raw capture under /realm/devices/sinnix-prime",
             next_action=(
                 "promote coarse metric, service, GPU, and network samples for "
                 "snapshot analytics; read high-rate block_device_sample, "
@@ -143,7 +143,7 @@ def observability_inputs() -> tuple[ObservabilityInput, ...]:
             owner="sinex",
             layer="native_ledger",
             integration_state="promote_pending",
-            path=Path("/realm/project/sinex"),
+            path=Path("/realm/projects/sinex/repo"),
             substrate_table=None,
             grain="Sinex event/telemetry aggregates",
             state_dimensions=("pipeline_latency", "node_health", "event_lag", "throughput", "pool_stats"),

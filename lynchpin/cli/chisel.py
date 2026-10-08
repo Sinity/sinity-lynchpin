@@ -28,6 +28,13 @@ def main(argv: list[str] | None = None) -> int:
     from lynchpin.sources.chisel_snapshots import resolve_snapshot
 
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "layout":
+        from lynchpin.sources.code_snapshots import snapshot_layout_plan
+        parser = argparse.ArgumentParser(prog="chisel layout")
+        parser.add_argument("--input-root", type=Path, required=True)
+        args = parser.parse_args(argv[1:])
+        print(json.dumps(snapshot_layout_plan(args.input_root), indent=2))
+        return 0
     if argv and argv[0] == "complete":
         word = argv[1] if len(argv) > 1 else ""
         if "=" in word:
@@ -64,11 +71,14 @@ def main(argv: list[str] | None = None) -> int:
                         if target.stat().st_size != row["bytes"] or digest(target) != row["sha256"]:
                             raise ValueError(f"attachment hash mismatch: {row['path']}")
             elif (args.package / "portfolio.json").exists():
+                locations = args.package / "locations.json"
+                paths = json.loads(locations.read_text())["projects"] if locations.exists() else {}
                 for project in json.loads((args.package / "portfolio.json").read_text())["projects"]:
-                    _validate_project(args.package, project["project"])
+                    name = project["project"]
+                    _validate_project(args.package, name, project_dir=Path(paths[name]) if name in paths else None)
             else:
                 name = json.loads((args.package / "capture.json").read_text())["project"]
-                _validate_project(args.package.parent, name)
+                _validate_project(args.package.parent, name, project_dir=args.package)
             print("Package hashes verified")
         elif command == "inspect":
             path = args.package / "portfolio.json"

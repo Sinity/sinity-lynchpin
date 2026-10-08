@@ -77,7 +77,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         name="asciinema",
         authority="asciinema terminal recording captures",
         query_surface="lynchpin.sources.terminal.recordings",
-        materialization_hint="asciinema recording capture writes under /realm/activity/asciinema",
+        materialization_hint="asciinema recording capture writes under /realm/activity/terminal/asciinema",
         required=False,
     ),
     SourceContract(

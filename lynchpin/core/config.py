@@ -137,16 +137,12 @@ class LynchpinConfig:
             "sinnix_runtime_inventory": self.sinnix_runtime_inventory_json.exists(),
             "browser_bookmarks": self.browser_bookmarks_root.exists(),
             "arbtt": self.arbtt_root.exists(),
-            "notifications": any((self.data_root / "activity/notifications").glob("notifications-*.jsonl")),
-            "mpris": any((self.data_root / "activity/mpris").glob("mpris-*.jsonl")),
-            "audio_index": any((self.data_root / "activity/audio-index").glob("audio-index-*.jsonl")),
-            # Whole audio family (audio/audio-devices/audio-topology/audio-index)
-            # stays under activity/ despite the charter's machine/ mapping for
-            # audio-devices/audio-topology -- the CLI derives all four lanes
-            # from one shared --capture-root, so it cannot split without CLI
-            # changes (sinnix modules/services/capture-audio.nix, 2026-08-17).
-            "audio_topology": any((self.data_root / "activity/audio-topology").glob("audio-topology-*.jsonl")),
-            "screen_frames": any((self.data_root / "activity/screen-frames").glob("screen-frames-*.jsonl")),
+            "notifications": any((self.data_root / "activity/desktop/notifications").glob("notifications-*.jsonl")),
+            "mpris": any((self.data_root / "activity/desktop/media").glob("mpris-*.jsonl")),
+            "audio_index": any((self.data_root / "activity/audio/index").glob("audio-index-*.jsonl")),
+            # Audio producers retain their lane identities within one medium home.
+            "audio_topology": any((self.data_root / "activity/audio/topology").glob("audio-topology-*.jsonl")),
+            "screen_frames": any((self.data_root / "activity/desktop/frames").glob("screen-frames-*.jsonl")),
             "phone_events": self.phone_events_dir.exists() and any(self.phone_events_dir.glob("events-*.jsonl")),
             "xiaomi_cloud": any((self.data_root / "health/xiaomi-cloud").glob("xiaomi-cloud-*.jsonl")),
             "phone_ambient": self.phone_ambient_jsonl.exists(),
@@ -165,7 +161,7 @@ class LynchpinConfig:
         health_root = Path(os.environ.get("LYNCHPIN_HEALTH_ROOT", data_root / "health"))
         derived_root = Path(os.environ.get("LYNCHPIN_DERIVED_ROOT", data_root / "state/lynchpin/products"))
         libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", "/realm/library"))
-        sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/project/sinnix"))
+        sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/projects/sinnix/repo"))
         local_root = _default_local_root(repo_root, os.environ.get("LYNCHPIN_LOCAL_ROOT"))
         generated_root = _non_legacy_generated_path(
             os.environ.get("LYNCHPIN_GENERATED_ROOT"), local_root / "generated"
@@ -189,7 +185,7 @@ class LynchpinConfig:
             os.environ.get("LYNCHPIN_ARTEFACT_CATALOG"), registry_root / "artefact_catalog.json"
         )
         analysis_output_dir = _non_legacy_generated_path(
-            os.environ.get("LYNCHPIN_ANALYSIS_OUTPUT_DIR"), repo_artefacts_root / "analysis"
+            os.environ.get("LYNCHPIN_ANALYSIS_OUTPUT_DIR"), data_root / "projects/shared/analysis/lynchpin"
         )
         session_ledger_output = _non_legacy_generated_path(
             os.environ.get("LYNCHPIN_SESSION_LEDGER_OUTPUT"),
@@ -211,11 +207,11 @@ class LynchpinConfig:
         )).expanduser()
         aw_archive_db_dir = Path(os.environ.get(
             "LYNCHPIN_ACTIVITYWATCH_ARCHIVE_DB_DIR",
-            data_root / "activity/activitywatch/processed/archive-dbs",
+            data_root / "activity/shared/activitywatch/processed/archive-dbs",
         ))
         aw_raw_dir = Path(os.environ.get(
             "LYNCHPIN_ACTIVITYWATCH_RAW_DIR",
-            data_root / "activity/activitywatch/raw",
+            data_root / "activity/shared/activitywatch/raw",
         ))
         atuin_db = Path(os.environ.get("LYNCHPIN_ATUIN_DB", "~/.local/share/atuin/history.db")).expanduser()
         baseline_dir = _non_legacy_generated_path(
@@ -226,10 +222,10 @@ class LynchpinConfig:
         # moved to data_root/activity or data_root/comms on 2026-08-17
         # (estate charter subject recut) -- still env-overridable, only the
         # hardcoded defaults changed.
-        webhistory_raw_dir = Path(os.environ.get("LYNCHPIN_WEBHISTORY_RAW_DIR", data_root / "activity/webhistory/gestalt/raw"))
-        webhistory_dir = Path(os.environ.get("LYNCHPIN_WEBHISTORY_DIR", data_root / "activity/webhistory/gestalt/data"))
+        webhistory_raw_dir = Path(os.environ.get("LYNCHPIN_WEBHISTORY_RAW_DIR", data_root / "activity/browser/history/gestalt/raw"))
+        webhistory_dir = Path(os.environ.get("LYNCHPIN_WEBHISTORY_DIR", data_root / "activity/browser/history/gestalt/data"))
         webhistory_ndjson_path = Path(os.environ.get(
-            "LYNCHPIN_WEBHISTORY_NDJSON", data_root / "activity/webhistory/gestalt/derived/full_history.ndjson"
+            "LYNCHPIN_WEBHISTORY_NDJSON", data_root / "activity/browser/history/gestalt/derived/full_history.ndjson"
         ))
         webhistory_ndjson = webhistory_ndjson_path
 
@@ -248,7 +244,7 @@ class LynchpinConfig:
         polylogue_db = _default_polylogue_db(xdg_data_home)
         polylogue_project_root = Path(os.environ.get(
             "LYNCHPIN_POLYLOGUE_PROJECT_ROOT",
-            os.environ.get("POLYLOGUE_ROOT", "/realm/project/polylogue"),
+            os.environ.get("POLYLOGUE_ROOT", "/realm/projects/polylogue/repo"),
         )).expanduser()
         fbmessenger_gdpr_root = Path(os.environ.get(
             "LYNCHPIN_FBMESSENGER_GDPR", accounts_root / "facebook-messenger/processed/gdpr"
@@ -258,10 +254,10 @@ class LynchpinConfig:
             accounts_root / "facebook-messenger/fbmessengerexport.sqlite",
         )))
 
-        asciinema_root = Path(os.environ.get("LYNCHPIN_ASCIINEMA_ROOT", data_root / "activity/asciinema"))
-        audio_root = Path(os.environ.get("LYNCHPIN_AUDIO_ROOT", data_root / "activity/audio/raw"))
-        screenshot_root = Path(os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", data_root / "activity/screenshot"))
-        keylog_root = Path(os.environ.get("LYNCHPIN_KEYLOG_ROOT", data_root / "activity/keylog"))
+        asciinema_root = Path(os.environ.get("LYNCHPIN_ASCIINEMA_ROOT", data_root / "activity/terminal/asciinema"))
+        audio_root = Path(os.environ.get("LYNCHPIN_AUDIO_ROOT", data_root / "activity/audio/recordings/raw"))
+        screenshot_root = Path(os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", data_root / "activity/desktop/screenshots"))
+        keylog_root = Path(os.environ.get("LYNCHPIN_KEYLOG_ROOT", data_root / "activity/desktop/keyboard"))
 
         cache_dir = Path(os.environ.get("LYNCHPIN_CACHE_DIR", local_root / "cache/lynchpin"))
         dendron_root = Path(os.environ.get("LYNCHPIN_DENDRON_ROOT", "/realm/archive/knowledgebase"))
@@ -294,24 +290,24 @@ class LynchpinConfig:
             for item in os.environ.get(
                 "LYNCHPIN_CLIPBOARD_EXPORT_FILES",
                 ":".join([
-                    str(data_root / "activity/clipboard/clipse/raw/2026-02-01/clipboard_history.json"),
-                    str(data_root / "activity/clipboard/clipse/raw/2026-01-12/clipboard_history.json"),
-                    str(data_root / "activity/clipboard/exports/2026-01-15-selections.md"),
+                    str(data_root / "activity/desktop/clipboard/clipse/raw/2026-02-01/clipboard_history.json"),
+                    str(data_root / "activity/desktop/clipboard/clipse/raw/2026-01-12/clipboard_history.json"),
+                    str(data_root / "activity/desktop/clipboard/exports/2026-01-15-selections.md"),
                 ]),
             ).split(":")
             if item
         )
-        irc_root = Path(os.environ.get("LYNCHPIN_IRC_ROOT", data_root / "activity/irc"))
+        irc_root = Path(os.environ.get("LYNCHPIN_IRC_ROOT", data_root / "activity/communication/irc"))
         raw_log_file = Path(os.environ.get(
-            "LYNCHPIN_RAW_LOG_FILE", os.environ.get("RAWLOG_FILE", data_root / "journal/raw-log.md")
+            "LYNCHPIN_RAW_LOG_FILE", os.environ.get("RAWLOG_FILE", data_root / "personal/journal/raw-log.md")
         ))
-        machine_capture_root = Path(os.environ.get("LYNCHPIN_MACHINE_CAPTURE_ROOT", data_root / "machine"))
+        machine_capture_root = Path(os.environ.get("LYNCHPIN_MACHINE_CAPTURE_ROOT", data_root / "devices/sinnix-prime"))
         machine_host_root = Path(os.environ.get("LYNCHPIN_MACHINE_HOST_ROOT", machine_capture_root))
         machine_telemetry_db = Path(os.environ.get(
             "LYNCHPIN_MACHINE_TELEMETRY_DB", data_root / "state/machine-telemetry/telemetry.sqlite"
         ))
         machine_telemetry_lake_root = Path(os.environ.get(
-            "LYNCHPIN_MACHINE_TELEMETRY_LAKE_ROOT", data_root / "machine/analysis"
+            "LYNCHPIN_MACHINE_TELEMETRY_LAKE_ROOT", data_root / "devices/sinnix-prime/analysis"
         ))
         sinnix_generations_jsonl = Path(os.environ.get(
             "LYNCHPIN_SINNIX_GENERATIONS_JSONL",
@@ -328,7 +324,7 @@ class LynchpinConfig:
         ))
         browser_bookmarks_root = Path(os.environ.get(
             "LYNCHPIN_BROWSER_BOOKMARKS_ROOT",
-            data_root / "activity/webhistory/bookmarks",
+            data_root / "activity/browser/history/bookmarks",
         ))
         # Colocated with activitywatch rather than in a lane of its own: both
         # are foreground-window time series, arbtt covering the era before
@@ -338,7 +334,7 @@ class LynchpinConfig:
         # more than a directory per collector.
         arbtt_root = Path(os.environ.get(
             "LYNCHPIN_ARBTT_ROOT",
-            data_root / "activity/activitywatch/historical/arbtt",
+            data_root / "activity/shared/activitywatch/historical/arbtt",
         ))
         teams_root = Path(os.environ.get(
             "LYNCHPIN_TEAMS_ROOT",
@@ -352,15 +348,15 @@ class LynchpinConfig:
         # clean subject).
         phone_events_dir = Path(os.environ.get(
             "LYNCHPIN_PHONE_EVENTS_DIR",
-            data_root / "machine/phone/events",
+            data_root / "devices/shared/phone/events",
         ))
         phone_ambient_jsonl = Path(os.environ.get(
             "LYNCHPIN_PHONE_AMBIENT_JSONL",
-            data_root / "machine/phone/ambient-levels.jsonl",
+            data_root / "devices/shared/phone/ambient-levels.jsonl",
         ))
         steering_jsonl_dir = Path(os.environ.get(
             "LYNCHPIN_STEERING_JSONL_DIR",
-            data_root / "activity/steering",
+            data_root / "activity/shared/steering",
         ))
         steering_sqlite = Path(os.environ.get(
             "LYNCHPIN_STEERING_SQLITE",
@@ -368,7 +364,7 @@ class LynchpinConfig:
         ))
         transcripts_dir = Path(os.environ.get(
             "LYNCHPIN_TRANSCRIPTS_DIR",
-            data_root / "activity/transcripts",
+            data_root / "activity/audio/transcripts",
         ))
         transcribed_ledger_jsonl = Path(os.environ.get(
             "LYNCHPIN_TRANSCRIBED_LEDGER_JSONL",
@@ -451,7 +447,7 @@ def get_config() -> LynchpinConfig:
 def _default_local_root(repo_root: Path, env_value: str | None) -> Path:
     if env_value:
         return Path(env_value)
-    checkout_root = Path("/realm/project/sinity-lynchpin")
+    checkout_root = Path("/realm/projects/sinity-lynchpin/repo")
     if "nix" in repo_root.parts and "store" in repo_root.parts and checkout_root.exists():
         return checkout_root / ".lynchpin"
     return repo_root / ".lynchpin"
@@ -554,7 +550,7 @@ def _resolve_xtask_history_db(env_value: str | None) -> Path:
     override = os.environ.get("XTASK_HISTORY_DB")
     if override:
         return Path(override).expanduser()
-    checkout_root = Path(os.environ.get("SINEX_ROOT", "/realm/project/sinex")).expanduser()
+    checkout_root = Path(os.environ.get("SINEX_ROOT", "/realm/projects/sinex/repo")).expanduser()
     return checkout_root / ".sinex/state/xtask-history.db"
 
 

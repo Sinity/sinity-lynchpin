@@ -1,6 +1,6 @@
 """Typing dynamics from raw scribe-tap keylog events (inter-key intervals).
 
-The keylog capture (``activity/keylog/logs/YYYY-MM-DD.jsonl``) records every
+The keylog capture (``activity/desktop/keyboard/logs/YYYY-MM-DD.jsonl``) records every
 key press with millisecond timestamps. Daily keypress *counts* were already a
 product; this source adds the *dynamics* — how the typing happened:
 
