@@ -32,6 +32,10 @@
         repomixPkgs = import nixpkgsRepomix { inherit system; };
         # Package Python deps not in nixpkgs
         pythonPackagesBaseOverlay = final: prev: {
+          aiosqlite = import "${polylogueSrc}/nix/aiosqlite.nix" {
+            inherit pkgs;
+            pythonPackages = prev;
+          };
           cachew = prev.buildPythonPackage rec {
             pname = "cachew";
             version = "0.22.20251013";
