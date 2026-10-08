@@ -191,3 +191,37 @@ def test_machine_consumers_share_state_database_without_capture_alias(monkeypatc
     cfg = LynchpinConfig.from_env()
     assert cfg.machine_telemetry_db == selected
     assert substrate_promote_machine._machine_sqlite_path() == selected
+
+
+def test_capture_registry_controls_defaults_and_custom_placement(monkeypatch, tmp_path):
+    import json
+    from dataclasses import replace
+    registry = tmp_path / "layout.json"
+    registry.write_text(json.dumps({"schema_version": 1, "activity_lanes": {
+        "screenshot": "custom/image", "transcripts": "custom/text",
+        "asciinema": "custom/terminal", "keylog": "custom/keyboard",
+        "notifications": "custom/event"}}))
+    monkeypatch.setenv("LYNCHPIN_FILESYSTEM_LAYOUT", str(registry))
+    monkeypatch.setenv("LYNCHPIN_DATA_ROOT", str(tmp_path))
+    for key in ("LYNCHPIN_SCREENSHOT_ROOT", "LYNCHPIN_TRANSCRIPTS_DIR", "LYNCHPIN_ASCIINEMA_ROOT", "LYNCHPIN_KEYLOG_ROOT"):
+        monkeypatch.delenv(key, raising=False)
+    cfg = LynchpinConfig.from_env()
+    assert cfg.screenshot_root == tmp_path / "activity/custom/image"
+    assert cfg.transcripts_dir == tmp_path / "activity/custom/text"
+    assert cfg.capture_path("notifications") == tmp_path / "activity/custom/event"
+    from lynchpin.sources import sinnix_capture_lanes
+    monkeypatch.setattr(sinnix_capture_lanes, "get_config", lambda: cfg)
+    assert sinnix_capture_lanes.lane_root("notifications") == cfg.capture_path("notifications")
+    assert sinnix_capture_lanes.lane_root("notifications", tmp_path) == tmp_path / "notifications"
+    from lynchpin.core.errors import SourceUnavailableError
+    import pytest
+    with pytest.raises(SourceUnavailableError):
+        replace(cfg, filesystem_layout=tmp_path / "absent").capture_path("notifications")
+
+
+def test_chisel_storage_is_independent_of_report_destination(monkeypatch, tmp_path):
+    monkeypatch.setenv("LYNCHPIN_CHISEL_CACHE_ROOT", str(tmp_path / "cache-owner"))
+    monkeypatch.setenv("LYNCHPIN_CHISEL_SCRATCH_ROOT", str(tmp_path / "scratch-owner"))
+    cfg = LynchpinConfig.from_env()
+    assert cfg.chisel_cache() == tmp_path / "cache-owner"
+    assert cfg.chisel_scratch() == tmp_path / "scratch-owner"

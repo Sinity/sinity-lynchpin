@@ -10,8 +10,8 @@ def test_capture_inventory_reports_missing_root_without_raising(tmp_path):
     assert "audio" in by_id
     audio = by_id["audio"]
     assert audio.exists is False
-    assert audio.file_count == 0
-    assert audio.total_bytes == 0
+    assert audio.file_count is None
+    assert audio.total_bytes is None
     assert audio.earliest is None
     assert audio.latest is None
 

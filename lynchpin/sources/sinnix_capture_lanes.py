@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Iterator
 
 from ..core.config import get_config
+from ..core.errors import SourceUnavailableError
 from ..core.primitives import logical_date
 
 __all__ = [
@@ -70,18 +71,20 @@ class LaneEvent:
 
 
 def lane_root(lane: str, root: Path | None = None) -> Path:
-    # All four lanes read through this module (notifications, mpris,
-    # audio-index, audio-topology) moved from captures/ to activity/ in the
-    # 2026-08-17 subject recut.
-    base = root or (get_config().data_root / "activity")
-    return base / lane
+    if lane not in LANES:
+        raise ValueError(f"unknown capture lane: {lane}")
+    return root / lane if root is not None else get_config().capture_path(lane)
 
 
 def _day_files(root: Path, lane: str, start: date | None, end: date | None) -> list[Path]:
-    if not root.exists():
-        return []
+    try:
+        paths = list(root.iterdir())
+    except OSError as exc:
+        raise SourceUnavailableError(lane, path=str(root), reason=str(exc)) from exc
     files = []
-    for path in root.glob(f"{lane}-*.jsonl"):
+    for path in paths:
+        if not path.name.startswith(f"{lane}-"):
+            continue
         match = _DAY_FILE_RE.search(path.name)
         if match is None:
             continue

@@ -2393,20 +2393,22 @@ def _keylog_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 
 def _sinnix_capture_lane_dataset(cfg: LynchpinConfig, *, lane: str) -> MaterializedDataset:
-    # The four lanes routed through here (notifications, mpris, audio-index,
-    # audio-topology) moved from captures/ to activity/ in the 2026-08-17
-    # subject recut -- mirrors lynchpin.sources.sinnix_capture_lanes.lane_root.
     contract = source_contract(lane.replace("-", "_"))
-    root = cfg.data_root / "activity" / lane
-    return _raw_source_dataset(
+    root = cfg.capture_path(lane)
+    row = _raw_source_dataset(
         cfg,
         name=contract.name,
         raw_roots=(root,),
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialization_hint=contract.materialization_hint,
-        row_count=_count_files(root, suffixes=(".jsonl",)),
     )
+    try:
+        count = sum(path.is_file() and path.suffix == ".jsonl" for path in root.iterdir())
+    except OSError as exc:
+        return replace(row, status="missing", row_count=None,
+                       reason=f"configured capture source unavailable: {exc}")
+    return replace(row, row_count=count)
 
 
 def _notifications_dataset(cfg: LynchpinConfig) -> MaterializedDataset:

@@ -3698,8 +3698,12 @@ def _build_one_impl(
     if (out_dir / "snapshots.json").exists():
         primary_ref = json.loads((out_dir / "snapshots.json").read_text())["snapshots"][0]["ref"]
         git = {**git, "checkout_branch": git.get("branch"), "branch": primary_ref}
-    cache_dir = output_root.parent / ".chisel-cache" / plan.name
-    frozen_history = freeze_refs(plan.path, output_root.parent) if "history" in chisel_options.active_options.datasets else None
+    from lynchpin.core.config import get_config
+    cfg = get_config()
+    cache_dir = cfg.chisel_cache() / plan.name
+    scratch = cfg.chisel_scratch()
+    scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
+    frozen_history = freeze_refs(plan.path, scratch) if "history" in chisel_options.active_options.datasets else None
     history_plan = replace(plan, path=Path(frozen_history.name)) if frozen_history else plan
 
     def metrics_stage():

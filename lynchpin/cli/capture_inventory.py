@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         span = f"{item.earliest.date()}..{item.latest.date()}" if item.earliest and item.latest else "-"
         print(
             f"{item.id:16s} {status:10s} kind={item.kind:16s} "
-            f"files={item.file_count:<7d} bytes={item.total_bytes:<14,d} span={span}"
+            f"files={str(item.file_count):<7} bytes={str(item.total_bytes):<14} span={span}"
         )
         print(f"{'':16s} {item.note}")
     return 0

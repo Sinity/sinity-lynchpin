@@ -178,5 +178,29 @@ def test_daily_lane_activity_counts_by_logical_day(tmp_path):
     assert isinstance(day, date)
 
 
-def test_iter_lane_events_skips_missing_root(tmp_path):
+def test_iter_lane_events_reports_missing_root(tmp_path):
+    import pytest
+    from lynchpin.core.errors import SourceUnavailableError
+    with pytest.raises(SourceUnavailableError):
+        list(lanes.iter_lane_events("notifications", tmp_path))
+
+
+def test_iter_lane_events_distinguishes_empty_root(tmp_path):
+    (tmp_path / "notifications").mkdir()
     assert list(lanes.iter_lane_events("notifications", tmp_path)) == []
+
+
+def test_lane_materialization_distinguishes_missing_empty_and_present():
+    from lynchpin.core.config import get_config
+    from lynchpin.materialization import _sinnix_capture_lane_dataset
+
+    cfg = get_config()
+    root = cfg.capture_path("notifications")
+    missing = _sinnix_capture_lane_dataset(cfg, lane="notifications")
+    assert missing.status == "missing" and missing.row_count is None
+    root.mkdir(parents=True)
+    empty = _sinnix_capture_lane_dataset(cfg, lane="notifications")
+    assert empty.status == "ready" and empty.row_count == 0
+    (root / "notifications-20261008.jsonl").write_text("{}\n")
+    present = _sinnix_capture_lane_dataset(cfg, lane="notifications")
+    assert present.raw_roots == (root,) and present.row_count == 1

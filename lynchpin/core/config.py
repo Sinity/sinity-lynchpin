@@ -15,12 +15,29 @@ module together rather than reviving a parallel reference doc.
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 _SINNIX_POLYLOGUE_INDEX_DB = Path("/realm/state/polylogue/index.db")
+
+
+
+def _capture_path(data_root: Path, registry: Path, lane: str) -> Path:
+    from .errors import SourceUnavailableError
+
+    try:
+        manifest = json.loads(registry.read_text(encoding="utf-8"))
+        if manifest.get("schema_version") != 1:
+            raise ValueError("unsupported filesystem layout schema")
+        relative = Path(manifest["activity_lanes"][lane])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("capture placement must be a relative path")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise SourceUnavailableError(lane, path=str(registry), reason=str(exc)) from exc
+    return data_root / "activity" / relative
 
 
 @dataclass(frozen=True)
@@ -100,6 +117,21 @@ class LynchpinConfig:
     transcripts_dir: Path
     transcribed_ledger_jsonl: Path
 
+    filesystem_layout: Path = Path("/etc/sinnix/filesystem-layout.json")
+    chisel_cache_root: Path | None = None
+    chisel_scratch_root: Path | None = None
+
+    def chisel_cache(self) -> Path:
+        return self.chisel_cache_root or self.cache_dir / "chisel"
+
+    def chisel_scratch(self) -> Path:
+        import tempfile
+        return self.chisel_scratch_root or Path(tempfile.gettempdir()) / "lynchpin-chisel"
+
+    def capture_path(self, lane: str) -> Path:
+        """Resolve managed placement from the producer's exported registry."""
+        return _capture_path(self.data_root, self.filesystem_layout, lane)
+
     def available_sources(self) -> dict[str, bool]:
         """Check which data sources actually have data on disk."""
         return {
@@ -137,12 +169,12 @@ class LynchpinConfig:
             "sinnix_runtime_inventory": self.sinnix_runtime_inventory_json.exists(),
             "browser_bookmarks": self.browser_bookmarks_root.exists(),
             "arbtt": self.arbtt_root.exists(),
-            "notifications": any((self.data_root / "activity/desktop/notifications").glob("notifications-*.jsonl")),
-            "mpris": any((self.data_root / "activity/desktop/media").glob("mpris-*.jsonl")),
-            "audio_index": any((self.data_root / "activity/audio/index").glob("audio-index-*.jsonl")),
+            "notifications": any(self.capture_path("notifications").glob("notifications-*.jsonl")),
+            "mpris": any(self.capture_path("mpris").glob("mpris-*.jsonl")),
+            "audio_index": any(self.capture_path("audio-index").glob("audio-index-*.jsonl")),
             # Audio producers retain their lane identities within one medium home.
-            "audio_topology": any((self.data_root / "activity/audio/topology").glob("audio-topology-*.jsonl")),
-            "screen_frames": any((self.data_root / "activity/desktop/frames").glob("screen-frames-*.jsonl")),
+            "audio_topology": any(self.capture_path("audio-topology").glob("audio-topology-*.jsonl")),
+            "screen_frames": any(self.capture_path("screen-frames").glob("screen-frames-*.jsonl")),
             "phone_events": self.phone_events_dir.exists() and any(self.phone_events_dir.glob("events-*.jsonl")),
             "xiaomi_cloud": any((self.data_root / "health/xiaomi-cloud").glob("xiaomi-cloud-*.jsonl")),
             "phone_ambient": self.phone_ambient_jsonl.exists(),
@@ -154,6 +186,10 @@ class LynchpinConfig:
     def from_env(cls) -> LynchpinConfig:
         repo_root = Path(os.environ.get("LYNCHPIN_REPO_ROOT", Path(__file__).resolve().parents[2]))
         data_root = Path(os.environ.get("LYNCHPIN_DATA_ROOT", "/realm"))
+        filesystem_layout = Path(os.environ.get("LYNCHPIN_FILESYSTEM_LAYOUT", "/etc/sinnix/filesystem-layout.json"))
+        def capture_default(lane: str) -> Path:
+            return _capture_path(data_root, filesystem_layout, lane)
+
         # Platform-account exports and bounded communication archives
         # (google, reddit, spotify, raindrop, facebook-messenger, teams,
         # outlook, ...). Health exports carry their own root below.
@@ -254,10 +290,10 @@ class LynchpinConfig:
             accounts_root / "facebook-messenger/fbmessengerexport.sqlite",
         )))
 
-        asciinema_root = Path(os.environ.get("LYNCHPIN_ASCIINEMA_ROOT", data_root / "activity/terminal/asciinema"))
+        asciinema_root = Path(os.environ.get("LYNCHPIN_ASCIINEMA_ROOT") or capture_default("asciinema"))
         audio_root = Path(os.environ.get("LYNCHPIN_AUDIO_ROOT", data_root / "activity/audio/recording/raw"))
-        screenshot_root = Path(os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", data_root / "activity/desktop/screenshots"))
-        keylog_root = Path(os.environ.get("LYNCHPIN_KEYLOG_ROOT", data_root / "activity/desktop/keyboard"))
+        screenshot_root = Path(os.environ.get("LYNCHPIN_SCREENSHOT_ROOT") or capture_default("screenshot"))
+        keylog_root = Path(os.environ.get("LYNCHPIN_KEYLOG_ROOT") or capture_default("keylog"))
 
         cache_dir = Path(os.environ.get("LYNCHPIN_CACHE_DIR", local_root / "cache/lynchpin"))
         dendron_root = Path(os.environ.get("LYNCHPIN_DENDRON_ROOT", "/realm/archive/knowledgebase"))
@@ -362,10 +398,7 @@ class LynchpinConfig:
             "LYNCHPIN_STEERING_SQLITE",
             "/realm/state/steering/steering.sqlite",
         ))
-        transcripts_dir = Path(os.environ.get(
-            "LYNCHPIN_TRANSCRIPTS_DIR",
-            data_root / "activity/audio/transcripts",
-        ))
+        transcripts_dir = Path(os.environ.get("LYNCHPIN_TRANSCRIPTS_DIR") or capture_default("transcripts"))
         transcribed_ledger_jsonl = Path(os.environ.get(
             "LYNCHPIN_TRANSCRIBED_LEDGER_JSONL",
             transcripts_dir / "transcribed.jsonl",
@@ -373,6 +406,9 @@ class LynchpinConfig:
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         return cls(
+            filesystem_layout=filesystem_layout,
+            chisel_cache_root=Path(os.environ["LYNCHPIN_CHISEL_CACHE_ROOT"]) if os.environ.get("LYNCHPIN_CHISEL_CACHE_ROOT") else None,
+            chisel_scratch_root=Path(os.environ["LYNCHPIN_CHISEL_SCRATCH_ROOT"]) if os.environ.get("LYNCHPIN_CHISEL_SCRATCH_ROOT") else None,
             repo_root=repo_root, local_root=local_root, sinnix_root=sinnix_root, data_root=data_root,
             accounts_root=accounts_root,
             health_root=health_root, derived_root=derived_root, libraries_root=libraries_root,

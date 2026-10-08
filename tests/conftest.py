@@ -7,6 +7,7 @@ long-running integrations and retain the caller's environment.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -18,6 +19,7 @@ def isolate_operator_data(
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
     tmp_path: Path,
+    tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[None]:
     if request.node.get_closest_marker("slow") is not None:
         yield
@@ -26,7 +28,17 @@ def isolate_operator_data(
     root = tmp_path / "operator-data"
     data = root / "data"
     local = root / "local"
+    root.mkdir(parents=True, exist_ok=True)
+    registry = tmp_path_factory.mktemp("capture-registry") / "filesystem-layout.json"
+    # Synthetic deployment placement, independent of the operator's registry.
+    lanes = ("asciinema", "keylog", "screenshot", "transcripts", "notifications",
+             "mpris", "audio-index", "audio-topology", "screen-frames", "replay", "a11y")
+    registry.write_text(json.dumps({"schema_version": 1, "activity_lanes": {
+        lane: "synthetic/" + lane for lane in lanes}}))
     isolated_paths = {
+        "LYNCHPIN_FILESYSTEM_LAYOUT": registry,
+        "LYNCHPIN_CHISEL_CACHE_ROOT": root / "chisel-cache",
+        "LYNCHPIN_CHISEL_SCRATCH_ROOT": root / "chisel-scratch",
         "LYNCHPIN_DATA_ROOT": data,
         "LYNCHPIN_CAPTURES_ROOT": data / "captures",
         "LYNCHPIN_ACCOUNTS_ROOT": data / "accounts",

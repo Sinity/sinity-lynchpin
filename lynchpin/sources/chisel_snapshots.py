@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..core.config import get_config
 from .chisel_inventory import CapturedInventory, _git_state, capture_inventory
 
 SCHEMA_VERSION = 1
@@ -67,7 +68,9 @@ def capture_commit(plan: Any, destination: Path, identity: dict[str, Any], **kwa
     request = b"".join(oid + b"\n" for _, oid, _ in entries)
     result = subprocess.run(["git", "cat-file", "--batch"], input=request,
                             cwd=plan.path, check=True, capture_output=True, env={**os.environ, "GIT_NO_LAZY_FETCH": "1"}).stdout
-    with tempfile.TemporaryDirectory(prefix=".git-source-", dir=destination.parent) as temporary:
+    scratch = get_config().chisel_scratch()
+    scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".git-source-", dir=scratch) as temporary:
         root = Path(temporary)
         offset = 0
         for mode, oid, relative in entries:
@@ -125,7 +128,9 @@ def capture_catalogue(plan: Any, destination: Path, options: Any, **kwargs: Any)
         activation = activation_snapshot(days=options.context_days)
         (destination / "verification").mkdir(parents=True, exist_ok=True)
         (destination / "verification/activation.json").write_text(json.dumps(activation, default=str, indent=2) + "\n")
-    with tempfile.TemporaryDirectory(prefix=".snapshots-", dir=destination.parent) as temporary:
+    scratch = get_config().chisel_scratch()
+    scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".snapshots-", dir=scratch) as temporary:
         temp = Path(temporary)
         worktree = capture_inventory(plan, temp / "worktree", **kwargs)
         if options.target == "worktree":

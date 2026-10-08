@@ -89,10 +89,11 @@ class CaptureInventoryItem:
     kind: CaptureKind
     note: str
     exists: bool
-    file_count: int
-    total_bytes: int
+    file_count: int | None
+    total_bytes: int | None
     earliest: datetime | None
     latest: datetime | None
+    unavailable_reason: str | None = None
 
 
 def _scan(path: Path) -> tuple[int, int, datetime | None, datetime | None]:
@@ -100,12 +101,15 @@ def _scan(path: Path) -> tuple[int, int, datetime | None, datetime | None]:
     total_bytes = 0
     earliest: float | None = None
     latest: float | None = None
-    for entry_root, _dirnames, filenames in os.walk(path):
+    def fail(error: OSError) -> None:
+        raise error
+
+    for entry_root, _dirnames, filenames in os.walk(path, onerror=fail):
         for name in filenames:
             try:
                 stat = os.stat(os.path.join(entry_root, name))
             except OSError:
-                continue
+                raise
             file_count += 1
             total_bytes += stat.st_size
             mtime = stat.st_mtime
@@ -120,21 +124,31 @@ def capture_inventory(captures_root: Path | None = None) -> tuple[CaptureInvento
     """Return one shallow filesystem itemization per unmodeled capture root.
 
     Never raises for a missing root: a root that has not been provisioned yet
-    reports ``exists=False`` with zeroed counts, same as any other source's
-    availability check.
+    reports ``exists=False`` with unknown counts and an availability reason.
     """
     # Every registry entry lived under one shared captures_root before the
     # 2026-08-17 subject recut. All but comms_teams moved to activity/;
     # comms_teams is a bounded platform export under accounts/ (comms/ retired 2026-08-24).
     # An explicit override still applies uniformly to every entry (tests rely
     # on this to point the whole registry at one fake tree).
-    activity_base = captures_root if captures_root is not None else get_config().data_root / "activity"
-    comms_base = captures_root if captures_root is not None else get_config().data_root / "accounts"
+    cfg = get_config()
     items: list[CaptureInventoryItem] = []
     for item_id, rel_path, kind, note in _REGISTRY:
-        base = comms_base if item_id == "comms_teams" else activity_base
-        path = base / rel_path
-        if not path.exists():
+        if captures_root is not None:
+            path = captures_root / rel_path
+        elif item_id == "comms_teams":
+            path = cfg.teams_root
+        elif item_id == "audio":
+            path = cfg.audio_root
+        elif item_id == "screenshot":
+            path = cfg.screenshot_root
+        else:
+            path = cfg.capture_path(rel_path)
+        try:
+            if not path.is_dir():
+                raise OSError("configured source is missing or is not a directory")
+            file_count, total_bytes, earliest, latest = _scan(path)
+        except OSError as exc:
             items.append(
                 CaptureInventoryItem(
                     id=item_id,
@@ -142,14 +156,14 @@ def capture_inventory(captures_root: Path | None = None) -> tuple[CaptureInvento
                     kind=kind,
                     note=note,
                     exists=False,
-                    file_count=0,
-                    total_bytes=0,
+                    file_count=None,
+                    total_bytes=None,
+                    unavailable_reason=str(exc),
                     earliest=None,
                     latest=None,
                 )
             )
             continue
-        file_count, total_bytes, earliest, latest = _scan(path)
         items.append(
             CaptureInventoryItem(
                 id=item_id,

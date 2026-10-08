@@ -40,6 +40,12 @@ The exact filesystem roots come from `LynchpinConfig`. Tests use temporary
 roots and neutral fixtures; the public source tree does not depend on one
 operator's data layout.
 
+Chisel uses `LYNCHPIN_CHISEL_CACHE_ROOT` for reusable caches and
+`LYNCHPIN_CHISEL_SCRATCH_ROOT` for temporary history stores. Defaults are the
+configured cache directory's `chisel` child and a task scratch directory.
+Choosing an output directory does not relocate either store. Publication
+candidates remain beside their destination for atomic same-filesystem renames.
+
 Outlook activity uses the dated inbox/sent CSV exports. They provide the
 message dates, directions, and correspondent fields needed by daily activity
 and canonical communications products. Direct PST extraction is unsupported:
@@ -222,3 +228,6 @@ This source is read-only. Materialization has no route to schedule, cancel, wait
 `lynchpin_personal(action="phone", start=..., end=..., limit=...)` reads phone event captures. Health views `phone_health`, `xiaomi`, and `coverage` expose Health Connect records, the latest Xiaomi revision per measurement day, and the materialized coverage artifact respectively. These reads do not trigger materialization. Phone date filters select capture dates, including backfills; Xiaomi filters select measurement days. Coverage is a whole-history artifact with an explicit modification timestamp and does not accept date filters.
 
 For bounded recovery, `agentctl job start lynchpin promote_incremental -- --only activitywatch_derived activity_content health_coverage personal_daily_signals temporal_signals` selects those products and their dependencies. The planner retains each product's incremental date window; unrelated writers are excluded and existing substrate history is retained through candidate publication. Add `--plan-json` to inspect the selected scope before execution.
+
+
+Managed capture placement is resolved from Sinnix's exported filesystem-layout registry. `LYNCHPIN_FILESYSTEM_LAYOUT` selects a registry for standalone deployments; its `activity_lanes` map contains relative paths beneath the configured data root's `activity` home. Explicit source roots retain precedence. Event readers raise `SourceUnavailableError` for missing or inaccessible configured directories; an accessible empty directory yields no events. Shallow inventory uses unknown counts and an availability reason for unavailable sources.

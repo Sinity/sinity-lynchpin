@@ -12,7 +12,7 @@ command = ["nix", "develop", "--command"]
 # source tree). Jobs enter a cached `nix print-dev-env` realization keyed on
 # them instead of evaluating the devShell twice per new tree state.
 cache_inputs = ["flake.nix", "flake.lock"]
-inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LYNCHPIN_REPO_ROOT", "POLYLOGUE_ROOT", "SINEX_ROOT", "RAWLOG_FILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
+inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LYNCHPIN_REPO_ROOT", "POLYLOGUE_ROOT", "SINEX_ROOT", "RAWLOG_FILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "LYNCHPIN_FILESYSTEM_LAYOUT", "LYNCHPIN_CHISEL_CACHE_ROOT", "LYNCHPIN_CHISEL_SCRATCH_ROOT"]
 unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
 
 [workspace]
@@ -224,6 +224,20 @@ timeout_seconds = 1800
 [operations.verify_snapshot_locations]
 description = "Verify lookup relocation preserves captured fields and historical partitions"
 exec = ["pytest", "-q", "tests/substrate/test_snapshot_locations.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
+[operations.verify_capture_contracts]
+description = "Verify configured capture placement and unavailable versus empty inputs"
+exec = ["pytest", "-q", "tests/core/test_config_paths.py", "tests/sources/test_sinnix_capture_lanes.py", "tests/sources/test_capture_inventory.py", "tests/sources/test_source_observations.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
+[operations.verify_chisel_storage]
+description = "Verify Chisel snapshot, history and publication storage contracts"
+exec = ["pytest", "-q", "tests/analysis/test_chisel_history.py", "tests/analysis/test_chisel_snapshots.py", "tests/analysis/test_chisel_publication.py", "tests/core/test_config_paths.py"]
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"
