@@ -486,7 +486,7 @@ def test_current_state_evidence_pack_filters_inventory_for_selected_projects(mon
     monkeypatch.setattr("lynchpin.graph.current_state.archive_readiness", lambda: readiness)
 
     def fake_build_evidence_graph(*, start, end, projects=None, include_github_frontier=False):
-        seen["project"] = projects
+        seen["projects"] = projects
         return EvidenceGraph(start=start, end=end, generated_at=datetime(2026, 5, 1), mode="network" if include_github_frontier else "materialized", nodes=(), edges=(), caveats=())
 
     def fake_project_github_frontier(inventory, **kwargs):
@@ -514,7 +514,7 @@ def test_current_state_evidence_pack_filters_inventory_for_selected_projects(mon
         include_github_frontier=True,
     )
 
-    assert seen["project"] == ("polylogue",)
+    assert seen["projects"] == ("polylogue",)
     assert [item.name for item in pack.inventory] == ["polylogue"]
     assert seen["frontier_inventory"] == ("polylogue",)
     assert seen["frontier_window"] == {"start": start.date(), "end": end.date() + timedelta(days=1)}

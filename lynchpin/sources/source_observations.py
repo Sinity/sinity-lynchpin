@@ -171,7 +171,7 @@ def _configured_path(source: str) -> Path | None:
         "irc": cfg.irc_root,
         "irc_raw": cfg.irc_root / "_raw",
         "keylog": cfg.keylog_root,
-        "notifications": cfg.data_root / "activity/desktop/notification",
+        "notifications": cfg.data_root / "activity/desktop/notifications",
         "mpris": cfg.data_root / "activity/desktop/media",
         "audio_index": cfg.data_root / "activity/audio/index",
         "audio_topology": cfg.data_root / "activity/audio/topology",

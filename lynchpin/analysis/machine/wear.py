@@ -87,7 +87,7 @@ def machine_wear_status(
     return {
         "state": "ready",
         "day": target_day.isoformat(),
-        "device": devices,
+        "devices": devices,
         "over_budget": over_budget,
     }
 

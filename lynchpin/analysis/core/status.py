@@ -228,5 +228,5 @@ def _inventory_summary(inventory: tuple[AnalysisArtifact, ...], *, root: Path) -
         "root": str(root),
         "available_count": len(available),
         "partial_count": len(partial),
-        "project": sorted({project for item in available for project in item.projects}),
+        "projects": sorted({project for item in available for project in item.projects}),
     }

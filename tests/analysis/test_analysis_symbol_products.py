@@ -12,8 +12,8 @@ def _write_json(path: Path, payload: object) -> Path:
 
 
 def test_symbol_diffs_requires_materialized_commit_facts(tmp_path: Path) -> None:
-    symbols = _write_json(tmp_path / "symbols.json", {"project": []})
-    snapshot = _write_json(tmp_path / "snapshot.json", {"project": []})
+    symbols = _write_json(tmp_path / "symbols.json", {"projects": []})
+    snapshot = _write_json(tmp_path / "snapshot.json", {"projects": []})
 
     with pytest.raises(FileNotFoundError, match="active commit facts is missing"):
         build_active_symbol_diffs(
@@ -25,8 +25,8 @@ def test_symbol_diffs_requires_materialized_commit_facts(tmp_path: Path) -> None
 
 def test_symbol_diffs_allows_valid_empty_symbol_index(tmp_path: Path) -> None:
     commits = _write_json(tmp_path / "commits.json", {"commits": []})
-    symbols = _write_json(tmp_path / "symbols.json", {"project": []})
-    snapshot = _write_json(tmp_path / "snapshot.json", {"project": []})
+    symbols = _write_json(tmp_path / "symbols.json", {"projects": []})
+    snapshot = _write_json(tmp_path / "snapshot.json", {"projects": []})
 
     payload = build_active_symbol_diffs(
         commit_facts_file=commits,

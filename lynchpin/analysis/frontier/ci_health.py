@@ -119,7 +119,7 @@ def build_active_ci_health(
                 if include_runs else "disabled"
             ),
         },
-        "project": project_rows,
+        "projects": project_rows,
         "caveats": pack_caveats,
     }
 
@@ -331,7 +331,7 @@ def _string_list(value: Any) -> list[str]:
 
 def _project_paths(snapshot: dict[str, Any], selected: set[str]) -> dict[str, str]:
     out: dict[str, str] = {}
-    rows = snapshot.get("project")
+    rows = snapshot.get("projects")
     if not isinstance(rows, list):
         return out
     for row in rows:

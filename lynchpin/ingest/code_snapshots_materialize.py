@@ -38,7 +38,7 @@ def code_snapshots_currentness() -> dict[str, Any]:
                 " WHERE refresh_id = 'latest' GROUP BY project"
             ).fetchall()
     except Exception as exc:
-        return {"state": "missing", "reason": f"code_snapshot_run unreadable: {exc}", "project": []}
+        return {"state": "missing", "reason": f"code_snapshot_run unreadable: {exc}", "projects": []}
     promoted = {project: commit for project, commit in rows}
 
     projects: list[dict[str, Any]] = []
@@ -58,7 +58,7 @@ def code_snapshots_currentness() -> dict[str, Any]:
         "state": "stale" if not_current else "current",
         "reason": "; ".join(f"{p['project']} {p['state']}: {p['reason']}" for p in not_current)
         or "selected views match local refs",
-        "project": projects,
+        "projects": projects,
     }
 
 
@@ -105,11 +105,11 @@ def materialize_code_snapshots() -> dict[str, Any]:
 
     all_failed = all(
         r.get("status") == "failed"
-        for r in bundle_result.get("project", {}).values()
+        for r in bundle_result.get("projects", {}).values()
     )
-    if all_failed and bundle_result.get("project"):
+    if all_failed and bundle_result.get("projects"):
         first_err = next(
-            (r.get("error") or r.get("errors") for r in bundle_result["project"].values()),
+            (r.get("error") or r.get("errors") for r in bundle_result["projects"].values()),
             "all projects failed",
         )
         raise MaterializationError("code_snapshots", reason=str(first_err))
@@ -166,7 +166,7 @@ def _results_to_rows(
     run_rows: list[dict[str, Any]] = []
     slice_rows: list[dict[str, Any]] = []
 
-    for project_name, r in bundle_result.get("project", {}).items():
+    for project_name, r in bundle_result.get("projects", {}).items():
         if r.get("published") is False:
             continue
         status = r.get("status", "failed")

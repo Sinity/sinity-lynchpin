@@ -25,7 +25,7 @@ from lynchpin.analysis.interpretation.semantic_static_findings import (
 
 def test_project_map_filters_by_selection() -> None:
     payload = {
-        "project": [
+        "projects": [
             {"project": "demo", "path": "/tmp/demo"},
             {"project": "other", "path": "/tmp/other"},
         ]
@@ -119,5 +119,5 @@ def test_payload_carries_methodology_and_inputs(monkeypatch, tmp_path: Path) -> 
     payload = build_active_semantic_static_findings(repo_root=tmp_path)
     assert "methodology" in payload
     assert "rules_dir" in payload["inputs"]
-    assert payload["project"] == []
+    assert payload["projects"] == []
     json.dumps(payload)  # round-trips

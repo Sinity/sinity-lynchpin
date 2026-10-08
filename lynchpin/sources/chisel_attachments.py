@@ -24,7 +24,7 @@ def _archive(root: Path, target: Path, paths: list[Path], companions: list[str])
                               "bytes": p.stat().st_size, "sha256": digest(p)} for p in paths]}
     portfolio = root / "portfolio.json"
     included_projects = {p.relative_to(root).parts[0] for p in paths if p.relative_to(root).parts}
-    manifest["identities"] = [row for row in json.loads(portfolio.read_text()).get("project", [])
+    manifest["identities"] = [row for row in json.loads(portfolio.read_text()).get("projects", [])
                               if row.get("project") in included_projects] if portfolio.exists() else []
     target.unlink(missing_ok=True)
     with tarfile.open(target, "w:gz", compresslevel=3) as archive:
@@ -166,7 +166,7 @@ def build_attachments(root: Path, projects: list[str], *, limit: int, layout: st
             break
     else:
         raise ValueError("attachment partition did not converge")
-    manifest = {"schema_version": 1, "limit_bytes": limit, "project": projects,
+    manifest = {"schema_version": 1, "limit_bytes": limit, "projects": projects,
                 "attachments": attachments, "reconstruction": reconstruction}
     (root / "attachments.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (root / "reconstruct.py").write_text(RECONSTRUCT)

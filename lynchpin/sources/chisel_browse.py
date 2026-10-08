@@ -34,7 +34,7 @@ def connect(package: Path) -> sqlite3.Connection:
 
 def evidence_rows(package: Path):
     roots = [package / "inventory.jsonl"]
-    for name in ("history", "structure", "trackers", "verification", "metrics", "report", "context"):
+    for name in ("history", "structure", "trackers", "verification", "metrics", "reports", "context"):
         area = package / name
         if area.is_dir():
             roots.extend(sorted(area.rglob("*.jsonl")))

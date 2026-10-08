@@ -170,7 +170,7 @@ def build_active_github_frontier(
             "active_project_snapshot": str(snapshot_file or "active_project_snapshot.json"),
             "active_work_packages": str(work_packages_file or "active_work_packages.json"),
         },
-        "project": project_rows,
+        "projects": project_rows,
         "summary": _frontier_summary(project_rows),
     }
 
@@ -202,7 +202,7 @@ def _active_github_repos(
     selected: set[str],
 ) -> dict[str, str]:
     repos: dict[str, str] = {}
-    projects = snapshot_payload.get("project") if snapshot_payload else None
+    projects = snapshot_payload.get("projects") if snapshot_payload else None
     if not isinstance(projects, list):
         return repos
     for row in projects:
@@ -415,7 +415,7 @@ def _parse_iso_date(value: str | None) -> date | None:
 def _package_pr_map(work_payload: dict[str, Any] | None) -> dict[str, dict[int, list[str]]]:
     """Build project -> PR_number -> [package_ids] map."""
     result: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
-    projects = work_payload.get("project") if work_payload else None
+    projects = work_payload.get("projects") if work_payload else None
     if not isinstance(projects, list):
         return dict(result)
     for row in projects:

@@ -239,7 +239,7 @@ def test_velocity_narrative_separates_calendar_pace_from_active_day_intensity(
     result = velocity_tools.velocity_narrative(refresh_id="jan")
 
     assert result["window"] == {"start": "2026-01-01", "end": "2026-01-29"}
-    (project,) = result["project"]
+    (project,) = result["projects"]
     assert project["active_days"] == 2
     assert project["avg_per_active_day"] == 50.5
     assert project["avg_per_calendar_day"] == round(101 / 29, 2)

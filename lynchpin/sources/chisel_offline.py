@@ -19,7 +19,7 @@ from .chisel_compact import open_text
 def _jsonl_files(package: Path) -> list[Path]:
     """Return canonical evidence streams, excluding arbitrary source JSONL."""
     candidates = [package / "inventory.jsonl"]
-    for area in ("structure", "history", "trackers", "verification", "metrics", "report", "context"):
+    for area in ("structure", "history", "trackers", "verification", "metrics", "reports", "context"):
         root = package / area
         if root.exists():
             candidates.extend(root.rglob("*.jsonl"))
@@ -296,7 +296,7 @@ def build_offline_package(
         "trackers",
         "verification",
         "metrics",
-        "report",
+        "reports",
         "context",
     )
     availability: dict[str, Any] = {}

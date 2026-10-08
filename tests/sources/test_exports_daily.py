@@ -60,7 +60,7 @@ def test_messenger_default_reader_materializes(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(exports_messenger, "get_config", lambda: SimpleNamespace(data_root=tmp_path, accounts_root=tmp_path / "account"))
+    monkeypatch.setattr(exports_messenger, "get_config", lambda: SimpleNamespace(data_root=tmp_path, accounts_root=tmp_path / "accounts"))
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
         lambda name, *, window=None: calls.append((name, window)),

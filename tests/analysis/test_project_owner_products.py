@@ -164,7 +164,7 @@ def setup_context(monkeypatch, *, huge=False):
     monkeypatch.setattr(context, "_graph", load)
     task = {
         **snapshot(),
-        "source_ref": "beads://project/demo/owner/read",
+        "source_ref": "beads://projects/demo/owner/read",
         "revision": "task-one",
     }
     if huge:
@@ -280,7 +280,7 @@ def test_oversized_component_keeps_exact_owner_payload_and_coverage(monkeypatch)
     task = next(row for row in result["components"] if row["name"] == "tasks")
     assert task["presentation_budget_exceeded"]
     assert task["data"]["nodes"][0]["description"] == "large fixture " * 10000
-    assert task["source_ref"] == "beads://project/demo/owner/read"
+    assert task["source_ref"] == "beads://projects/demo/owner/read"
     assert task["source_revision"] == "task-one"
     assert task["coverage"]["complete"]
     assert result["presentation_budget_exceeded"]
@@ -354,7 +354,7 @@ def test_graph_context_excludes_other_project_evidence():
         graph, project="sinnix", start=graph.start, end=graph.end
     )
     assert result["source_refs"] == ["commit:one"]
-    assert result["project"][0]["rows"][0]["commit_count"] == 1
+    assert result["projects"][0]["rows"][0]["commit_count"] == 1
 
 
 @pytest.mark.parametrize(

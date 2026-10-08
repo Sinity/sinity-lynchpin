@@ -14,7 +14,7 @@ def _active_code_hotspot_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = payload.get("project")
+    projects = payload.get("projects")
     if not isinstance(projects, list):
         return ()
     claims: list[AnalysisClaim] = []
@@ -92,7 +92,7 @@ def _active_quality_guardrail_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = payload.get("project")
+    projects = payload.get("projects")
     if not isinstance(projects, list):
         return ()
     claims: list[AnalysisClaim] = []
@@ -162,7 +162,7 @@ def _active_code_inventory_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = payload.get("project")
+    projects = payload.get("projects")
     if not isinstance(projects, list):
         return ()
     claims: list[AnalysisClaim] = []
@@ -244,7 +244,7 @@ def _active_python_complexity_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = payload.get("project")
+    projects = payload.get("projects")
     if not isinstance(projects, list):
         return ()
     claims: list[AnalysisClaim] = []
@@ -318,7 +318,7 @@ def _active_python_import_graph_claims(
     *,
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
-    projects = payload.get("project")
+    projects = payload.get("projects")
     if not isinstance(projects, list):
         return ()
     claims: list[AnalysisClaim] = []
@@ -390,7 +390,7 @@ def _active_rust_graph_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = payload.get("project")
+    projects = payload.get("projects")
     if not isinstance(projects, list):
         return ()
     claims: list[AnalysisClaim] = []

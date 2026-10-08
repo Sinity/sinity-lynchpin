@@ -14,7 +14,7 @@ def _active_project_snapshot_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = payload.get("project")
+    projects = payload.get("projects")
     if not isinstance(projects, list):
         return ()
     claims: list[AnalysisClaim] = []
@@ -101,7 +101,7 @@ def _active_work_package_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = payload.get("project")
+    projects = payload.get("projects")
     if not isinstance(projects, list):
         return ()
     packages_by_id = _work_packages_by_id(projects)
@@ -259,7 +259,7 @@ def _project_velocity_window_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = payload.get("project")
+    projects = payload.get("projects")
     if not isinstance(projects, list):
         return ()
     claims: list[AnalysisClaim] = []
@@ -323,7 +323,7 @@ def _active_github_frontier_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = payload.get("project")
+    projects = payload.get("projects")
     if not isinstance(projects, list):
         return ()
     claims: list[AnalysisClaim] = []

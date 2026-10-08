@@ -387,12 +387,12 @@ def test_semantic_view_rejects_the_unbacked_mode_dimension() -> None:
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"action": "report", "view": "anomaly", "project": "sinex"},
+        {"action": "reports", "view": "anomaly", "project": "sinex"},
         {"action": "operator", "view": "readiness", "start": "2026-01-01", "end": "2026-01-02", "project": "sinex"},
         {"action": "activity", "view": "coverage", "limit": 5},
         {"action": "activity", "view": "focus", "limit": 5},
         {"action": "communications", "view": "daily", "limit": 5},
-        {"action": "report", "view": "ai_efficiency", "project": " "},
+        {"action": "reports", "view": "ai_efficiency", "project": " "},
     ],
 )
 def test_personal_router_rejects_options_no_reader_consumes(kwargs: dict[str, object]) -> None:

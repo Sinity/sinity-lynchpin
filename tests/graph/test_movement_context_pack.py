@@ -244,7 +244,7 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     (analysis_root / "machine_context_windows.json").write_text(
-        '{"windows":[{"started_at":"2026-05-01T12:00:00+00:00","ended_at":"2026-05-01T12:02:00+00:00","project":["sinity-lynchpin"],"episode_count":1}]}',
+        '{"windows":[{"started_at":"2026-05-01T12:00:00+00:00","ended_at":"2026-05-01T12:02:00+00:00","projects":["sinity-lynchpin"],"episode_count":1}]}',
         encoding="utf-8",
     )
     (analysis_root / "machine_below_attribution.json").write_text(
@@ -674,7 +674,7 @@ def test_materialize_evidence_graph_skips_context_pack_rendering(monkeypatch):
     assert materialized == {
         "graph": graph,
         "refresh_id": "current-state:2026-05-01:2026-05-02:all",
-        "project": None,
+        "projects": None,
         "input_fingerprint": "input-revision",
     }
 

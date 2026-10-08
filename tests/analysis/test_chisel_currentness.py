@@ -126,7 +126,7 @@ def test_selected_projects_report_promotion_and_coverage(monkeypatch, tmp_path):
     monkeypatch.setattr("lynchpin.sources.code_snapshots.code_snapshots_path", lambda name: root / name)
 
     report = code_snapshots_currentness()
-    states = {row["project"]: row["state"] for row in report["project"]}
+    states = {row["project"]: row["state"] for row in report["projects"]}
     assert states == {"current": "current", "lagging": "stale",
                       "unpromoted": "never_captured", "never": "never_captured",
                       "gone": "unavailable"}

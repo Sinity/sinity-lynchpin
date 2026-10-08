@@ -84,7 +84,7 @@ def build_active_symbol_index(
                         "Rust: declared with 'pub' visibility modifier",
         },
         "languages_indexed": sorted(parsers),
-        "project": project_rows,
+        "projects": project_rows,
         "caveats": caveats,
     }
 

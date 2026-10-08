@@ -48,7 +48,7 @@ _COMPOSITION_COLUMNS = (
     "seconds_by_lane",
     "seconds_by_kind",
     "cross_source_seconds",
-    "project",
+    "projects",
     "tags",
 )
 
@@ -215,7 +215,7 @@ def load_polylogue_session_compositions(
             "seconds_by_lane": json.loads(row[12] or "{}"),
             "seconds_by_kind": json.loads(row[13] or "{}"),
             "cross_source_seconds": json.loads(row[14] or "{}"),
-            "project": list(row[15] or []),
+            "projects": list(row[15] or []),
             "tags": list(row[16] or []),
             "refresh_id": row[17],
         }

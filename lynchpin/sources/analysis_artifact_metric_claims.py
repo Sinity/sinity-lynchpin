@@ -12,7 +12,7 @@ def _cross_project_metrics_claims(
     *,
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
-    projects = payload.get("project")
+    projects = payload.get("projects")
     if not isinstance(projects, dict):
         return ()
     claims: list[AnalysisClaim] = []

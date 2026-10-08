@@ -71,7 +71,7 @@ def test_render_current_state_can_render_context_pack(monkeypatch):
     )
 
     assert rendered == "context"
-    assert calls["project"] == ["lynchpin"]
+    assert calls["projects"] == ["lynchpin"]
     assert calls["weak_tags"] is True
     assert calls["persist_weak_tags"] is True
 

@@ -12,7 +12,7 @@ from lynchpin.sources.campaign import (
 )
 
 
-REF = "sinnix://project/demo/beads/demo-1"
+REF = "sinnix://projects/demo/beads/demo-1"
 SHA = "a" * 40
 
 

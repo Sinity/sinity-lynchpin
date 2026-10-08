@@ -160,7 +160,7 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
             ActionSpec("notes", "Search and read local notes with source provenance.", "read", parameters=("view", "query", "path", "limit", "offset"), views=("search", "read"), response_kind="notes"),
             ActionSpec("media", "Spotify/media daily summaries.", "read", parameters=("start", "end"), response_kind="media_daily"),
             ActionSpec("operator", "Operator rhythm and retrospective readiness.", "converge", parameters=("view", "start", "end", "project"), views=("rhythm", "readiness"), response_kind="operator"),
-            ActionSpec("report", "Generated cross-source personal analysis reports.", "read", parameters=("view", "project"), views=("anomaly", "life_phase", "productivity", "substance", "burnout", "ai_efficiency"), response_kind="analysis_report"),
+            ActionSpec("reports", "Generated cross-source personal analysis reports.", "read", parameters=("view", "project"), views=("anomaly", "life_phase", "productivity", "substance", "burnout", "ai_efficiency"), response_kind="analysis_report"),
         ),
     ),
     PublicToolSpec(

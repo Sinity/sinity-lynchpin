@@ -126,7 +126,7 @@ def build_active_ai_assist_density(
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "window": {"start": start.isoformat(), "end": end.isoformat()},
-        "project": project_summary,
+        "projects": project_summary,
         "summary": {
             "total_commits": sum(overall.values()),
             "high": overall.get("high", 0),

@@ -147,7 +147,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "seconds_by_lane": row.seconds_by_lane,
         "seconds_by_kind": row.seconds_by_kind,
         "cross_source_seconds": row.cross_source_seconds,
-        "project": list(row.projects),
+        "projects": list(row.projects),
         "tags": list(row.tags),
     }
 

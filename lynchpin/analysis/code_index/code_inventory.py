@@ -75,7 +75,7 @@ def build_active_code_inventory(
 ) -> dict[str, Any]:
     """Produce per-project tokei language breakdown from active_project_snapshot."""
     snapshot = load_json_object(snapshot_file, label="active project snapshot")
-    snapshot_projects = snapshot.get("project") or []
+    snapshot_projects = snapshot.get("projects") or []
 
     version = _tokei_version()
     tool_available = version is not None
@@ -122,7 +122,7 @@ def build_active_code_inventory(
             "source": "active_project_snapshot project paths",
             "scope": "all files in project root not excluded by .gitignore",
         },
-        "project": rows,
+        "projects": rows,
     }
 
 

@@ -76,31 +76,31 @@ def test_artifact_inventory_extracts_known_json_briefs(tmp_path):
         encoding="utf-8",
     )
     current_state = tmp_path / "current_state_context_pack.json"
-    current_state.write_text('{"mode":"materialized","project":[{"project":"lynchpin"}],"claims":[{},{}]}', encoding="utf-8")
+    current_state.write_text('{"mode":"materialized","projects":[{"project":"lynchpin"}],"claims":[{},{}]}', encoding="utf-8")
     active_snapshot = tmp_path / "active_project_snapshot.json"
     active_snapshot.write_text(
-        '{"window":{"start":"2026-05-01","end":"2026-05-05"},"project":[{"project":"sinex"},{"project":"polylogue"}]}',
+        '{"window":{"start":"2026-05-01","end":"2026-05-05"},"projects":[{"project":"sinex"},{"project":"polylogue"}]}',
         encoding="utf-8",
     )
     active_commits = tmp_path / "active_commit_facts.json"
     active_commits.write_text(
-        '{"summary":{"commit_count":7,"available_project_count":2},"project":[{"project":"sinex"},{"project":"polylogue"}]}',
+        '{"summary":{"commit_count":7,"available_project_count":2},"projects":[{"project":"sinex"},{"project":"polylogue"}]}',
         encoding="utf-8",
     )
     active_files = tmp_path / "active_file_change_facts.json"
     active_files.write_text(
-        '{"summary":{"file_change_count":40,"classified_file_change_count":32},"project":[{"project":"sinex"}]}',
+        '{"summary":{"file_change_count":40,"classified_file_change_count":32},"projects":[{"project":"sinex"}]}',
         encoding="utf-8",
     )
     active_work = tmp_path / "active_work_packages.json"
     active_work.write_text(
-        '{"summary":{"package_count":6,"available_project_count":2},"project":[{"project":"sinex"},{"project":"polylogue"}]}',
+        '{"summary":{"package_count":6,"available_project_count":2},"projects":[{"project":"sinex"},{"project":"polylogue"}]}',
         encoding="utf-8",
     )
     velocity = tmp_path / "project_velocity_windows.json"
     velocity.write_text(
         '{"summary":{"project_count":2,"strong_support_projects":["sinex"],"moderate_support_projects":["polylogue"]},'
-        '"project":[{"project":"sinex"},{"project":"polylogue"}]}',
+        '"projects":[{"project":"sinex"},{"project":"polylogue"}]}',
         encoding="utf-8",
     )
     code_history = tmp_path / "code_history_claims.json"
@@ -149,7 +149,7 @@ def test_artifact_inventory_extracts_known_json_briefs(tmp_path):
     python_dep.write_text(
         """
         {
-          "project":[
+          "projects":[
             {
               "project":"sinity-lynchpin",
               "audit":{"advisories":[{"observed_import":true},{"observed_import":false}]}
@@ -364,7 +364,7 @@ def test_analysis_claims_extract_active_project_snapshots(tmp_path):
         {
           "generated_at_utc":"2026-05-06T12:00:00+00:00",
           "window":{"start":"2026-05-01","end":"2026-05-05"},
-          "project":[
+          "projects":[
             {
               "project":"sinex",
               "default_branch":"master",
@@ -415,7 +415,7 @@ def test_analysis_claims_extract_active_work_packages(tmp_path):
               }
             ]
           },
-          "project":[
+          "projects":[
             {
               "project":"sinex",
               "package_count":1,
@@ -462,7 +462,7 @@ def test_analysis_claims_extract_python_dependency_observed_imports(tmp_path):
         {
           "generated_at_utc":"2026-05-06T12:00:00+00:00",
           "window":{"start":"2026-05-01","end":"2026-05-05"},
-          "project":[
+          "projects":[
             {
               "project":"sinity-lynchpin",
               "manifest":"pyproject.toml",
@@ -497,7 +497,7 @@ def test_analysis_claims_extract_project_velocity_windows(tmp_path):
         {
           "generated_at_utc":"2026-05-06T12:00:00+00:00",
           "window":{"start":"2026-05-01","end":"2026-05-05"},
-          "project":[
+          "projects":[
             {
               "project":"sinex",
               "micro_effort":{"commit_count":3},
@@ -534,7 +534,7 @@ def test_analysis_claims_describe_native_python_complexity(tmp_path):
         {
           "generated_at_utc":"2026-05-06T12:00:00+00:00",
           "window":{"start":"2026-05-01","end":"2026-05-05"},
-          "project":[
+          "projects":[
             {
               "project":"sinity-lynchpin",
               "file_count":3,
@@ -569,7 +569,7 @@ def test_analysis_claims_describe_native_python_import_graph(tmp_path):
         """
         {
           "generated_at_utc":"2026-05-06T12:00:00+00:00",
-          "project":[
+          "projects":[
             {
               "project":"sinity-lynchpin",
               "module_count":4,

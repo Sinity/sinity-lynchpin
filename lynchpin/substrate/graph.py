@@ -113,7 +113,7 @@ def list_evidence_graph_builds(
             "start_date": start_date,
             "end_date": end_date,
             "mode": mode_val,
-            "project": projects,
+            "projects": projects,
             "node_count": node_count,
             "edge_count": edge_count,
             "caveats": caveats,

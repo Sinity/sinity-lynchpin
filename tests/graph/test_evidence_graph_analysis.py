@@ -136,7 +136,7 @@ def test_build_evidence_graph_surfaces_machine_artifacts_as_nodes(
               "window_id": "w1",
               "started_at": "2026-05-05T12:01:00+00:00",
               "ended_at": "2026-05-05T12:03:00+00:00",
-              "project": ["sinity-lynchpin"],
+              "projects": ["sinity-lynchpin"],
               "source": "terminal_session",
               "work_kind": "test",
               "summary": "pytest run",
@@ -440,7 +440,7 @@ def test_build_evidence_graph_surfaces_machine_artifacts_as_nodes(
               "mechanism_id": "machine-mechanism:resource_contention",
               "mechanism_family": "resource_contention",
               "current_support_ceiling": "candidate",
-              "project": ["sinity-lynchpin"],
+              "projects": ["sinity-lynchpin"],
               "candidate_ids": ["machine-candidate:c1"],
               "assessment_ids": ["assess1"]
             }
@@ -724,7 +724,7 @@ def test_build_evidence_graph_surfaces_analysis_claims(monkeypatch, tmp_path):
         size_bytes=42,
         modified_at=modified,
         generated_at=modified,
-        top_level_keys=("project",),
+        top_level_keys=("projects",),
         brief="snapshot",
         references=(),
     )
@@ -841,7 +841,7 @@ def test_build_evidence_graph_links_analysis_artifact_references(monkeypatch, tm
             size_bytes=42,
             modified_at=modified,
             generated_at=None,
-            top_level_keys=("project",),
+            top_level_keys=("projects",),
             brief="metrics",
             references=(),
         ),

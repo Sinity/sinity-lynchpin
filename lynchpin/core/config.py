@@ -137,12 +137,12 @@ class LynchpinConfig:
             "sinnix_runtime_inventory": self.sinnix_runtime_inventory_json.exists(),
             "browser_bookmarks": self.browser_bookmarks_root.exists(),
             "arbtt": self.arbtt_root.exists(),
-            "notifications": any((self.data_root / "activity/desktop/notification").glob("notifications-*.jsonl")),
+            "notifications": any((self.data_root / "activity/desktop/notifications").glob("notifications-*.jsonl")),
             "mpris": any((self.data_root / "activity/desktop/media").glob("mpris-*.jsonl")),
             "audio_index": any((self.data_root / "activity/audio/index").glob("audio-index-*.jsonl")),
             # Audio producers retain their lane identities within one medium home.
             "audio_topology": any((self.data_root / "activity/audio/topology").glob("audio-topology-*.jsonl")),
-            "screen_frames": any((self.data_root / "activity/desktop/frame").glob("screen-frames-*.jsonl")),
+            "screen_frames": any((self.data_root / "activity/desktop/frames").glob("screen-frames-*.jsonl")),
             "phone_events": self.phone_events_dir.exists() and any(self.phone_events_dir.glob("events-*.jsonl")),
             "xiaomi_cloud": any((self.data_root / "health/xiaomi-cloud").glob("xiaomi-cloud-*.jsonl")),
             "phone_ambient": self.phone_ambient_jsonl.exists(),
@@ -256,7 +256,7 @@ class LynchpinConfig:
 
         asciinema_root = Path(os.environ.get("LYNCHPIN_ASCIINEMA_ROOT", data_root / "activity/terminal/asciinema"))
         audio_root = Path(os.environ.get("LYNCHPIN_AUDIO_ROOT", data_root / "activity/audio/recording/raw"))
-        screenshot_root = Path(os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", data_root / "activity/desktop/screenshot"))
+        screenshot_root = Path(os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", data_root / "activity/desktop/screenshots"))
         keylog_root = Path(os.environ.get("LYNCHPIN_KEYLOG_ROOT", data_root / "activity/desktop/keyboard"))
 
         cache_dir = Path(os.environ.get("LYNCHPIN_CACHE_DIR", local_root / "cache/lynchpin"))
@@ -364,7 +364,7 @@ class LynchpinConfig:
         ))
         transcripts_dir = Path(os.environ.get(
             "LYNCHPIN_TRANSCRIPTS_DIR",
-            data_root / "activity/audio/transcript",
+            data_root / "activity/audio/transcripts",
         ))
         transcribed_ledger_jsonl = Path(os.environ.get(
             "LYNCHPIN_TRANSCRIBED_LEDGER_JSONL",

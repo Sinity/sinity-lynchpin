@@ -989,7 +989,7 @@ def lynchpin_personal(
         if view == "readiness" and project is not None:
             return _error("invalid_argument", "project applies only to the operator rhythm view")
         return _internal_call("lynchpin.mcp.tools.personal", "operator", view=view or "rhythm", start=start or "", end=end or "", project=project)
-    if action == "report":
+    if action == "reports":
         report = view or "anomaly"
         mapping = {
             "anomaly": ("lynchpin.mcp.tools.personal_analysis", "anomaly_crossref_report"),
@@ -1114,7 +1114,7 @@ def lynchpin_ops(
             return _ok({"dry_run": False, "receipt_id": rid, "result": result.to_json()}, **_current_meta(route="lynchpin.materialization.ensure_materialized"))
         if action == "github_refresh":
             if not execute:
-                return _ok({"dry_run": True, "project": [source] if source else None}, **_current_meta(route="lynchpin.ingest.github_context_materialize.materialize_github_context"))
+                return _ok({"dry_run": True, "projects": [source] if source else None}, **_current_meta(route="lynchpin.ingest.github_context_materialize.materialize_github_context"))
             from lynchpin.ingest.github_context_materialize import materialize_github_context
 
             report = materialize_github_context(projects={source} if source else None)

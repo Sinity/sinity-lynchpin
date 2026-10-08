@@ -82,7 +82,7 @@ def test_context_prose_and_fenced_code_never_enter_maintained_loc(
             json.dumps(
                 {
                     "Python": {
-                        "report": [
+                        "reports": [
                             {"name": str(root / "src/main.py"), "stats": {"code": 2, "comments": 0, "blanks": 0}},
                             {"name": str(root / "tests/test_main.py"), "stats": {"code": 2, "comments": 0, "blanks": 0}},
                         ]
@@ -129,7 +129,7 @@ def test_partial_tooling_measurement_keeps_subtotal_in_csv(monkeypatch, tmp_path
     inventory = Inventory(root, tuple(_file(root, name, "tooling") for name in ("verify.py", "unrecognized.py")))
 
     def partial_tokei(command, **_kwargs):
-        payload = {"Python": {"report": [{"name": str(root / "verify.py"),
+        payload = {"Python": {"reports": [{"name": str(root / "verify.py"),
             "stats": {"code": 1, "comments": 0, "blanks": 0}}]}}
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
@@ -157,7 +157,7 @@ def test_loc_ignore_rules_apply_in_order_to_captured_files(monkeypatch, tmp_path
 
     def fake_run(command, **_kwargs):
         commands.append(command)
-        payload = {"Python": {"report": [{"name": str(root / "src/keep.py"), "stats": {"code": 1, "comments": 0, "blanks": 0}}, {"name": str(root / ".tokeignore"), "stats": {"code": 2, "comments": 0, "blanks": 0}}]}}
+        payload = {"Python": {"reports": [{"name": str(root / "src/keep.py"), "stats": {"code": 1, "comments": 0, "blanks": 0}}, {"name": str(root / ".tokeignore"), "stats": {"code": 2, "comments": 0, "blanks": 0}}]}}
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
     monkeypatch.setattr("lynchpin.sources.chisel_metrics.shutil.which", lambda _: "/bin/tokei")

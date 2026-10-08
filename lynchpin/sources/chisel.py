@@ -1707,7 +1707,7 @@ def _collect_tokei_stats(plan: RepoPlan, generated_at: str) -> dict[str, Any]:
     for language, language_stats in raw.items():
         if language == "Total":
             continue
-        for report in language_stats.get("report") or []:
+        for report in language_stats.get("reports") or []:
             rel_path = _relative_tokei_report_name(plan, str(report.get("name", "")))
             bucket_name = _classify_stats_bucket(plan, rel_path)
             bucket = buckets.setdefault(

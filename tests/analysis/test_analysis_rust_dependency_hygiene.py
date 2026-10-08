@@ -20,7 +20,7 @@ from lynchpin.analysis.interpretation.rust_dependency_hygiene import (
 
 def test_project_map_filters_selection() -> None:
     payload = {
-        "project": [
+        "projects": [
             {"project": "demo", "path": "/tmp/demo"},
             {"project": "skip", "path": "/tmp/skip"},
         ]
@@ -78,7 +78,7 @@ def test_summarize_geiger_picks_per_package_unsafe_counts() -> None:
 
 def test_build_emits_caveat_when_machete_missing(monkeypatch, tmp_path: Path) -> None:
     snapshot = tmp_path / "snapshot.json"
-    snapshot.write_text(json.dumps({"project": []}), encoding="utf-8")
+    snapshot.write_text(json.dumps({"projects": []}), encoding="utf-8")
     monkeypatch.setattr(
         "lynchpin.analysis.interpretation.rust_dependency_hygiene.shutil.which",
         lambda _binary: None,
@@ -100,7 +100,7 @@ def test_build_skips_non_rust_workspaces(monkeypatch, tmp_path: Path) -> None:
     (rust / "Cargo.toml").write_text("[package]\nname='x'\nversion='0.1.0'\n")
 
     snapshot_payload = {
-        "project": [
+        "projects": [
             {"project": "py-only", "path": str(not_rust)},
             {"project": "real-rust", "path": str(rust)},
         ]
@@ -144,7 +144,7 @@ def test_machete_runs_against_synthetic_workspace(tmp_path: Path) -> None:
 
     snapshot = tmp_path / "snapshot.json"
     snapshot.write_text(
-        json.dumps({"project": [{"project": "demo", "path": str(workspace)}]}),
+        json.dumps({"projects": [{"project": "demo", "path": str(workspace)}]}),
         encoding="utf-8",
     )
 

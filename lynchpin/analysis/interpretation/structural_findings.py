@@ -85,7 +85,7 @@ def build_active_structural_findings(
             "active_file_change_facts": str(file_changes_file or "active_file_change_facts.json"),
             "active_project_snapshot": str(snapshot_file or "active_project_snapshot.json"),
         },
-        "project": project_set,
+        "projects": project_set,
         "findings": findings,
     }
 
@@ -204,7 +204,7 @@ def _changed_paths(
 
 def _project_map(snapshot: dict[str, Any] | None, selected: set[str]) -> dict[str, str]:
     result: dict[str, str] = {}
-    for row in _list(snapshot, "project"):
+    for row in _list(snapshot, "projects"):
         if not isinstance(row, dict):
             continue
         name = str(row.get("project") or "")
@@ -219,7 +219,7 @@ def _project_map(snapshot: dict[str, Any] | None, selected: set[str]) -> dict[st
 
 
 def _primary_extension(snapshot: dict[str, Any] | None, project: str) -> str:
-    for row in _list(snapshot, "project"):
+    for row in _list(snapshot, "projects"):
         if not isinstance(row, dict):
             continue
         if row.get("project") == project:

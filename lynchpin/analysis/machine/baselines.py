@@ -354,7 +354,7 @@ def _work_context_baseline(dimension: str, key: str, windows: list[dict[str, Any
 def _group_windows_by_project(windows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for window in windows:
-        projects = window.get("project") if isinstance(window.get("project"), list) else []
+        projects = window.get("projects") if isinstance(window.get("projects"), list) else []
         for project in projects or ["(unattributed)"]:
             groups.setdefault(str(project), []).append(window)
     return groups

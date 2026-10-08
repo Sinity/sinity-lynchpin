@@ -84,6 +84,6 @@ def test_plain_progress_prints_each_state_once(monkeypatch) -> None:
     monkeypatch.setattr(terminal, "_print_live", lambda text, **_: printed.append(text))
     with terminal.ProgressLine() as line:
         assert not line.live
-        for stages in ({"report"}, {"report"}, {"report"}, {"context"}):
+        for stages in ({"reports"}, {"reports"}, {"reports"}, {"context"}):
             line.update(terminal.progress_text(0, 1, {"polylogue": stages}))
     assert printed == ["Progress 0/1: polylogue (reports)", "Progress 0/1: polylogue (context)"]

@@ -26,7 +26,7 @@ def resolved_stream(path: Path) -> Path:
 def compact_jsonl(package: Path) -> dict[str, object]:
     """Replace derived JSONL with deterministic gzip streams before manifesting."""
     package = Path(package)
-    roots = [package / name for name in ("structure", "report", "history")]
+    roots = [package / name for name in ("structure", "reports", "history")]
     roots.extend(sorted((package / "snapshots").glob("*/structure")))
     records: list[dict[str, object]] = []
     for root in roots:

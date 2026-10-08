@@ -70,7 +70,7 @@ class EvidenceGraphBuildContext:
         kwargs: dict[str, Any] = {
             "start": start,
             "end": end,
-            "project": projects,
+            "projects": projects,
             "include_github_frontier": include_github_frontier,
         }
         if recorder is not None:

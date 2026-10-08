@@ -28,7 +28,7 @@ def test_python_import_graph_uses_native_ast_and_internal_module_names(tmp_path:
     snapshot.write_text(
         json.dumps(
             {
-                "project": [
+                "projects": [
                     {
                         "project": "demo",
                         "path": str(repo),
@@ -43,7 +43,7 @@ def test_python_import_graph_uses_native_ast_and_internal_module_names(tmp_path:
     payload = build_active_python_import_graph(snapshot_file=snapshot)
 
     assert payload["tool_run"] == {"native_ast": {"available": True, "parser": "ast"}}
-    project = payload["project"][0]
+    project = payload["projects"][0]
     assert project["module_count"] == 4
     assert project["import_edge_count"] == 3
     modules = {row["name"]: row for row in project["modules"]}
@@ -61,7 +61,7 @@ def test_python_dependency_hygiene_consumes_import_graph_module_names(tmp_path: 
     snapshot.write_text(
         json.dumps(
             {
-                "project": [
+                "projects": [
                     {
                         "project": "demo",
                         "path": str(repo),
@@ -100,7 +100,7 @@ def branchy(value):
     snapshot.write_text(
         json.dumps(
             {
-                "project": [
+                "projects": [
                     {
                         "project": "demo",
                         "path": str(repo),
@@ -115,7 +115,7 @@ def branchy(value):
     payload = build_active_python_complexity(snapshot_file=snapshot)
 
     assert payload["tool_run"] == {"native_ast": {"available": True, "parser": "ast"}}
-    project = payload["project"][0]
+    project = payload["projects"][0]
     assert project["file_count"] == 1
     assert project["summary"]["total_functions"] == 2
     assert project["summary"]["rank_distribution"]["A"] == 2

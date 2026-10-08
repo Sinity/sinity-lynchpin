@@ -109,7 +109,7 @@ def velocity_narrative(
             "total_commits": int,
             "total_active_days": int,
             "peak": {"project": str, "date": "YYYY-MM-DD", "commits": int},
-            "project": [{"project": str, "commits": int, "active_days": int,
+            "projects": [{"project": str, "commits": int, "active_days": int,
                           "avg_per_active_day": float,
                           "avg_per_calendar_day": float | None}],
             "summary_text": str,
@@ -207,7 +207,7 @@ def velocity_narrative(
             "project": peak[0], "date": _json_safe(peak[1]),
             "commits": peak[2],
         } if peak else None,
-        "project": projects_list,
+        "projects": projects_list,
         "summary_text": summary,
     }
 

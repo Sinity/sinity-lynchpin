@@ -157,7 +157,7 @@ def _state_window(row: dict[str, Any]) -> MachineWorkStateWindow | None:
         started_at=started_at,
         ended_at=ended_at,
         duration_seconds=duration_seconds,
-        projects=tuple(str(project) for project in row.get("project", ()) if project),
+        projects=tuple(str(project) for project in row.get("projects", ()) if project),
         source=str(row.get("source") or "unknown"),
         work_kind=str(row.get("work_kind")) if row.get("work_kind") else None,
         work_state=_work_state(row),
@@ -204,7 +204,7 @@ def _word_tokens(text: str) -> set[str]:
 
 
 def _repo_state(row: dict[str, Any]) -> str:
-    projects = tuple(project for project in row.get("project", ()) if project)
+    projects = tuple(project for project in row.get("projects", ()) if project)
     if not projects:
         return "unattributed"
     if len(projects) == 1:

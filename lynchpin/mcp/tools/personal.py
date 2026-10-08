@@ -1357,7 +1357,7 @@ def analysis_artifact_status() -> list[dict[str, Any]]:
             "name": artifact.name,
             "path": str(artifact.path),
             "kind": artifact.kind,
-            "project": list(artifact.projects),
+            "projects": list(artifact.projects),
             "size_bytes": artifact.size_bytes,
             "modified_at": artifact.modified_at.isoformat(),
             "generated_at": artifact.generated_at.isoformat() if artifact.generated_at else None,

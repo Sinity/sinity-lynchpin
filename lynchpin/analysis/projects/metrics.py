@@ -159,5 +159,5 @@ def run_cross_project(base_dir, out_file):
     print("Gathering productivity traces...")
     res = analyze_productivity(base_dir, res)
     
-    save_json(out_file, {"project": res})
+    save_json(out_file, {"projects": res})
     print(f"Results saved to {out_file}.")

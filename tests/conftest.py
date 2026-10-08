@@ -29,7 +29,7 @@ def isolate_operator_data(
     isolated_paths = {
         "LYNCHPIN_DATA_ROOT": data,
         "LYNCHPIN_CAPTURES_ROOT": data / "captures",
-        "LYNCHPIN_ACCOUNTS_ROOT": data / "account",
+        "LYNCHPIN_ACCOUNTS_ROOT": data / "accounts",
         "LYNCHPIN_COMMS_ROOT": data / "comms",
         "LYNCHPIN_HEALTH_ROOT": data / "health",
         "LYNCHPIN_DERIVED_ROOT": data / "derived/lynchpin",

@@ -45,7 +45,7 @@ def _python_project_paths(
     snapshot = load_json_object(snapshot_path, label="active project snapshot")
     result: dict[str, str] = {}
     top_exts: dict[str, set[str]] = {}
-    for proj in snapshot.get("project") or []:
+    for proj in snapshot.get("projects") or []:
         if not isinstance(proj, dict):
             continue
         name = proj.get("project")
@@ -316,7 +316,7 @@ def build_active_python_complexity(
             "scope": "raw line counts + AST function complexity over active project Python files",
             "complexity": "decision-count approximation; structural signal, not radon parity",
         },
-        "project": project_rows,
+        "projects": project_rows,
     }
 
 
@@ -391,7 +391,7 @@ def build_active_python_import_graph(
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "tool_run": {"native_ast": {"available": True, "parser": "ast"}},
         "methodology": {"scope": "internal Python import graph from AST import statements"},
-        "project": project_rows,
+        "projects": project_rows,
     }
 
 

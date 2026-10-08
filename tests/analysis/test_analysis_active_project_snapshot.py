@@ -63,7 +63,7 @@ def test_active_project_snapshot_uses_default_branch_first_parent(tmp_path: Path
         profiles={"demo": profile},
     )
 
-    row = payload["project"][0]
+    row = payload["projects"][0]
     assert row["project"] == "demo"
     assert row["default_branch"] == "master"
     assert row["structure"]["tracked_files"] == 3
@@ -162,7 +162,7 @@ def test_active_git_facts_discover_linked_worktree_with_git_file(tmp_path: Path)
         profiles={"demo": profile},
     )
 
-    assert payload["project"][0]["is_git_repo"] is True
+    assert payload["projects"][0]["is_git_repo"] is True
     assert payload["summary"]["commit_count"] == 1
     assert [row["subject"] for row in payload["commits"]] == ["add authoritative fact"]
     assert payload["commits"][0]["date"] == "2026-05-02"

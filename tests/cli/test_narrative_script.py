@@ -39,7 +39,7 @@ def test_narrative_script_writes_artifacts(monkeypatch, tmp_path):
     assert code == 0
     assert calls["start"].isoformat() == "2026-05-01"
     assert calls["end"].isoformat() == "2026-05-05"
-    assert calls["project"] == ["polylogue"]
+    assert calls["projects"] == ["polylogue"]
     assert out.read_text(encoding="utf-8") == "# narrative\n"
     assert json_out.read_text(encoding="utf-8") == '{"ok": true}\n'
 

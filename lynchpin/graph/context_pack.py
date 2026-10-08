@@ -649,7 +649,7 @@ def project_graph_context(
         "refresh_id": graph.refresh_id, "start": start, "end": end,
         # Nodes are already restricted to ``project``; the slice needs no
         # second, registry-resolved selection.
-        "project": _project_slices(rows, projects=None),
+        "projects": _project_slices(rows, projects=None),
         "claims": supported_work_claims(rows, graph=selected, limit=24),
         "salient_chains": _select_top_chains(selected, limit=5),
         "salient_anomalies": _select_top_anomalies(selected, limit=5),
@@ -1491,7 +1491,7 @@ def _payload_count(payload: object, key: str) -> int:
 
 
 def _row_projects(row: dict[str, object]) -> set[str]:
-    projects = row.get("project")
+    projects = row.get("projects")
     if not isinstance(projects, list):
         return set()
     return {str(project) for project in projects if project}

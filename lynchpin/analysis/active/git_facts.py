@@ -247,7 +247,7 @@ def build_active_commit_facts(
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "window": _window(start, end),
         "methodology": _methodology(),
-        "project": [project.to_project_json() for project in facts],
+        "projects": [project.to_project_json() for project in facts],
         "commits": commits,
         "summary": _summary(facts),
     }
@@ -281,7 +281,7 @@ def build_active_file_change_facts(
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "window": _window(start, end),
         "methodology": _methodology(),
-        "project": [project.to_project_json() for project in facts],
+        "projects": [project.to_project_json() for project in facts],
         "file_changes": rows,
         "summary": _summary(facts),
     }

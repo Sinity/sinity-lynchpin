@@ -97,7 +97,7 @@ def test_snapshot_differences_use_filtered_frozen_captures(tmp_path):
     assert feature_change["snapshot_id"] == inventory.snapshot_id
     assert feature_change["other_snapshot_id"] == candidate["snapshot_id"]
     assert (package / "snapshots/candidate-1/files/main.py").read_text() == "value = 2\n"
-    (root / "portfolio.json").write_text(json.dumps({"project": [{
+    (root / "portfolio.json").write_text(json.dumps({"projects": [{
         "project": "sample", "snapshot_id": inventory.snapshot_id,
     }]}))
     from lynchpin.sources.chisel_attachments import build_attachments

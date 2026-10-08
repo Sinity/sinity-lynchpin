@@ -147,9 +147,9 @@ def test_load_json_object_rejects_non_object_payload(tmp_path: Path) -> None:
 
 def test_load_json_object_returns_dict_payload(tmp_path: Path) -> None:
     target = tmp_path / "artifact.json"
-    target.write_text(json.dumps({"project": []}), encoding="utf-8")
+    target.write_text(json.dumps({"projects": []}), encoding="utf-8")
 
-    assert load_json_object(target, label="active project snapshot") == {"project": []}
+    assert load_json_object(target, label="active project snapshot") == {"projects": []}
 
 
 def test_load_materialized_analysis_artifact_keeps_ready_for_present_artifact(monkeypatch, tmp_path: Path) -> None:

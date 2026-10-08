@@ -17,7 +17,7 @@ def test_code_inventory_requires_project_snapshot(tmp_path: Path) -> None:
 
 def test_code_inventory_accepts_empty_snapshot(tmp_path: Path, monkeypatch) -> None:
     snapshot = tmp_path / "snapshot.json"
-    snapshot.write_text(json.dumps({"project": []}), encoding="utf-8")
+    snapshot.write_text(json.dumps({"projects": []}), encoding="utf-8")
     monkeypatch.setattr(
         "lynchpin.analysis.code_index.code_inventory._tokei_version",
         lambda: None,
@@ -25,4 +25,4 @@ def test_code_inventory_accepts_empty_snapshot(tmp_path: Path, monkeypatch) -> N
 
     payload = build_active_code_inventory(snapshot_file=snapshot)
 
-    assert payload["project"] == []
+    assert payload["projects"] == []

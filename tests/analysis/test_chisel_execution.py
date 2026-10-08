@@ -49,8 +49,8 @@ def test_root_index_persists_worker_measured_stage_timings(tmp_path: Path) -> No
     )
 
     index = json.loads((tmp_path / "out" / json_path).read_text(encoding="utf-8"))
-    assert index["project"][0]["elapsed_s"] == 4.5
-    assert index["project"][0]["stage_timings"] == timings
+    assert index["projects"][0]["elapsed_s"] == 4.5
+    assert index["projects"][0]["stage_timings"] == timings
 
 
 def test_index_and_terminal_counts_mark_local_github_observations(tmp_path: Path) -> None:
@@ -132,7 +132,7 @@ def test_cli_returns_failure_when_any_project_is_partial(monkeypatch) -> None:
         chisel,
         "build_chisel_bundles",
         lambda **_kwargs: {
-            "project": {
+            "projects": {
                 "alpha": {"status": "generated"},
                 "beta": {"status": "partial"},
             }
@@ -149,7 +149,7 @@ def test_cli_returns_success_when_all_projects_generated(monkeypatch) -> None:
         chisel,
         "build_chisel_bundles",
         lambda **_kwargs: {
-            "project": {
+            "projects": {
                 "alpha": {"status": "generated"},
                 "beta": {"status": "generated"},
             }
@@ -166,7 +166,7 @@ def test_projects_typer_command_exits_nonzero_for_partial_project(monkeypatch) -
     from lynchpin.analysis.projects import chisel_build as source_chisel
 
     monkeypatch.setattr(source_chisel, "build_chisel_bundles",
-        lambda **_kwargs: {"project": {"alpha": {"status": "partial"}}})
+        lambda **_kwargs: {"projects": {"alpha": {"status": "partial"}}})
     assert projects_cli.main(["chisel", "--max-workers", "1"]) == 1
 
 

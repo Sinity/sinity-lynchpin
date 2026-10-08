@@ -314,7 +314,7 @@ def _authored_acceptance(
 def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict[str, Any]:
     capture = json.loads((package / "capture.json").read_text())
     snapshot = capture["snapshot_id"]
-    out = package / "report"
+    out = package / "reports"
     out.mkdir(exist_ok=True)
     tasks = rows(package / "trackers/beads-export.jsonl")
     graph = task_graph(tasks, task_roots)

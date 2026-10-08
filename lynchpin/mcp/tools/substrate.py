@@ -1034,7 +1034,7 @@ def list_evidence_graph_builds(
                 "start_date": "YYYY-MM-DD",
                 "end_date": "YYYY-MM-DD",
                 "mode": str | None,
-                "project": [...],
+                "projects": [...],
                 "node_count": int,
                 "edge_count": int,
                 "generated_at": "ISO datetime",

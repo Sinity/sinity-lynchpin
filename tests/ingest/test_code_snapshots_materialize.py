@@ -39,7 +39,7 @@ def _stub_chisel(monkeypatch, tmp_path: Path) -> Path:
 
     def fake_bundles(*, output_root: Path, **_: Any) -> dict[str, Any]:
         return {
-            "project": {
+            "projects": {
                 "demo": {
                     "status": "ok",
                     "git": {"commit": "abc123", "branch": "master", "dirty": False},

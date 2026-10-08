@@ -132,7 +132,7 @@ def build_active_python_dependency_hygiene(
                                 "and generated/cache directories",
             "lockfile_safety": "pip-audit invocation is read-only; never mutates the manifest",
         },
-        "project": rows,
+        "projects": rows,
         "caveats": pack_caveats,
     }
 
@@ -215,7 +215,7 @@ def _normalize_pep508_name(spec: str) -> str:
 def _internal_module_index(import_graph: dict[str, Any]) -> dict[str, set[str]]:
     """Return {project -> set of module names exposed by that project}."""
     out: dict[str, set[str]] = {}
-    rows = import_graph.get("project")
+    rows = import_graph.get("projects")
     if not isinstance(rows, list):
         return out
     for row in rows:
@@ -339,7 +339,7 @@ def _annotate_advisories(
 
 def _project_paths(snapshot: dict[str, Any], selected: set[str]) -> dict[str, str]:
     out: dict[str, str] = {}
-    rows = snapshot.get("project")
+    rows = snapshot.get("projects")
     if not isinstance(rows, list):
         return out
     for row in rows:

@@ -19,7 +19,7 @@ def test_frontier_handles_missing_inputs_gracefully() -> None:
     )
     assert payload["window"]["start"] == "2026-05-01"
     assert payload["window"]["end"] == "2026-05-02"
-    assert isinstance(payload["project"], list)
+    assert isinstance(payload["projects"], list)
     assert payload["summary"]["available_project_count"] == 0
     assert "methodology" in payload
     assert "lifecycle_source" in payload["methodology"]
@@ -32,7 +32,7 @@ def test_frontier_reads_github_context_product(monkeypatch, tmp_path) -> None:
     repo.mkdir()
     snapshot = tmp_path / "snapshot.json"
     snapshot.write_text(
-        json.dumps({"project": [{"project": "demo", "path": str(repo)}]}),
+        json.dumps({"projects": [{"project": "demo", "path": str(repo)}]}),
         encoding="utf-8",
     )
     item = GitHubItem(
@@ -73,7 +73,7 @@ def test_frontier_reads_github_context_product(monkeypatch, tmp_path) -> None:
 
     assert calls == [("github_context", (date(2026, 5, 1), date(2026, 5, 7)))]
     assert payload["summary"]["available_project_count"] == 1
-    assert payload["project"][0]["tracking_or_horizon_items"][0]["number"] == 3
+    assert payload["projects"][0]["tracking_or_horizon_items"][0]["number"] == 3
 
 
 def test_frontier_reports_unavailable_when_github_context_blocked(monkeypatch, tmp_path) -> None:
@@ -81,7 +81,7 @@ def test_frontier_reports_unavailable_when_github_context_blocked(monkeypatch, t
     repo.mkdir()
     snapshot = tmp_path / "snapshot.json"
     snapshot.write_text(
-        json.dumps({"project": [{"project": "demo", "path": str(repo)}]}),
+        json.dumps({"projects": [{"project": "demo", "path": str(repo)}]}),
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -98,5 +98,5 @@ def test_frontier_reports_unavailable_when_github_context_blocked(monkeypatch, t
     )
 
     assert payload["summary"]["available_project_count"] == 0
-    assert payload["project"][0]["status"] == "unavailable"
-    assert any("network_down" in caveat for caveat in payload["project"][0]["caveats"])
+    assert payload["projects"][0]["status"] == "unavailable"
+    assert any("network_down" in caveat for caveat in payload["projects"][0]["caveats"])

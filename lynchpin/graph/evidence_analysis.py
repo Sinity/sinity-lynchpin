@@ -46,7 +46,7 @@ def add_analysis_artifacts(
                     payload={
                         "name": artifact.name,
                         "kind": artifact.kind,
-                        "project": artifact.projects,
+                        "projects": artifact.projects,
                         "size_bytes": artifact.size_bytes,
                         "modified_at": artifact.modified_at.isoformat(),
                         "generated_at": generated_at,

@@ -97,7 +97,7 @@ def build_active_semantic_static_findings(
             "active_file_change_facts": str(file_changes_file or "active_file_change_facts.json"),
             "active_project_snapshot": str(snapshot_file or "active_project_snapshot.json"),
         },
-        "project": project_set,
+        "projects": project_set,
         "findings": findings,
         "caveats": caveats,
     }
@@ -219,7 +219,7 @@ def _project_map(payload: dict[str, Any] | None, selected: set[str]) -> dict[str
     out: dict[str, str] = {}
     if not payload:
         return out
-    for row in payload.get("project", []) or []:
+    for row in payload.get("projects", []) or []:
         if not isinstance(row, dict):
             continue
         name = row.get("project")

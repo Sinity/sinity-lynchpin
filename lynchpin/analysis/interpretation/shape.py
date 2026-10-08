@@ -145,7 +145,7 @@ def build_active_hotspots(
             "active_file_change_facts": str(file_changes_file or "active_file_change_facts.json"),
             "active_project_snapshot": str(snapshot_file or "active_project_snapshot.json"),
         },
-        "project": project_rows,
+        "projects": project_rows,
         "summary": _hotspot_summary(project_rows),
     }
 
@@ -256,7 +256,7 @@ def build_active_guardrails(
             "active_file_change_facts": str(file_changes_file or "active_file_change_facts.json"),
             "active_project_snapshot": str(snapshot_file or "active_project_snapshot.json"),
         },
-        "project": project_rows,
+        "projects": project_rows,
         "summary": _guardrail_summary(project_rows),
     }
 
@@ -342,7 +342,7 @@ def _path_signals(path: str) -> list[str]:
 def _gates_for(snapshot: dict[str, Any] | None, project: str) -> dict[str, Any]:
     if snapshot is None:
         return {}
-    projects = snapshot.get("project")
+    projects = snapshot.get("projects")
     if not isinstance(projects, list):
         return {}
     for row in projects:

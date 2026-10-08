@@ -300,7 +300,7 @@ def iter_raw_session_files(
     cfg: LynchpinConfig | None = None,
 ) -> list[RawSessionFile]:
     cfg = cfg or get_config()
-    claude = claude_root or (Path.home() / ".claude" / "project")
+    claude = claude_root or (Path.home() / ".claude" / "projects")
     codex = codex_root or cfg.codex_sessions_root
     rows: list[RawSessionFile] = []
     if claude.exists():
@@ -514,7 +514,7 @@ def build_polylogue_archive_shape(
         "kind": "polylogue_archive_shape",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "scope": {
-            "claude_root": str(claude_root or (Path.home() / ".claude" / "project")),
+            "claude_root": str(claude_root or (Path.home() / ".claude" / "projects")),
             "codex_root": str(codex_root or cfg.codex_sessions_root),
             "polylogue_db": str(db_path),
             "sample_per_provider": sample_per_provider,

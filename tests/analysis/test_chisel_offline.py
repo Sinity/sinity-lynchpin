@@ -92,14 +92,14 @@ def test_source_helper_rejects_traversal(tmp_path: Path) -> None:
 
 def test_compacted_streams_remain_browsable_without_sqlite(tmp_path: Path) -> None:
     package = tmp_path / "pkg"
-    for area in ("source", "history", "structure", "report"):
+    for area in ("source", "history", "structure", "reports"):
         (package / area).mkdir(parents=True)
     (package / "source" / "main.py").write_text("import helper\n")
     (package / "source" / "structure.jsonl").write_text("source bytes remain direct\n")
     (package / "history" / "commits.jsonl").write_text('{"commit":"abc","message":"historyneedle"}\n')
     (package / "structure" / "dependency_edges.jsonl").write_text('{"from":"main","to":"helper","kind":"python_import"}\n')
-    (package / "report" / "snapshot-differences.jsonl").write_text('{"path":"main.py","snapshot":"worktree"}\n')
-    (package / "report" / "coverage.json").write_text(json.dumps({
+    (package / "reports" / "snapshot-differences.jsonl").write_text('{"path":"main.py","snapshot":"worktree"}\n')
+    (package / "reports" / "coverage.json").write_text(json.dumps({
         "schema_version": 3,
         "dataset_coverage": {"structure/dependency_edges.jsonl": {"status": "available", "records": 1}},
     }))

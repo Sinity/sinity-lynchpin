@@ -3514,7 +3514,7 @@ def _write_root_index(
         "growth_analysis": "growth/README.md"
         if (output_root / "growth" / "README.md").exists()
         else None,
-        "project": projects,
+        "projects": projects,
     }
     json_path = output_root / "index.json"
     md_path = output_root / "index.md"
@@ -4152,7 +4152,7 @@ def _publish_chisel_bundles(
             report_builder=report_builder,
         )
         successful = all(
-            r.get("status") == "generated" for r in result["project"].values()
+            r.get("status") == "generated" for r in result["projects"].values()
         )
         if successful:
             plans = [REPO_PLANS[name] for name in names]
@@ -4162,7 +4162,7 @@ def _publish_chisel_bundles(
                 result["portfolio"] = build_portfolio(
                     candidate,
                     plans,
-                    result["project"],
+                    result["projects"],
                     result["generated_at"],
                 )
             with chisel_terminal.timed_step("publication validation"):
@@ -4185,7 +4185,7 @@ def _publish_chisel_bundles(
                 f"[yellow]Not published[/yellow] ({result['total_elapsed_s']:.1f}s): candidate incomplete; "
                 f"previous packages retained at {root}"
             )
-        for row in result["project"].values():
+        for row in result["projects"].values():
             row["published"] = successful
         return result
 
@@ -4380,7 +4380,7 @@ def _build_chisel_candidate(
         "total_bytes": total_bytes,
         "index": {"json": index_json, "markdown": index_md},
         "growth": growth_portfolio,
-        "project": results,
+        "projects": results,
     }
 
 

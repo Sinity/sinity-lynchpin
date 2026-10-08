@@ -19,7 +19,7 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def test_hotspots_require_file_changes(tmp_path: Path) -> None:
     snapshot = tmp_path / "snapshot.json"
-    _write_json(snapshot, {"project": []})
+    _write_json(snapshot, {"projects": []})
 
     with pytest.raises(FileNotFoundError, match="active file-change facts is missing"):
         build_active_hotspots(
@@ -41,7 +41,7 @@ def test_hotspots_require_project_snapshot(tmp_path: Path) -> None:
 
 def test_guardrails_require_file_changes(tmp_path: Path) -> None:
     snapshot = tmp_path / "snapshot.json"
-    _write_json(snapshot, {"project": []})
+    _write_json(snapshot, {"projects": []})
 
     with pytest.raises(FileNotFoundError, match="active file-change facts is missing"):
         build_active_guardrails(

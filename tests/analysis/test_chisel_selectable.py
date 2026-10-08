@@ -76,7 +76,7 @@ def test_split_parts_reconstruct_and_verify_raw_xml(tmp_path):
     subprocess.run(["python", "-I", str(extracted / "reconstruct.py")], cwd=extracted, check=True)
     assert (extracted / "sample/source/large.bin").read_bytes() == data
     assert (extracted / "sample/source/schema.xml").read_text() == "<original/>\n"
-    assert json.loads((root / "attachments.json").read_text())["project"] == ["sample"]
+    assert json.loads((root / "attachments.json").read_text())["projects"] == ["sample"]
 
 
 def test_default_attachments_include_portfolio_and_individual_projects(tmp_path):
@@ -85,7 +85,7 @@ def test_default_attachments_include_portfolio_and_individual_projects(tmp_path)
         source = root / name / "source"
         source.mkdir(parents=True)
         (source / "main.py").write_text(f"PROJECT = {name!r}\n")
-    (root / "portfolio.json").write_text('{"project": []}')
+    (root / "portfolio.json").write_text('{"projects": []}')
 
     manifest = build_attachments(root, ["first", "second"], limit=500_000_000)
 
@@ -152,7 +152,7 @@ def test_reader_filters_snapshot_before_pagination_and_refuses_missing_views(tmp
         {"name": "primary", "snapshot_id": "primary-id"},
         {"name": "worktree", "snapshot_id": "worktree-id"},
     ]}))
-    reports = tmp_path / "report"
+    reports = tmp_path / "reports"
     reports.mkdir()
     records = [
         {"snapshot_id": "primary-id", "evidence_id": None},

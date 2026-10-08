@@ -43,14 +43,14 @@ def test_machine_baselines_build_robust_groups_and_context(tmp_path):
             {
                 "windows": [
                     {
-                        "project": ["sinity-lynchpin"],
+                        "projects": ["sinity-lynchpin"],
                         "provider": "codex",
                         "work_kind": "implementation",
                         "episode_count": 1,
                         "episodes": [{"kind": "load_pressure"}],
                     },
                     {
-                        "project": ["sinity-lynchpin"],
+                        "projects": ["sinity-lynchpin"],
                         "provider": "codex",
                         "work_kind": "research",
                         "episode_count": 0,

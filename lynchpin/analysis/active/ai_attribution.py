@@ -153,7 +153,7 @@ def build_active_ai_attribution(
             "medium": "any session for the same project landed on the same calendar day",
             "none": "no overlapping session — does not exclude Co-Authored-By trailer evidence",
         },
-        "project": project_summary,
+        "projects": project_summary,
         "summary": {
             "total_commits": sum(overall.values()),
             "high": overall.get("high", 0),

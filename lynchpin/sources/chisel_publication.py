@@ -331,7 +331,7 @@ def publish_project_homes(candidate_root: Path, output_root: Path, names: Sequen
                 export = code_snapshot_export_path(name)
                 publish(combined, export, destination.parent / "history" / stamp / combined.name)
         (candidate_root / "locations.json").write_text(json.dumps({
-            "schema_version": 1, "generation": stamp, "project": paths,
+            "schema_version": 1, "generation": stamp, "projects": paths,
             "exports": {name: str(code_snapshot_export_path(name)) for name in names},
             "scope": "Canonical project homes; portable attachment archives retain their self-contained package layout.",
         }, indent=2) + "\n")
@@ -346,7 +346,7 @@ def publish_project_homes(candidate_root: Path, output_root: Path, names: Sequen
                 text = text.replace(f"]({name}/", f"]({relative}/").replace(f'href="{name}/', f'href="{relative}/')
             path.write_text(text)
         publish(candidate_root, output_root, output_root.parent / "history" / stamp / "snapshot")
-        record({"state": "committed", "generation": stamp, "project": paths})
+        record({"state": "committed", "generation": stamp, "projects": paths})
     except BaseException:
         for source, destination, previous in reversed(completed):
             if not source.exists() and destination.exists():

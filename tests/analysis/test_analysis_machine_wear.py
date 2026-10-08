@@ -59,7 +59,7 @@ def test_wear_status_flags_over_budget_device(monkeypatch: pytest.MonkeyPatch) -
 
     assert status["state"] == "ready"
     assert status["over_budget"] == ["sda"]
-    by_device = {row["device"]: row for row in status["device"]}
+    by_device = {row["device"]: row for row in status["devices"]}
     assert set(by_device) == {"sda", "nvme0n1"}
     assert by_device["sda"]["written_gb_today"] == 70.0
     assert by_device["sda"]["over_budget"] is True
@@ -84,7 +84,7 @@ def test_wear_status_survives_counter_reset(monkeypatch: pytest.MonkeyPatch) -> 
         policy=DeviceWearBudgetPolicy(budgets_gb_per_day={"sda": 60.0}),
     )
 
-    row = status["device"][0]
+    row = status["devices"][0]
     # 10 GB pre-reset + 2 GB post-reset baseline + 3 GB tail = 15 GB
     assert row["written_gb_today"] == 15.0
     assert row["counter_reset_detected"] is True

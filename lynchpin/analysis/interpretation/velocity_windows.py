@@ -122,7 +122,7 @@ def build_project_velocity_windows(
             "active_work_packages": str(work_packages_file or "active_work_packages.json"),
             "work_day_correlations": "computed for the same date window",
         },
-        "project": project_rows,
+        "projects": project_rows,
         "summary": _summary(project_rows),
     }
 
@@ -187,7 +187,7 @@ def _correlation_rows(
 def _project_meta(*payloads: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for payload in payloads:
-        projects = payload.get("project")
+        projects = payload.get("projects")
         if not isinstance(projects, list):
             continue
         for row in projects:
@@ -228,7 +228,7 @@ def _micro_by_project(payload: Mapping[str, Any]) -> dict[str, _Micro]:
 
 def _meso_by_project(payload: Mapping[str, Any]) -> dict[str, _Meso]:
     grouped: dict[str, _Meso] = {}
-    projects = payload.get("project")
+    projects = payload.get("projects")
     if not isinstance(projects, list):
         return {}
     for row in projects:
