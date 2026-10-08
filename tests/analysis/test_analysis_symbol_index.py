@@ -117,11 +117,11 @@ def test_build_active_symbol_index_processes_real_repo(tmp_path: Path) -> None:
         )
     }
     payload = build_active_symbol_index(projects=("demo",), profiles=profiles)
-    assert payload["projects"][0]["project"] == "demo"
-    assert payload["projects"][0]["exists"] is True
-    assert payload["projects"][0]["symbol_count"] >= 4
-    assert set(payload["projects"][0]["languages"]) == {"python", "rust"}
-    qualified = {s["qualified_name"] for s in payload["projects"][0]["symbols"]}
+    assert payload["project"][0]["project"] == "demo"
+    assert payload["project"][0]["exists"] is True
+    assert payload["project"][0]["symbol_count"] >= 4
+    assert set(payload["project"][0]["languages"]) == {"python", "rust"}
+    qualified = {s["qualified_name"] for s in payload["project"][0]["symbols"]}
     assert "hello" in qualified
     assert "Greeter" in qualified
     assert "run" in qualified

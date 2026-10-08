@@ -14,7 +14,7 @@ def _active_structural_findings_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = payload.get("projects")
+    projects = payload.get("project")
     if not isinstance(projects, list):
         return ()
     claims: list[AnalysisClaim] = []
@@ -212,7 +212,7 @@ def _active_python_dependency_hygiene_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    rows = list_or_empty(payload.get("projects"))
+    rows = list_or_empty(payload.get("project"))
     claims: list[AnalysisClaim] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -278,7 +278,7 @@ def _active_symbol_index_claims(
     *,
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
-    projects = list_or_empty(payload.get("projects"))
+    projects = list_or_empty(payload.get("project"))
     languages_indexed = string_tuple(payload.get("languages_indexed"))
     claims: list[AnalysisClaim] = []
     for row in projects:
@@ -334,7 +334,7 @@ def _active_ai_attribution_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = list_or_empty(payload.get("projects"))
+    projects = list_or_empty(payload.get("project"))
     claims: list[AnalysisClaim] = []
     for row in projects:
         if not isinstance(row, dict):
@@ -388,7 +388,7 @@ def _active_ci_health_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = list_or_empty(payload.get("projects"))
+    projects = list_or_empty(payload.get("project"))
     claims: list[AnalysisClaim] = []
     for row in projects:
         if not isinstance(row, dict):
@@ -468,7 +468,7 @@ def _active_symbol_diffs_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = list_or_empty(payload.get("projects"))
+    projects = list_or_empty(payload.get("project"))
     claims: list[AnalysisClaim] = []
     for row in projects:
         if not isinstance(row, dict):
@@ -522,7 +522,7 @@ def _active_symbol_changes_claims(
     selected: set[str],
 ) -> tuple[AnalysisClaim, ...]:
     window = dict_or_empty(payload.get("window"))
-    projects = list_or_empty(payload.get("projects"))
+    projects = list_or_empty(payload.get("project"))
     claims: list[AnalysisClaim] = []
     for row in projects:
         if not isinstance(row, dict):

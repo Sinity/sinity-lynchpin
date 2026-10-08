@@ -114,7 +114,7 @@ def build_active_rust_graph(
             "active_project_snapshot": str(snapshot_file or "active_project_snapshot.json"),
             "active_file_change_facts": str(file_changes_file or "active_file_change_facts.json"),
         },
-        "projects": workspace_rows,
+        "project": workspace_rows,
     }
 
 
@@ -259,7 +259,7 @@ def _assign_risk(crates: list[dict[str, Any]]) -> None:
 
 def _project_map(snapshot: dict[str, Any] | None, selected: set[str]) -> dict[str, str]:
     result: dict[str, str] = {}
-    for row in _list(snapshot, "projects"):
+    for row in _list(snapshot, "project"):
         if not isinstance(row, dict):
             continue
         name = str(row.get("project") or "")

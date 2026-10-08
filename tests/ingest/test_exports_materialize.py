@@ -24,7 +24,7 @@ def test_communications_materialize_includes_themotte(tmp_path, monkeypatch) -> 
         "Cfg",
         (),
         {
-            "accounts_root": tmp_path / "accounts",
+            "accounts_root": tmp_path / "account",
             "teams_root": tmp_path / "teams",
             "themotte_root": tmp_path / "themotte",
             "themotte_username": "Sinity",
@@ -91,7 +91,7 @@ def test_communications_identity_uses_full_semantics_and_daily_counts(
     from lynchpin.ingest import communications_materialize
     from lynchpin.sources.communications import daily_communication_activity
 
-    accounts = tmp_path / "accounts"
+    accounts = tmp_path / "account"
     messenger_path = accounts / "facebook-messenger/processed/canonical/messages.ndjson"
     messenger_path.parent.mkdir(parents=True)
     messenger_path.write_text("fixture\n", encoding="utf-8")
@@ -261,7 +261,7 @@ def test_messenger_materialization_preserves_native_occurrences_and_reads_them(
         )
         if folder == "one":
             sources.append(source)
-    accounts = tmp_path / "accounts"
+    accounts = tmp_path / "account"
     monkeypatch.setattr(exports_materialize, "get_config", lambda: SimpleNamespace(
         accounts_root=accounts, fbmessenger_gdpr_root=raw
     ))

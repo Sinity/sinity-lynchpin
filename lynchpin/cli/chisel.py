@@ -72,8 +72,8 @@ def main(argv: list[str] | None = None) -> int:
                             raise ValueError(f"attachment hash mismatch: {row['path']}")
             elif (args.package / "portfolio.json").exists():
                 locations = args.package / "locations.json"
-                paths = json.loads(locations.read_text())["projects"] if locations.exists() else {}
-                for project in json.loads((args.package / "portfolio.json").read_text())["projects"]:
+                paths = json.loads(locations.read_text())["project"] if locations.exists() else {}
+                for project in json.loads((args.package / "portfolio.json").read_text())["project"]:
                     name = project["project"]
                     _validate_project(args.package, name, project_dir=Path(paths[name]) if name in paths else None)
             else:
@@ -173,11 +173,11 @@ def main(argv: list[str] | None = None) -> int:
                          "cache_reuse": {"prior_capture": previous_identity.get("snapshot_id"),
                              "same_revision": previous_identity.get("revision") == identity.get("revision") if prior else None,
                              "validation": "source and owner hashes checked during build"}})
-        print(json.dumps({"options": asdict(options), "projects": rows}, indent=2))
+        print(json.dumps({"options": asdict(options), "project": rows}, indent=2))
         return 0
     result = build_chisel_bundles(project_names=names, output_root=args.output_root,
                                   max_workers=args.max_workers, options=options, verbose=args.verbose)
-    return int(not result.get("published", all(p.get("status") == "generated" for p in result.get("projects", {}).values())))
+    return int(not result.get("published", all(p.get("status") == "generated" for p in result.get("project", {}).values())))
 
 
 if __name__ == "__main__":

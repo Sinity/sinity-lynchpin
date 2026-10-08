@@ -112,7 +112,7 @@ def add_machine_analysis_nodes(
             continue
         projects = tuple(
             project
-            for project in (canonical_project_name(str(value)) for value in row.get("projects", ()) if value)
+            for project in (canonical_project_name(str(value)) for value in row.get("project", ()) if value)
             if project is not None
         )
         if selected and not set(projects).intersection(selected):
@@ -131,7 +131,7 @@ def add_machine_analysis_nodes(
                 summary=str(row.get("summary") or row.get("interpretation") or "machine/work context window"),
                 payload={
                     "window_id": row.get("window_id"),
-                    "projects": projects,
+                    "project": projects,
                     "source": row.get("source"),
                     "work_kind": row.get("work_kind"),
                     "duration_seconds": row.get("duration_seconds"),
@@ -1345,7 +1345,7 @@ def _add_machine_mechanism_nodes(
     for row in _machine_rows(payload, "mechanisms"):
         projects = tuple(
             project
-            for project in (canonical_project_name(str(value)) for value in row.get("projects", ()) if value)
+            for project in (canonical_project_name(str(value)) for value in row.get("project", ()) if value)
             if project is not None
         )
         if selected and not set(projects).intersection(selected):
@@ -1574,7 +1574,7 @@ def _add_machine_pressure_incident_nodes(
             dict.fromkeys(
                 project
                 for workload in workloads
-                for value in (workload.get("projects") or ())
+                for value in (workload.get("project") or ())
                 if (project := canonical_project_name(str(value))) is not None
             )
         )
@@ -1610,7 +1610,7 @@ def _add_machine_pressure_incident_nodes(
                     "top_cgroup_memory_deltas": cgroup_deltas,
                     "kill_events": kill_events,
                     "active_workloads": workloads,
-                    "projects": projects,
+                    "project": projects,
                 },
                 provenance=EvidenceProvenance("machine", "materialized", path=artifact_name),
                 caveats=tuple(EvidenceCaveat("machine", "partial", str(c)) for c in row.get("caveats", ()) if c),
@@ -1691,7 +1691,7 @@ def _selected_machine_episode_keys(
     for row in _machine_rows(context_payload, "windows"):
         projects = {
             project
-            for project in (canonical_project_name(str(value)) for value in row.get("projects", ()) if value)
+            for project in (canonical_project_name(str(value)) for value in row.get("project", ()) if value)
             if project is not None
         }
         if not projects.intersection(selected):

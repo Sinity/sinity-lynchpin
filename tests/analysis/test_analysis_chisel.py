@@ -629,7 +629,7 @@ def test_collect_tokei_stats_buckets_agent_docs_tests_and_other(
     split_test.write_text("fn one() {}\nfn two() {}\n", encoding="utf-8")
     payload = {
         "Markdown": {
-            "reports": [
+            "report": [
                 {
                     "name": str(repo / ".agent" / "README.md"),
                     "stats": {"blanks": 1, "code": 0, "comments": 9},
@@ -641,7 +641,7 @@ def test_collect_tokei_stats_buckets_agent_docs_tests_and_other(
             ],
         },
         "Rust": {
-            "reports": [
+            "report": [
                 {
                     "name": str(repo / "src" / "lib.rs"),
                     "stats": {"blanks": 3, "code": 30, "comments": 4},
@@ -657,7 +657,7 @@ def test_collect_tokei_stats_buckets_agent_docs_tests_and_other(
             ],
         },
         "JSON": {
-            "reports": [
+            "report": [
                 {
                     "name": str(repo / "schemas" / "event.json"),
                     "stats": {"blanks": 0, "code": 50, "comments": 0},
@@ -1118,8 +1118,8 @@ def test_polylogue_stats_buckets_split_agent_devloop_and_archive_query() -> None
 def test_agent_audit_classifies_active_transient_and_archive(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     agent = repo / ".agent"
-    (agent / "reports").mkdir(parents=True)
-    (agent / "reports" / "architecture.md").write_text("keep", encoding="utf-8")
+    (agent / "report").mkdir(parents=True)
+    (agent / "report" / "architecture.md").write_text("keep", encoding="utf-8")
     (agent / "archive" / "retired").mkdir(parents=True)
     (agent / "archive" / "retired" / "export.jsonl").write_text(
         "archive", encoding="utf-8"
@@ -1255,8 +1255,8 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(
         "<?xml version='1.0'?><issues count='3'></issues>",
         encoding="utf-8",
     )
-    (out_dir / "reports").mkdir()
-    (out_dir / "reports/snapshot-differences.jsonl").write_text("{}\n", encoding="utf-8")
+    (out_dir / "report").mkdir()
+    (out_dir / "report/snapshot-differences.jsonl").write_text("{}\n", encoding="utf-8")
     (out_dir / "example-tokei-stats.json").write_text(
         chisel.json.dumps(
             {
@@ -1325,7 +1325,7 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(
     assert "example-beads.md" not in payload["open_first"]
     assert payload["attention"]["large_artifacts"][0]["name"] == "example-core.xml"
     assert "`example-prs-open.xml`" in markdown
-    assert "reports/snapshot-differences.jsonl" in payload["open_first"]
+    assert "report/snapshot-differences.jsonl" in payload["open_first"]
     assert chisel._file_scope_and_purpose(plan, "snapshot-differences.jsonl")[0] == "captured-snapshots"
     assert "| Beads blocked | 1 |" in markdown
 
@@ -1482,7 +1482,7 @@ def test_build_chisel_bundles_reports_scope_and_grouped_repo_logs(
     assert "Completed 1/2:" in output and "Completed 2/2:" in output
     assert "grouped header" in output
     assert "worker output with 2 slice workers" in output
-    assert result["projects"]["alpha"]["status"] == "generated"
+    assert result["project"]["alpha"]["status"] == "generated"
 
 
 def _mock_captured_build_seams(
@@ -1758,7 +1758,7 @@ def test_write_root_index_surfaces_beads_counts(tmp_path: Path) -> None:
         (tmp_path / "out" / "index.json").read_text(encoding="utf-8")
     )
     markdown = (tmp_path / "out" / "index.md").read_text(encoding="utf-8")
-    counts = index["projects"][0]["overview"]["counts"]
+    counts = index["project"][0]["overview"]["counts"]
     assert counts["beads_issues"] == 4
     assert "Beads issues" in markdown
     assert "| `alpha` | generated | `main` | false | 0 | 0 | 4 | 2 | 1 |" in markdown

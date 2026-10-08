@@ -56,7 +56,7 @@ def test_generated_artifact_names_retain_their_kind_in_promotion(tmp_path: Path)
     for name in ("example-git-log-all-refs.xml", "example-compressed.xml", "example-code.xml"):
         (output / name).write_text("<files/>")
     _, rows = _results_to_rows(
-        {"projects": {"example": {"status": "generated"}}},
+        {"project": {"example": {"status": "generated"}}},
         datetime.now(timezone.utc), tmp_path,
     )
     assert {row["filename"]: row["kind"] for row in rows} == {

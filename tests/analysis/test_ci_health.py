@@ -34,12 +34,12 @@ jobs:
     )
     snapshot = tmp_path / "snapshot.json"
     snapshot.write_text(
-        json.dumps({"projects": [{"project": "demo", "path": str(repo)}]}),
+        json.dumps({"project": [{"project": "demo", "path": str(repo)}]}),
         encoding="utf-8",
     )
 
     payload = build_active_ci_health(snapshot_file=snapshot)
 
-    assert payload["projects"][0]["project"] == "demo"
-    assert payload["projects"][0]["workflow_count"] == 1
-    assert payload["projects"][0]["explicit_timeout_count"] == 1
+    assert payload["project"][0]["project"] == "demo"
+    assert payload["project"][0]["workflow_count"] == 1
+    assert payload["project"][0]["explicit_timeout_count"] == 1

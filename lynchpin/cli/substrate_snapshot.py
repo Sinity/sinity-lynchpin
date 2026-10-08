@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
         help="replace this inclusive graph tail while retaining the compatible prior graph",
     )
     parser.add_argument("--weak-tags", action="store_true", help="include weak keyword/proximity evidence tags")
-    parser.add_argument("--project", action="append", dest="projects")
+    parser.add_argument("--project", action="append", dest="project")
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--timeline-output", type=Path, default=None)
     parser.add_argument(
@@ -261,7 +261,7 @@ def _record_snapshot_materialization_statuses(
     from lynchpin.materialization import audit_materialization
     from lynchpin.substrate.connection import apply_schema, connect, substrate_path
 
-    refresh_kwargs = {"start": start, "end": end, "projects": projects}
+    refresh_kwargs = {"start": start, "end": end, "project": projects}
     if generation is not None:
         refresh_kwargs["generation"] = generation
     refresh_id = _snapshot_refresh_id(**refresh_kwargs)
@@ -332,7 +332,7 @@ def _promote_snapshot_daily_signals(
         promote_title_classifications_from_path,
     )
 
-    refresh_kwargs = {"start": start, "end": end, "projects": projects}
+    refresh_kwargs = {"start": start, "end": end, "project": projects}
     if generation is not None:
         refresh_kwargs["generation"] = generation
     refresh_id = _snapshot_refresh_id(**refresh_kwargs)
@@ -503,7 +503,7 @@ def _record_snapshot_promotion_run(
 ) -> None:
     from lynchpin.substrate.connection import apply_schema, connect, substrate_path
 
-    refresh_kwargs = {"start": start, "end": end, "projects": projects}
+    refresh_kwargs = {"start": start, "end": end, "project": projects}
     if generation is not None:
         refresh_kwargs["generation"] = generation
     refresh_id = _snapshot_refresh_id(**refresh_kwargs)

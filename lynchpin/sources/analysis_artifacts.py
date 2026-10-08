@@ -356,7 +356,7 @@ def _artifact_to_manifest(artifact: AnalysisArtifact, *, root: Path) -> dict[str
         if artifact.path.is_relative_to(root)
         else str(artifact.path),
         "kind": artifact.kind,
-        "projects": list(artifact.projects),
+        "project": list(artifact.projects),
         "size_bytes": artifact.size_bytes,
         "modified_at": artifact.modified_at.isoformat(),
         "generated_at": artifact.generated_at.isoformat()
@@ -385,7 +385,7 @@ def _artifact_from_manifest(item: object, *, root: Path) -> AnalysisArtifact | N
             name=str(item["name"]),
             path=path,
             kind=str(item["kind"]),
-            projects=tuple(str(value) for value in item.get("projects", ())),
+            projects=tuple(str(value) for value in item.get("project", ())),
             size_bytes=int(item["size_bytes"]),
             modified_at=modified_at,
             generated_at=generated_at,
@@ -404,7 +404,7 @@ def _artifact(path: Path, *, base: Path) -> AnalysisArtifact:
     name = path.relative_to(base).as_posix()
     modified_at = datetime.fromtimestamp(stat.st_mtime).astimezone()
     metadata = _metadata(path, base=base)
-    projects = metadata.get("projects")
+    projects = metadata.get("project")
     return AnalysisArtifact(
         name=name,
         path=path,
@@ -445,7 +445,7 @@ def _metadata(path: Path, *, base: Path) -> dict[str, Any]:
         "generated_at": generated_at,
         "keys": tuple(sorted(str(key) for key in payload.keys())),
         "brief": _brief(path.stem, payload),
-        "projects": _payload_projects(path.stem, payload),
+        "project": _payload_projects(path.stem, payload),
         "references": _artifact_references(
             payload, base=base, current_name=path.relative_to(base).as_posix()
         ),
@@ -523,7 +523,7 @@ def _brief(stem: str, payload: dict[str, Any]) -> str | None:
                 return ", ".join(rows)
     if stem == "current_state_context_pack":
         mode = payload.get("mode")
-        projects = payload.get("projects")
+        projects = payload.get("project")
         claims = payload.get("claims")
         project_count = len(projects) if isinstance(projects, list) else 0
         claim_count = len(claims) if isinstance(claims, list) else 0
@@ -536,18 +536,18 @@ def _brief(stem: str, payload: dict[str, Any]) -> str | None:
         project_count = int(payload.get("project_count") or 0)
         return f"narrative report: {section_count} sections, {moment_count} moments, {project_count} projects"
     if stem == "cross_project_metrics":
-        projects = payload.get("projects")
+        projects = payload.get("project")
         if isinstance(projects, dict):
             return f"{len(projects)} project metric rows"
     if stem == "active_project_snapshot":
-        projects = payload.get("projects")
+        projects = payload.get("project")
         window = payload.get("window")
         project_count = len(projects) if isinstance(projects, list) else 0
         if isinstance(window, dict):
             return f"{project_count} active project snapshots, {window.get('start')} to {window.get('end')}"
         return f"{project_count} active project snapshots"
     if stem == "active_code_inventory":
-        projects = payload.get("projects")
+        projects = payload.get("project")
         project_count = len(projects) if isinstance(projects, list) else 0
         total_code = 0
         for row in projects or []:
@@ -557,7 +557,7 @@ def _brief(stem: str, payload: dict[str, Any]) -> str | None:
             f"{project_count} project code inventories, {total_code:,} total code lines"
         )
     if stem == "active_python_complexity":
-        projects = payload.get("projects")
+        projects = payload.get("project")
         project_count = len(projects) if isinstance(projects, list) else 0
         total_funcs = 0
         for row in projects or []:
@@ -567,7 +567,7 @@ def _brief(stem: str, payload: dict[str, Any]) -> str | None:
                 )
         return f"{project_count} Python projects complexity, {total_funcs:,} functions analyzed"
     if stem == "active_python_import_graph":
-        projects = payload.get("projects")
+        projects = payload.get("project")
         project_count = len(projects) if isinstance(projects, list) else 0
         total_modules = 0
         for row in projects or []:
@@ -575,7 +575,7 @@ def _brief(stem: str, payload: dict[str, Any]) -> str | None:
                 total_modules += int(row.get("module_count") or 0)
         return f"{project_count} Python import graphs, {total_modules:,} modules"
     if stem == "active_rust_workspace_graph":
-        projects = payload.get("projects")
+        projects = payload.get("project")
         project_count = len(projects) if isinstance(projects, list) else 0
         total_crates = 0
         for row in projects or []:
@@ -583,7 +583,7 @@ def _brief(stem: str, payload: dict[str, Any]) -> str | None:
                 total_crates += int(row.get("workspace_crate_count") or 0)
         return f"{project_count} Rust workspace graphs, {total_crates} total crates"
     if stem == "active_python_dependency_hygiene":
-        projects = payload.get("projects")
+        projects = payload.get("project")
         project_count = len(projects) if isinstance(projects, list) else 0
         advisory_count = 0
         observed_count = 0
@@ -705,7 +705,7 @@ def _payload_projects(stem: str, payload: dict[str, Any]) -> tuple[str, ...] | N
         if stem == "active_rust_dependency_hygiene"
         else payload.get("claims")
         if stem == "code_history_claims"
-        else payload.get("projects")
+        else payload.get("project")
     )
     if not isinstance(rows, list):
         return None

@@ -147,7 +147,7 @@ def build_active_frontier_reconciliation(
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "window": {"start": start.isoformat(), "end": end.isoformat()},
-        "projects": project_summaries,
+        "project": project_summaries,
         "tracking_or_horizon_without_landed_packages": tracking_without_packages,
         "executed_without_work_package": executed_without_packages,
         "packages_with_orphan_refs": orphan_refs,
@@ -190,7 +190,7 @@ def _index_frontier(
     selected: set[str],
 ) -> dict[str, list[dict[str, Any]]]:
     result: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    projects = frontier_payload.get("projects")
+    projects = frontier_payload.get("project")
     if not isinstance(projects, list):
         return dict(result)
     for row in projects:
@@ -217,7 +217,7 @@ def _index_packages(
     selected: set[str],
 ) -> dict[str, list[dict[str, Any]]]:
     result: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    projects = work_payload.get("projects")
+    projects = work_payload.get("project")
     if not isinstance(projects, list):
         return dict(result)
     for row in projects:

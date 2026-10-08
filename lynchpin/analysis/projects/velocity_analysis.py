@@ -26,7 +26,7 @@ SKIP_EXTENSIONS = {
     "ttf",
     "eot",
 }
-SKIP_PATHS = {"reports/", "artefacts/", "data/"}
+SKIP_PATHS = {"report/", "artefacts/", "data/"}
 
 AGGREGATE_PALETTE = [
     "#5470c6",

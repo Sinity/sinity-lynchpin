@@ -11,7 +11,7 @@ from tests.analysis.test_chisel_publication import _project
 
 
 def prepare(tmp_path, monkeypatch):
-    monkeypatch.setenv("LYNCHPIN_PROJECTS_ROOT", str(tmp_path / "projects"))
+    monkeypatch.setenv("LYNCHPIN_PROJECTS_ROOT", str(tmp_path / "project"))
     output = code_snapshots_path()
     output.mkdir(parents=True)
     (output / "index.md").write_text("old shared index")
@@ -43,8 +43,8 @@ def test_packages_move_without_changing_hashes_and_old_generations_are_retained(
     assert (code_snapshots_path("beta") / "source.xml").read_bytes() == b"old source"
     assert not (output / "alpha").exists()
     assert not (output / "alpha-all.tar.gz").exists()
-    assert "../../alpha/snapshots/current/" in (output / "index.md").read_text()
-    assert json.loads((output / "locations.json").read_text())["projects"]["alpha"] == str(current)
+    assert "../../alpha/snapshot/current/" in (output / "index.md").read_text()
+    assert json.loads((output / "locations.json").read_text())["project"]["alpha"] == str(current)
 
 
 def test_later_failure_restores_prior_project_and_shared_index(tmp_path, monkeypatch):

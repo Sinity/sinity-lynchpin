@@ -411,7 +411,7 @@ def machine_context_windows(
     windows = [row for row in payload.get("windows", []) if isinstance(row, dict)]
     rows = []
     for row in windows:
-        _proj_raw = row.get("projects")
+        _proj_raw = row.get("project")
         projects: list[Any] = _proj_raw if isinstance(_proj_raw, list) else []
         episode_count = int(row.get("episode_count") or 0)
         if project is not None and project not in projects:
@@ -964,7 +964,7 @@ def machine_work_state_windows(
     if project is not None:
         rows = [
             row for row in rows
-            if project in (_p if isinstance(_p := row.get("projects"), list) else [])
+            if project in (_p if isinstance(_p := row.get("project"), list) else [])
         ]
     summary = {
         "generated_at_utc": payload.get("generated_at_utc"),

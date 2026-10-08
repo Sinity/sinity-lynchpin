@@ -240,7 +240,7 @@ def _project_from_path(text: str) -> str | None:
     if "://" in text and not text.startswith("file://"):
         return None
     normalized = text.replace("\\", "/")
-    if any(root in normalized for root in ("/realm/projects/", "/realm/project/")):
+    if any(root in normalized for root in ("/realm/project/", "/realm/project/")):
         return canonical_project_name(normalized)
 
     if not text.startswith(("/", "~", ".")):

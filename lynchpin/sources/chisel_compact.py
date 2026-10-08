@@ -26,7 +26,7 @@ def resolved_stream(path: Path) -> Path:
 def compact_jsonl(package: Path) -> dict[str, object]:
     """Replace derived JSONL with deterministic gzip streams before manifesting."""
     package = Path(package)
-    roots = [package / name for name in ("structure", "reports", "history")]
+    roots = [package / name for name in ("structure", "report", "history")]
     roots.extend(sorted((package / "snapshots").glob("*/structure")))
     records: list[dict[str, object]] = []
     for root in roots:
@@ -69,7 +69,7 @@ def compact_jsonl(package: Path) -> dict[str, object]:
         if projection.get("edge_dataset") == "dependency_edges.jsonl" and (path.parent / "dependency_edges.jsonl.gz").is_file():
             projection["edge_dataset"] = "dependency_edges.jsonl.gz"
             path.write_text(json.dumps(projection, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    report_coverage = package / "reports/coverage.json"
+    report_coverage = package / "report/coverage.json"
     if report_coverage.is_file():
         coverage = json.loads(report_coverage.read_text(encoding="utf-8"))
         if isinstance(coverage.get("dataset_coverage"), dict):

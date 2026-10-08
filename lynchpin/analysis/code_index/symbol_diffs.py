@@ -79,7 +79,7 @@ def build_active_symbol_diffs(
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "window": {"start": start.isoformat(), "end": end.isoformat()},
             "methodology": _methodology(),
-            "projects": [],
+            "project": [],
             "events": [],
             "caveats": caveats,
         }
@@ -116,7 +116,7 @@ def build_active_symbol_diffs(
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "window": {"start": start.isoformat(), "end": end.isoformat()},
         "methodology": _methodology(),
-        "projects": project_summaries,
+        "project": project_summaries,
         "events": events,
         "caveats": caveats,
     }
@@ -324,7 +324,7 @@ def _index_symbols_by_path(
     selected: set[str],
 ) -> dict[tuple[str, str], tuple[dict[str, Any], ...]]:
     out: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    projects = payload.get("projects")
+    projects = payload.get("project")
     if not isinstance(projects, list):
         return {}
     for row in projects:
@@ -345,7 +345,7 @@ def _index_symbols_by_path(
 
 def _project_paths(snapshot: dict[str, Any], selected: set[str]) -> dict[str, str]:
     out: dict[str, str] = {}
-    rows = snapshot.get("projects")
+    rows = snapshot.get("project")
     if not isinstance(rows, list):
         return out
     for row in rows:

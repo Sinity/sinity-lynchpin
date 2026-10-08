@@ -54,7 +54,7 @@ def test_active_python_complexity_command_dispatches_materializer(monkeypatch) -
         "kwargs": {
             "start": date(2026, 5, 1),
             "end": date(2026, 5, 2),
-            "projects": ["sinity-lynchpin"],
+            "project": ["sinity-lynchpin"],
             "snapshot_file": "/tmp/snapshot.json",
         },
     }
@@ -80,7 +80,7 @@ def test_active_python_import_graph_command_dispatches_materializer(monkeypatch)
     assert seen == {
         "out": "/analysis/active_python_import_graph.json",
         "kwargs": {
-            "projects": ["sinity-lynchpin"],
+            "project": ["sinity-lynchpin"],
             "snapshot_file": "/analysis/active_project_snapshot.json",
         },
     }

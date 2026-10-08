@@ -21,7 +21,7 @@ def test_run_current_state_analysis_materializes_json_and_markdown(monkeypatch, 
     def fake_context_pack(**kwargs):
         calls.update(kwargs)
         mode = "network" if kwargs.get("include_github_frontier") else "materialized"
-        return _FakePack(start=kwargs["start"], mode=mode, projects=tuple(kwargs["projects"] or ()))
+        return _FakePack(start=kwargs["start"], mode=mode, projects=tuple(kwargs["project"] or ()))
 
     monkeypatch.setattr(current_state, "context_pack", fake_context_pack)
     monkeypatch.setattr(current_state, "render_context_pack", lambda pack: f"# pack {pack.mode}")
@@ -46,15 +46,15 @@ def test_run_current_state_analysis_materializes_json_and_markdown(monkeypatch, 
 
     assert calls["start"].date() == date(2026, 5, 1)
     assert calls["end"].date() == date(2026, 5, 5)
-    assert calls["projects"] == ("lynchpin",)
+    assert calls["project"] == ("lynchpin",)
     assert calls["weak_tags"] is True
     assert calls["persist_weak_tags"] is True
     assert calls["exclude_analysis_artifacts"] == current_state.CURRENT_STATE_ARTIFACT_NAMES
-    assert payload["projects"] == ["lynchpin"]
-    assert json.loads(out.read_text(encoding="utf-8"))["projects"] == ["lynchpin"]
+    assert payload["project"] == ["lynchpin"]
+    assert json.loads(out.read_text(encoding="utf-8"))["project"] == ["lynchpin"]
     assert markdown_out.read_text(encoding="utf-8") == "# pack materialized\n"
     assert promoted["graph"] == "graph"
-    assert promoted["projects"] == ("lynchpin",)
+    assert promoted["project"] == ("lynchpin",)
 
 
 def test_current_state_analysis_github_frontier_promotes_to_network(monkeypatch, tmp_path):

@@ -336,7 +336,7 @@ def symbol_churn_hotspots(
             conn, refresh_id=refresh_id, top_n=top_n, project=project
         )
 
-    return [{"path": r[0], "symbols": r[1], "commits": r[2], "changes": r[3], "projects": r[4]} for r in rows]
+    return [{"path": r[0], "symbols": r[1], "commits": r[2], "changes": r[3], "project": r[4]} for r in rows]
 
 
 def code_hotspots(

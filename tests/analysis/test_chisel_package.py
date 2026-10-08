@@ -93,7 +93,7 @@ def test_complete_attachment_works_offline_and_failure_retains_it(
     ]
     for path in core_representation["repomix_filtered_text_raw_only"]:
         assert (root / "demo/source" / path).read_bytes() == (repo / path).read_bytes()
-    assert json.loads((root / "portfolio.json").read_text())["projects"][0]["snapshot_id"] == capture["snapshot_id"]
+    assert json.loads((root / "portfolio.json").read_text())["project"][0]["snapshot_id"] == capture["snapshot_id"]
     extracted = tmp_path / "extracted"
     with tarfile.open(root / "portfolio-all.tar.gz") as archive:
         archive.extractall(extracted, filter="data")
@@ -172,7 +172,7 @@ def test_bundle_accepts_linked_worktree_head_pseudoref(tmp_path):
     bundle = tmp_path / "demo-all-refs.bundle"
     git(repo, "bundle", "create", str(bundle), "--all")
     heads = git(repo, "bundle", "list-heads", str(bundle)).splitlines()
-    assert any(name == "worktrees/linked-worktree/HEAD"
+    assert any(name == "worktree/linked-worktree/HEAD"
                for _, name in (line.split(" ", 1) for line in heads))
     refs = [line.split(" ", 1) for line in git(repo, "for-each-ref",
                                                 "--format=%(objectname) %(refname)").splitlines()]
@@ -213,10 +213,10 @@ def test_substrate_inventory_keeps_nested_source_identity(tmp_path):
     source = tmp_path / "demo/source"
     source.mkdir(parents=True)
     (source / "schema.xml").write_text("<schema/>\n")
-    _, rows = _results_to_rows({"projects": {"demo": {"status": "generated", "published": True}}},
+    _, rows = _results_to_rows({"project": {"demo": {"status": "generated", "published": True}}},
                               datetime.now(timezone.utc), tmp_path)
     assert rows[0]["filename"] == "source/schema.xml"
     assert rows[0]["kind"] == "captured_source"
-    _, unpublished = _results_to_rows({"projects": {"demo": {"status": "generated", "published": False}}},
+    _, unpublished = _results_to_rows({"project": {"demo": {"status": "generated", "published": False}}},
                                      datetime.now(timezone.utc), tmp_path)
     assert unpublished == []

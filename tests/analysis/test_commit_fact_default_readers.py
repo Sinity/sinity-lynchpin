@@ -147,7 +147,7 @@ def test_default_builders_read_serving_commit_facts(
     serving_substrate: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _no_polylogue(monkeypatch)
-    window = {"start": START, "end": END, "projects": [PROJECT]}
+    window = {"start": START, "end": END, "project": [PROJECT]}
 
     packages = run_active_work_packages(tmp_path / "packages.json", **window)
     hunks = run_active_commit_hunks(tmp_path / "hunks.json", **window)
@@ -158,7 +158,7 @@ def test_default_builders_read_serving_commit_facts(
         tmp_path / "history.json", projects=[PROJECT]
     )
 
-    assert sum(row["commit_count"] for row in packages["projects"]) == 2
+    assert sum(row["commit_count"] for row in packages["project"]) == 2
     assert hunks["commit_count"] == 2
     assert semantics["commit_count"] == 2
     assert len(attribution["commits"]) == 2
@@ -177,7 +177,7 @@ def test_candidate_context_reads_its_staged_generation(
     finally:
         _substrate_path_override.reset(token)
 
-    assert sum(row["commit_count"] for row in payload["projects"]) == 1
+    assert sum(row["commit_count"] for row in payload["project"]) == 1
 
 
 def _commit_facts_file(tmp_path: Path) -> Path:
@@ -199,7 +199,7 @@ def _commit_facts_file(tmp_path: Path) -> Path:
                         "path_roots": ["src"],
                     }
                 ],
-                "projects": [{"project": PROJECT, "default_branch": "main"}],
+                "project": [{"project": PROJECT, "default_branch": "main"}],
             }
         ),
         encoding="utf-8",

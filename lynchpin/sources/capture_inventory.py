@@ -129,7 +129,7 @@ def capture_inventory(captures_root: Path | None = None) -> tuple[CaptureInvento
     # An explicit override still applies uniformly to every entry (tests rely
     # on this to point the whole registry at one fake tree).
     activity_base = captures_root if captures_root is not None else get_config().data_root / "activity"
-    comms_base = captures_root if captures_root is not None else get_config().data_root / "accounts"
+    comms_base = captures_root if captures_root is not None else get_config().data_root / "account"
     items: list[CaptureInventoryItem] = []
     for item_id, rel_path, kind, note in _REGISTRY:
         base = comms_base if item_id == "comms_teams" else activity_base

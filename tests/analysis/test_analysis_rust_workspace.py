@@ -23,7 +23,7 @@ def test_rust_graph_requires_project_snapshot(tmp_path: Path) -> None:
 
 def test_rust_graph_requires_file_change_facts(tmp_path: Path) -> None:
     snapshot = tmp_path / "snapshot.json"
-    snapshot.write_text(json.dumps({"projects": []}), encoding="utf-8")
+    snapshot.write_text(json.dumps({"project": []}), encoding="utf-8")
 
     with pytest.raises(FileNotFoundError, match="active file-change facts is missing"):
         build_active_rust_graph(
@@ -34,7 +34,7 @@ def test_rust_graph_requires_file_change_facts(tmp_path: Path) -> None:
 
 def test_rust_graph_allows_valid_empty_inputs(tmp_path: Path) -> None:
     snapshot = tmp_path / "snapshot.json"
-    snapshot.write_text(json.dumps({"projects": []}), encoding="utf-8")
+    snapshot.write_text(json.dumps({"project": []}), encoding="utf-8")
     changes = tmp_path / "file_changes.json"
     changes.write_text(json.dumps({"file_changes": []}), encoding="utf-8")
 
@@ -43,4 +43,4 @@ def test_rust_graph_allows_valid_empty_inputs(tmp_path: Path) -> None:
         file_changes_file=changes,
     )
 
-    assert payload["projects"] == []
+    assert payload["project"] == []

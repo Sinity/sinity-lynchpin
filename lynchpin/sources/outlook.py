@@ -29,7 +29,7 @@ from typing import Iterator, Optional
 
 from ..core.errors import SourceUnavailableError
 
-PST_ROOT = Path("/realm/accounts/outlook/historical/jbr/raw")
+PST_ROOT = Path("/realm/account/outlook/historical/jbr/raw")
 
 
 def _load_operator_identity() -> tuple[str, str]:

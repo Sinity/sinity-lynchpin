@@ -445,7 +445,7 @@ def _plan(
 
 _plan(
     "sinex",
-    "/realm/projects/sinex/repo",
+    "/realm/project/sinex/repo",
     "Sinity/sinex",
     Slice(
         "code-proper",
@@ -702,7 +702,7 @@ _plan(
 
 _plan(
     "sinnix",
-    "/realm/projects/sinnix/repo",
+    "/realm/project/sinnix/repo",
     "Sinity/sinnix",
     Slice(
         "hosts-and-modules",
@@ -719,7 +719,7 @@ _plan(
         "Local package implementations, device tooling, tests, and documentation",
         (
             "pkgs/**",
-            "devices/**",
+            "device/**",
             "browser-extensions/**",
             "tests/**",
             "docs/**",
@@ -774,7 +774,7 @@ _plan(
 
 _plan(
     "polylogue",
-    "/realm/projects/polylogue/repo",
+    "/realm/project/polylogue/repo",
     "Sinity/polylogue",
     Slice(
         "core-and-storage",
@@ -1014,7 +1014,7 @@ _plan(
 
 _plan(
     "sinity-lynchpin",
-    "/realm/projects/sinity-lynchpin/repo",
+    "/realm/project/sinity-lynchpin/repo",
     "Sinity/sinity-lynchpin",
     Slice(
         "analysis-and-core",
@@ -1707,7 +1707,7 @@ def _collect_tokei_stats(plan: RepoPlan, generated_at: str) -> dict[str, Any]:
     for language, language_stats in raw.items():
         if language == "Total":
             continue
-        for report in language_stats.get("reports") or []:
+        for report in language_stats.get("report") or []:
             rel_path = _relative_tokei_report_name(plan, str(report.get("name", "")))
             bucket_name = _classify_stats_bucket(plan, rel_path)
             bucket = buckets.setdefault(

@@ -128,8 +128,8 @@ def test_manifest_rejects_missing_hash_and_undeclared_nested_files(
 def test_publication_checks_original_bytes_of_compacted_stream(tmp_path: Path) -> None:
     _project(tmp_path, "alpha", b"source", b"archive")
     project = tmp_path / "alpha"
-    (project / "reports").mkdir()
-    (project / "reports" / "references.jsonl").write_text('{"name":"target"}\n')
+    (project / "report").mkdir()
+    (project / "report" / "references.jsonl").write_text('{"name":"target"}\n')
     compact_jsonl(project)
     _write_manifest(project, "alpha")
     _validate_project(tmp_path, "alpha")

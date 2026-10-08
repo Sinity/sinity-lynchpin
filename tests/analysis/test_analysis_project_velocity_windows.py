@@ -13,7 +13,7 @@ from lynchpin.graph.work_correlation import CorrelatedWorkDay
 
 def test_project_velocity_windows_require_commit_facts(tmp_path: Path) -> None:
     work_packages = tmp_path / "work_packages.json"
-    work_packages.write_text(json.dumps({"projects": []}), encoding="utf-8")
+    work_packages.write_text(json.dumps({"project": []}), encoding="utf-8")
 
     with pytest.raises(FileNotFoundError, match="active commit facts is missing"):
         build_project_velocity_windows(
@@ -27,7 +27,7 @@ def test_project_velocity_windows_require_commit_facts(tmp_path: Path) -> None:
 
 def test_project_velocity_windows_require_work_packages(tmp_path: Path) -> None:
     commit_facts = tmp_path / "commit_facts.json"
-    commit_facts.write_text(json.dumps({"projects": [], "commits": []}), encoding="utf-8")
+    commit_facts.write_text(json.dumps({"project": [], "commits": []}), encoding="utf-8")
 
     with pytest.raises(FileNotFoundError, match="active work packages is missing"):
         build_project_velocity_windows(
@@ -41,7 +41,7 @@ def test_project_velocity_windows_require_work_packages(tmp_path: Path) -> None:
 
 def test_project_velocity_windows_keep_dimensions_separate() -> None:
     commit_payload = {
-        "projects": [{"project": "demo", "path": "/tmp/demo", "default_branch": "master", "exists": True}],
+        "project": [{"project": "demo", "path": "/tmp/demo", "default_branch": "master", "exists": True}],
         "commits": [
             {
                 "project": "demo",
@@ -64,7 +64,7 @@ def test_project_velocity_windows_keep_dimensions_separate() -> None:
         ],
     }
     work_payload = {
-        "projects": [
+        "project": [
             {
                 "project": "demo",
                 "path": "/tmp/demo",
@@ -111,7 +111,7 @@ def test_project_velocity_windows_keep_dimensions_separate() -> None:
         work_payload=work_payload,
         correlation_rows=rows,
     )
-    project = payload["projects"][0]
+    project = payload["project"][0]
 
     assert "velocity_score" not in project
     assert project["micro_effort"]["commit_count"] == 1
@@ -146,8 +146,8 @@ def test_project_velocity_windows_builds_correlation_graph_without_analysis_arti
     build_project_velocity_windows(
         start=date(2026, 5, 1),
         end=date(2026, 5, 2),
-        commit_payload={"projects": [{"project": "demo"}], "commits": []},
-        work_payload={"projects": [{"project": "demo", "packages": []}]},
+        commit_payload={"project": [{"project": "demo"}], "commits": []},
+        work_payload={"project": [{"project": "demo", "packages": []}]},
     )
 
     # The base graph builder doesn't accept (or need) an exclusion list —
@@ -162,7 +162,7 @@ def test_project_velocity_windows_builds_correlation_graph_without_analysis_arti
 def test_package_support_commit_overlap_strong() -> None:
     """Package matched by commit SHA overlap gets strong support with AI session count."""
     commit_payload = {
-        "projects": [{"project": "demo", "path": "/tmp/demo", "default_branch": "master", "exists": True}],
+        "project": [{"project": "demo", "path": "/tmp/demo", "default_branch": "master", "exists": True}],
         "commits": [
             {
                 "project": "demo",
@@ -203,7 +203,7 @@ def test_package_support_commit_overlap_strong() -> None:
         ],
     }
     work_payload = {
-        "projects": [
+        "project": [
             {
                 "project": "demo",
                 "path": "/tmp/demo",
@@ -270,7 +270,7 @@ def test_package_support_commit_overlap_strong() -> None:
         work_payload=work_payload,
         correlation_rows=rows,
     )
-    project = payload["projects"][0]
+    project = payload["project"][0]
     packages = project["meso_delivery"]["top_packages"]
     assert len(packages) == 1
     support = packages[0]["cross_source_support"]
@@ -284,7 +284,7 @@ def test_package_support_commit_overlap_strong() -> None:
 def test_package_support_github_ref_overlap_without_commit_overlap() -> None:
     """GitHub ref overlap alone yields strong support when non-git sources exist."""
     commit_payload = {
-        "projects": [{"project": "demo", "path": "/tmp/demo", "default_branch": "master", "exists": True}],
+        "project": [{"project": "demo", "path": "/tmp/demo", "default_branch": "master", "exists": True}],
         "commits": [
             {
                 "project": "demo",
@@ -307,7 +307,7 @@ def test_package_support_github_ref_overlap_without_commit_overlap() -> None:
         ],
     }
     work_payload = {
-        "projects": [
+        "project": [
             {
                 "project": "demo",
                 "path": "/tmp/demo",
@@ -357,7 +357,7 @@ def test_package_support_github_ref_overlap_without_commit_overlap() -> None:
         work_payload=work_payload,
         correlation_rows=rows,
     )
-    support = payload["projects"][0]["meso_delivery"]["top_packages"][0]["cross_source_support"]
+    support = payload["project"][0]["meso_delivery"]["top_packages"][0]["cross_source_support"]
 
     assert support["support_level"] == "strong"
     assert support["match_reasons"]["github_ref_overlap"] >= 1
@@ -367,11 +367,11 @@ def test_package_support_github_ref_overlap_without_commit_overlap() -> None:
 def test_package_support_date_only_moderate() -> None:
     """Date-only match with 2+ sources yields moderate support."""
     commit_payload = {
-        "projects": [{"project": "demo", "path": "/tmp/demo", "default_branch": "master", "exists": True}],
+        "project": [{"project": "demo", "path": "/tmp/demo", "default_branch": "master", "exists": True}],
         "commits": [],
     }
     work_payload = {
-        "projects": [
+        "project": [
             {
                 "project": "demo",
                 "path": "/tmp/demo",
@@ -421,7 +421,7 @@ def test_package_support_date_only_moderate() -> None:
         work_payload=work_payload,
         correlation_rows=rows,
     )
-    support = payload["projects"][0]["meso_delivery"]["top_packages"][0]["cross_source_support"]
+    support = payload["project"][0]["meso_delivery"]["top_packages"][0]["cross_source_support"]
 
     assert support["support_level"] == "moderate"
     assert support["match_reasons"]["date_overlap"] >= 1
@@ -432,7 +432,7 @@ def test_package_support_date_only_moderate() -> None:
 def test_package_support_no_matching_rows_weak() -> None:
     """Package with no matching rows gets weak support and a caveat."""
     commit_payload = {
-        "projects": [{"project": "demo", "path": "/tmp/demo", "default_branch": "master", "exists": True}],
+        "project": [{"project": "demo", "path": "/tmp/demo", "default_branch": "master", "exists": True}],
         "commits": [
             {
                 "project": "demo",
@@ -455,7 +455,7 @@ def test_package_support_no_matching_rows_weak() -> None:
         ],
     }
     work_payload = {
-        "projects": [
+        "project": [
             {
                 "project": "demo",
                 "path": "/tmp/demo",
@@ -505,7 +505,7 @@ def test_package_support_no_matching_rows_weak() -> None:
         work_payload=work_payload,
         correlation_rows=rows,
     )
-    support = payload["projects"][0]["meso_delivery"]["top_packages"][0]["cross_source_support"]
+    support = payload["project"][0]["meso_delivery"]["top_packages"][0]["cross_source_support"]
 
     assert support["support_level"] == "weak"
     assert any("no correlated" in c for c in support["caveats"])
@@ -515,7 +515,7 @@ def test_package_support_no_matching_rows_weak() -> None:
 def test_package_support_fields_in_top_packages() -> None:
     """Every package in top_packages carries a cross_source_support key with required fields."""
     commit_payload = {
-        "projects": [
+        "project": [
             {"project": "demo", "path": "/tmp/demo", "default_branch": "master", "exists": True},
             {"project": "other", "path": "/tmp/other", "default_branch": "main", "exists": True},
         ],
@@ -559,7 +559,7 @@ def test_package_support_fields_in_top_packages() -> None:
         ],
     }
     work_payload = {
-        "projects": [
+        "project": [
             {
                 "project": "demo",
                 "path": "/tmp/demo",
@@ -677,7 +677,7 @@ def test_package_support_fields_in_top_packages() -> None:
         "caveats",
     )
 
-    for project in payload["projects"]:
+    for project in payload["project"]:
         for pkg in project["meso_delivery"]["top_packages"]:
             assert "cross_source_support" in pkg, f"{pkg.get('work_package_id')} missing cross_source_support"
             support = pkg["cross_source_support"]
@@ -694,7 +694,7 @@ def test_package_support_fields_in_top_packages() -> None:
 def test_no_velocity_score_with_package_support() -> None:
     """No velocity_score appears anywhere in the payload, recursively."""
     commit_payload = {
-        "projects": [{"project": "demo", "path": "/tmp/demo", "default_branch": "master", "exists": True}],
+        "project": [{"project": "demo", "path": "/tmp/demo", "default_branch": "master", "exists": True}],
         "commits": [
             {
                 "project": "demo",
@@ -717,7 +717,7 @@ def test_no_velocity_score_with_package_support() -> None:
         ],
     }
     work_payload = {
-        "projects": [
+        "project": [
             {
                 "project": "demo",
                 "path": "/tmp/demo",

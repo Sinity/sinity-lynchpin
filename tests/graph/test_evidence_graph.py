@@ -870,7 +870,7 @@ def test_network_evidence_graph_enriches_only_selected_project_commits(monkeypat
     monkeypatch.setattr(
         "lynchpin.graph.evidence_git.iter_github_context",
         lambda *, projects=None, **_kwargs: captured.setdefault(
-            "projects", tuple(sorted(projects or ()))
+            "project", tuple(sorted(projects or ()))
         )
         and iter(()),
     )
@@ -941,7 +941,7 @@ def test_network_evidence_graph_enriches_only_selected_project_commits(monkeypat
         include_github_frontier=True,
     )
 
-    assert captured["projects"] == ("sinity-lynchpin",)
+    assert captured["project"] == ("sinity-lynchpin",)
     assert {node.project for node in graph.nodes} == {"sinity-lynchpin"}
 
 

@@ -11,14 +11,14 @@ def code_snapshots_path(project: str | None = None) -> Path:
     """Return the stable output root (or per-project subdir) for code snapshots."""
     from lynchpin.core.config import get_config
 
-    base = Path(os.environ.get("LYNCHPIN_PROJECTS_ROOT", get_config().data_root / "projects"))
+    base = Path(os.environ.get("LYNCHPIN_PROJECTS_ROOT", get_config().data_root / "project"))
     if project is not None and (not project or Path(project).name != project or project in {".", ".."}):
         raise ValueError("project must be a single path component")
-    return base / project / "snapshots/current" if project else base / "shared/snapshots"
+    return base / project / "snapshot/current" if project else base / "shared/snapshot"
 
 
 def code_snapshot_export_path(project: str) -> Path:
-    return code_snapshots_path(project).parent / "exports" / f"{project}-all.tar.gz"
+    return code_snapshots_path(project).parent / "export" / f"{project}-all.tar.gz"
 
 
 def snapshot_layout_plan(source: Path) -> list[dict[str, str]]:

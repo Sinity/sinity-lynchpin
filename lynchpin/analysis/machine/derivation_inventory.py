@@ -198,7 +198,7 @@ def _package_attrs(root: Path, *, system: str, evaluator: NixEval, flake_base: s
 def _default_roots() -> tuple[tuple[str, Path], ...]:
     cfg = get_config()
     return (
-        ("sinex", Path("/realm/projects/sinex/repo")),
+        ("sinex", Path("/realm/project/sinex/repo")),
         ("polylogue", cfg.polylogue_project_root),
         ("sinity-lynchpin", cfg.repo_root),
     )

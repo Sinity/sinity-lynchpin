@@ -323,7 +323,7 @@ def _polylogue_archive_support(spec: dict[str, Any]) -> dict[str, Any]:
         "recent_total_messages": recent.get("total_messages", 0),
         "recent_total_words": recent.get("total_words", 0),
         "providers": recent.get("providers", {}),
-        "projects": recent.get("projects", {}),
+        "project": recent.get("project", {}),
     }
 
 

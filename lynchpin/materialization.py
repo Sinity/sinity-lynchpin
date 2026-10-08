@@ -2355,7 +2355,7 @@ def _goodreads_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.goodreads_library,),
         authority="Goodreads library export CSV",
         query_surface="lynchpin.sources.exports_goodreads",
-        materialization_hint="replace /realm/accounts/goodreads/raw/library_export.csv",
+        materialization_hint="replace /realm/account/goodreads/raw/library_export.csv",
         row_count=_csv_count(cfg.goodreads_library),
     )
 
@@ -2506,7 +2506,7 @@ def _keylog_analysis_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(path,),
-        raw_roots=(cfg.keylog_root, Path("/realm/projects/sinnix/repo/modules/features/desktop/hyprland")),
+        raw_roots=(cfg.keylog_root, Path("/realm/project/sinnix/repo/modules/features/desktop/hyprland")),
         row_count=_int_or_none(payload.get("source_event_count")),
         first_date=first,
         last_date=last,
@@ -2604,7 +2604,7 @@ def _wykop_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(root,),
         authority="Wykop GDPR export",
         query_surface="lynchpin.sources.wykop",
-        materialization_hint="replace Wykop GDPR export under /realm/accounts/wykop/raw",
+        materialization_hint="replace Wykop GDPR export under /realm/account/wykop/raw",
         row_count=_count_files(root, suffixes=(".csv", ".json", ".jsonl")),
     )
     try:

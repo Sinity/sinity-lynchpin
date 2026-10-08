@@ -341,7 +341,7 @@ def _project_map(payload: dict[str, Any] | None, selected: set[str]) -> dict[str
     out: dict[str, str] = {}
     if not payload:
         return out
-    for row in payload.get("projects", []) or []:
+    for row in payload.get("project", []) or []:
         if not isinstance(row, dict):
             continue
         name = row.get("project")

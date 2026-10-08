@@ -170,7 +170,7 @@ def verify_history_bundle(plan: Any, inventory: Any, out_dir: Path) -> None:
     # history inventory. Continue to require every true ref and the main HEAD
     # to match exactly, and reject every other unexpected bundle name.
     worktree_heads = {name: value for name, value in actual.items()
-                      if name.startswith("worktrees/") and name.endswith("/HEAD")}
+                      if name.startswith("worktree/") and name.endswith("/HEAD")}
     actual_without_worktree_heads = {
         name: value for name, value in actual.items() if name not in worktree_heads
     }

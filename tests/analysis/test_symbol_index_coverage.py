@@ -34,7 +34,7 @@ def test_symbol_index_coverage_reports_skips_and_indexes_above_old_limit(tmp_pat
     monkeypatch.setattr(symbol_index, "_extract_symbols", extract_symbols)
     profile = ProjectProfile(name="demo", path=repo, classify=lambda p: "src",
                              categories=("src",), colors={"src": "#000"})
-    project = symbol_index.build_active_symbol_index(projects=("demo",), profiles={"demo": profile})["projects"][0]
+    project = symbol_index.build_active_symbol_index(projects=("demo",), profiles={"demo": profile})["project"][0]
     assert [row["qualified_name"] for row in project["symbols"]] == ["present"]
     assert project["coverage_complete"] is False
     assert {(row["path"], row["reason"]) for row in project["omissions"]} == {

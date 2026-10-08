@@ -137,12 +137,12 @@ class LynchpinConfig:
             "sinnix_runtime_inventory": self.sinnix_runtime_inventory_json.exists(),
             "browser_bookmarks": self.browser_bookmarks_root.exists(),
             "arbtt": self.arbtt_root.exists(),
-            "notifications": any((self.data_root / "activity/desktop/notifications").glob("notifications-*.jsonl")),
+            "notifications": any((self.data_root / "activity/desktop/notification").glob("notifications-*.jsonl")),
             "mpris": any((self.data_root / "activity/desktop/media").glob("mpris-*.jsonl")),
             "audio_index": any((self.data_root / "activity/audio/index").glob("audio-index-*.jsonl")),
             # Audio producers retain their lane identities within one medium home.
             "audio_topology": any((self.data_root / "activity/audio/topology").glob("audio-topology-*.jsonl")),
-            "screen_frames": any((self.data_root / "activity/desktop/frames").glob("screen-frames-*.jsonl")),
+            "screen_frames": any((self.data_root / "activity/desktop/frame").glob("screen-frames-*.jsonl")),
             "phone_events": self.phone_events_dir.exists() and any(self.phone_events_dir.glob("events-*.jsonl")),
             "xiaomi_cloud": any((self.data_root / "health/xiaomi-cloud").glob("xiaomi-cloud-*.jsonl")),
             "phone_ambient": self.phone_ambient_jsonl.exists(),
@@ -157,11 +157,11 @@ class LynchpinConfig:
         # Platform-account exports and bounded communication archives
         # (google, reddit, spotify, raindrop, facebook-messenger, teams,
         # outlook, ...). Health exports carry their own root below.
-        accounts_root = Path(os.environ.get("LYNCHPIN_ACCOUNTS_ROOT", data_root / "accounts"))
+        accounts_root = Path(os.environ.get("LYNCHPIN_ACCOUNTS_ROOT", data_root / "account"))
         health_root = Path(os.environ.get("LYNCHPIN_HEALTH_ROOT", data_root / "health"))
         derived_root = Path(os.environ.get("LYNCHPIN_DERIVED_ROOT", data_root / "state/lynchpin/products"))
         libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", "/realm/library"))
-        sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/projects/sinnix/repo"))
+        sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/project/sinnix/repo"))
         local_root = _default_local_root(repo_root, os.environ.get("LYNCHPIN_LOCAL_ROOT"))
         generated_root = _non_legacy_generated_path(
             os.environ.get("LYNCHPIN_GENERATED_ROOT"), local_root / "generated"
@@ -185,7 +185,7 @@ class LynchpinConfig:
             os.environ.get("LYNCHPIN_ARTEFACT_CATALOG"), registry_root / "artefact_catalog.json"
         )
         analysis_output_dir = _non_legacy_generated_path(
-            os.environ.get("LYNCHPIN_ANALYSIS_OUTPUT_DIR"), data_root / "projects/shared/analysis/lynchpin"
+            os.environ.get("LYNCHPIN_ANALYSIS_OUTPUT_DIR"), data_root / "project/shared/analysis/lynchpin"
         )
         session_ledger_output = _non_legacy_generated_path(
             os.environ.get("LYNCHPIN_SESSION_LEDGER_OUTPUT"),
@@ -233,10 +233,10 @@ class LynchpinConfig:
         codex_sessions_root = Path(os.environ.get("LYNCHPIN_CODEX_ROOT", "~/.codex/sessions")).expanduser()
 
         reddit_export_dir = _resolve_reddit_export(
-            os.environ.get("LYNCHPIN_REDDIT_EXPORT_DIR"), data_root / "accounts/reddit/processed"
+            os.environ.get("LYNCHPIN_REDDIT_EXPORT_DIR"), data_root / "account/reddit/processed"
         )
         spotify_root = _resolve_spotify_export(Path(os.environ.get(
-            "LYNCHPIN_SPOTIFY_ROOT", data_root / "accounts/spotify/processed"
+            "LYNCHPIN_SPOTIFY_ROOT", data_root / "account/spotify/processed"
         )))
         polylogue_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ROOT", data_root / "state/polylogue/markdown"))
         polylogue_archive_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ARCHIVE_ROOT", data_root / "state/polylogue"))
@@ -244,7 +244,7 @@ class LynchpinConfig:
         polylogue_db = _default_polylogue_db(xdg_data_home)
         polylogue_project_root = Path(os.environ.get(
             "LYNCHPIN_POLYLOGUE_PROJECT_ROOT",
-            os.environ.get("POLYLOGUE_ROOT", "/realm/projects/polylogue/repo"),
+            os.environ.get("POLYLOGUE_ROOT", "/realm/project/polylogue/repo"),
         )).expanduser()
         fbmessenger_gdpr_root = Path(os.environ.get(
             "LYNCHPIN_FBMESSENGER_GDPR", accounts_root / "facebook-messenger/processed/gdpr"
@@ -255,14 +255,14 @@ class LynchpinConfig:
         )))
 
         asciinema_root = Path(os.environ.get("LYNCHPIN_ASCIINEMA_ROOT", data_root / "activity/terminal/asciinema"))
-        audio_root = Path(os.environ.get("LYNCHPIN_AUDIO_ROOT", data_root / "activity/audio/recordings/raw"))
-        screenshot_root = Path(os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", data_root / "activity/desktop/screenshots"))
+        audio_root = Path(os.environ.get("LYNCHPIN_AUDIO_ROOT", data_root / "activity/audio/recording/raw"))
+        screenshot_root = Path(os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", data_root / "activity/desktop/screenshot"))
         keylog_root = Path(os.environ.get("LYNCHPIN_KEYLOG_ROOT", data_root / "activity/desktop/keyboard"))
 
         cache_dir = Path(os.environ.get("LYNCHPIN_CACHE_DIR", local_root / "cache/lynchpin"))
         dendron_root = Path(os.environ.get("LYNCHPIN_DENDRON_ROOT", "/realm/archive/knowledgebase"))
 
-        raindrop_dir = Path(os.environ.get("LYNCHPIN_RAINDROP_DIR", data_root / "accounts/raindrop/raw"))
+        raindrop_dir = Path(os.environ.get("LYNCHPIN_RAINDROP_DIR", data_root / "account/raindrop/raw"))
         raindrop_csv = _resolve_raindrop_csv(os.environ.get("LYNCHPIN_RAINDROP_CSV"), raindrop_dir)
         substack_root = Path(os.environ.get("LYNCHPIN_SUBSTACK_ROOT", "/realm/library/web/substack"))
         substack_downloader = Path(os.environ.get(
@@ -273,11 +273,11 @@ class LynchpinConfig:
         # exports/) -- both are still env-overridable, only the hardcoded
         # default changed. The generic root followed on 2026-08-24.
         goodreads_library = Path(os.environ.get(
-            "LYNCHPIN_GOODREADS_LIBRARY", data_root / "accounts/goodreads/raw/library_export.csv"
+            "LYNCHPIN_GOODREADS_LIBRARY", data_root / "account/goodreads/raw/library_export.csv"
         ))
-        wykop_root = Path(os.environ.get("LYNCHPIN_WYKOP_ROOT", data_root / "accounts/wykop/raw"))
+        wykop_root = Path(os.environ.get("LYNCHPIN_WYKOP_ROOT", data_root / "account/wykop/raw"))
         wykop_username = os.environ.get("LYNCHPIN_WYKOP_USER", "Sinity")
-        themotte_root = Path(os.environ.get("LYNCHPIN_THEMOTTE_ROOT", data_root / "accounts/themotte/raw"))
+        themotte_root = Path(os.environ.get("LYNCHPIN_THEMOTTE_ROOT", data_root / "account/themotte/raw"))
         themotte_username = os.environ.get("LYNCHPIN_THEMOTTE_USER", "Sinity")
         samsung_gdpr_cloud_dir = Path(os.environ.get(
             "LYNCHPIN_SAMSUNG_GDPR_CLOUD", data_root / "health/raw/samsung-gdpr-cloud"
@@ -301,13 +301,13 @@ class LynchpinConfig:
         raw_log_file = Path(os.environ.get(
             "LYNCHPIN_RAW_LOG_FILE", os.environ.get("RAWLOG_FILE", data_root / "personal/journal/raw-log.md")
         ))
-        machine_capture_root = Path(os.environ.get("LYNCHPIN_MACHINE_CAPTURE_ROOT", data_root / "devices/sinnix-prime"))
+        machine_capture_root = Path(os.environ.get("LYNCHPIN_MACHINE_CAPTURE_ROOT", data_root / "device/sinnix-prime"))
         machine_host_root = Path(os.environ.get("LYNCHPIN_MACHINE_HOST_ROOT", machine_capture_root))
         machine_telemetry_db = Path(os.environ.get(
             "LYNCHPIN_MACHINE_TELEMETRY_DB", data_root / "state/machine-telemetry/telemetry.sqlite"
         ))
         machine_telemetry_lake_root = Path(os.environ.get(
-            "LYNCHPIN_MACHINE_TELEMETRY_LAKE_ROOT", data_root / "devices/sinnix-prime/analysis"
+            "LYNCHPIN_MACHINE_TELEMETRY_LAKE_ROOT", data_root / "device/sinnix-prime/analysis"
         ))
         sinnix_generations_jsonl = Path(os.environ.get(
             "LYNCHPIN_SINNIX_GENERATIONS_JSONL",
@@ -348,11 +348,11 @@ class LynchpinConfig:
         # clean subject).
         phone_events_dir = Path(os.environ.get(
             "LYNCHPIN_PHONE_EVENTS_DIR",
-            data_root / "devices/shared/phone/events",
+            data_root / "device/shared/phone/events",
         ))
         phone_ambient_jsonl = Path(os.environ.get(
             "LYNCHPIN_PHONE_AMBIENT_JSONL",
-            data_root / "devices/shared/phone/ambient-levels.jsonl",
+            data_root / "device/shared/phone/ambient-levels.jsonl",
         ))
         steering_jsonl_dir = Path(os.environ.get(
             "LYNCHPIN_STEERING_JSONL_DIR",
@@ -364,7 +364,7 @@ class LynchpinConfig:
         ))
         transcripts_dir = Path(os.environ.get(
             "LYNCHPIN_TRANSCRIPTS_DIR",
-            data_root / "activity/audio/transcripts",
+            data_root / "activity/audio/transcript",
         ))
         transcribed_ledger_jsonl = Path(os.environ.get(
             "LYNCHPIN_TRANSCRIBED_LEDGER_JSONL",
@@ -447,7 +447,7 @@ def get_config() -> LynchpinConfig:
 def _default_local_root(repo_root: Path, env_value: str | None) -> Path:
     if env_value:
         return Path(env_value)
-    checkout_root = Path("/realm/projects/sinity-lynchpin/repo")
+    checkout_root = Path("/realm/project/sinity-lynchpin/repo")
     if "nix" in repo_root.parts and "store" in repo_root.parts and checkout_root.exists():
         return checkout_root / ".lynchpin"
     return repo_root / ".lynchpin"
@@ -550,7 +550,7 @@ def _resolve_xtask_history_db(env_value: str | None) -> Path:
     override = os.environ.get("XTASK_HISTORY_DB")
     if override:
         return Path(override).expanduser()
-    checkout_root = Path(os.environ.get("SINEX_ROOT", "/realm/projects/sinex/repo")).expanduser()
+    checkout_root = Path(os.environ.get("SINEX_ROOT", "/realm/project/sinex/repo")).expanduser()
     return checkout_root / ".sinex/state/xtask-history.db"
 
 

@@ -98,7 +98,7 @@ def read_commit_facts(
     """Return a payload dict matching ``active_commit_facts.json`` shape.
 
     Queries ``commit_fact`` and wraps results in
-    ``{"commits": [...], "projects": [...], "window": {...}, "refresh_id": ...}``
+    ``{"commits": [...], "project": [...], "window": {...}, "refresh_id": ...}``
     so downstream consumers (ai_attribution, work_packages) see the same
     structure they get from the JSON file.
 
@@ -116,7 +116,7 @@ def read_commit_facts(
         if refresh_id is None:
             return {
                 "commits": [],
-                "projects": [],
+                "project": [],
                 "window": {
                     "start": start.isoformat() if start else "",
                     "end": end.isoformat() if end else "",
@@ -228,7 +228,7 @@ def read_commit_facts(
 
     return {
         "commits": commits,
-        "projects": list(seen_projects.values()),
+        "project": list(seen_projects.values()),
         "window": {
             "start": actual_start or (start.isoformat() if start else ""),
             "end": actual_end or (end.isoformat() if end else ""),

@@ -54,7 +54,7 @@ def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path,
             revision=inventory.revision, dirty=inventory.dirty, github_items=items,
             github_slug=plan.github_slug)),
         ("context", lambda: collect_excerpts(plan.path, out_dir, chisel_options.active_options)),
-        ("reports", lambda: report_builder(out_dir, project=plan.name,
+        ("report", lambda: report_builder(out_dir, project=plan.name,
             task_roots=[root for project, root in chisel_options.active_options.task_roots if project == plan.name])),
         ("compact", lambda: compact_jsonl(out_dir)),
         ("offline-index", lambda: build_offline_package(out_dir, project=plan.name,
@@ -62,7 +62,7 @@ def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path,
     ]
     timings = []
     for name, run in steps:
-        dataset = {"owner-evidence": "execution", "offline-index": "source", "reports": "source", "overlay-views": "structure"}.get(name, name)
+        dataset = {"owner-evidence": "execution", "offline-index": "source", "report": "source", "overlay-views": "structure"}.get(name, name)
         if name == "owner-evidence" and "trackers" in chisel_options.active_options.datasets:
             pass
         elif name == "compact":
@@ -97,7 +97,7 @@ def build_portfolio(root: Path, plans: Any, results: dict, generated_at: str) ->
                  "captured_at": json.loads((root / p.name / "capture.json").read_text())["generated_at"],
                  "git": results[p.name]["git"], "path": p.name} for p in plans]
     (root / "portfolio.json").write_text(json.dumps({
-        "generated_at": generated_at, "projects": projects,
+        "generated_at": generated_at, "project": projects,
         "method": "comparisons use each listed capture; capture times may differ",
     }, indent=2) + "\n", encoding="utf-8")
     (root / "START_HERE.md").write_text(

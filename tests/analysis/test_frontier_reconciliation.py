@@ -13,7 +13,7 @@ from lynchpin.analysis.frontier.reconciliation import (
 
 
 def _frontier_payload(*projects):
-    return {"projects": list(projects)}
+    return {"project": list(projects)}
 
 
 def _project_frontier(*, project: str, items_by_lifecycle: dict):
@@ -40,7 +40,7 @@ def _issue(number: int, lifecycle: str, *, state: str = "open",
 
 
 def _work_payload(*projects):
-    return {"projects": list(projects)}
+    return {"project": list(projects)}
 
 
 def _project_packages(*, project: str, packages: list):
@@ -166,7 +166,7 @@ def test_project_filter_isolates_selected_projects(tmp_path):
         frontier_file=f, work_packages_file=w,
     )
     assert payload["summary"]["tracking_count"] == 1
-    assert payload["projects"][0]["project"] == "alpha"
+    assert payload["project"][0]["project"] == "alpha"
 
 
 def test_requires_frontier_artifact(tmp_path):

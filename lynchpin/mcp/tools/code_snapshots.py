@@ -59,7 +59,7 @@ def code_snapshot_status() -> dict[str, Any]:
 
     return {
         "materialization": mat_payload,
-        "projects": projects,
+        "project": projects,
     }
 
 

@@ -42,7 +42,7 @@ def test_active_work_packages_group_refs_before_conventional_scope(tmp_path: Pat
     (tmp_path / "src" / "b.py").write_text("", encoding="utf-8")
     payload = {
         "window": {"start": "2026-05-01", "end": "2026-05-05"},
-        "projects": [{"project": "demo", "path": str(tmp_path), "default_branch": "master", "status": "available"}],
+        "project": [{"project": "demo", "path": str(tmp_path), "default_branch": "master", "status": "available"}],
         "commits": [
             _commit(
                 sha="a" * 40,
@@ -81,7 +81,7 @@ def test_active_work_packages_group_refs_before_conventional_scope(tmp_path: Pat
         end=None,
         commit_payload=payload,
     )
-    packages = result["projects"][0]["packages"]
+    packages = result["project"][0]["packages"]
 
     assert [pkg["unit_type"] for pkg in packages] == ["github_thread", "single_commit"]
     assert packages[0]["unit_key"] == "pr#7"
@@ -93,7 +93,7 @@ def test_active_work_packages_group_refs_before_conventional_scope(tmp_path: Pat
 def test_active_work_packages_split_scoped_bursts_by_gap(tmp_path: Path) -> None:
     payload = {
         "window": {"start": "2026-05-01", "end": "2026-05-10"},
-        "projects": [{"project": "demo", "path": str(tmp_path), "default_branch": "master", "status": "available"}],
+        "project": [{"project": "demo", "path": str(tmp_path), "default_branch": "master", "status": "available"}],
         "commits": [
             _commit(
                 sha="a" * 40,
@@ -126,7 +126,7 @@ def test_active_work_packages_split_scoped_bursts_by_gap(tmp_path: Path) -> None
     }
 
     result = build_active_work_packages(commit_payload=payload)
-    packages = result["projects"][0]["packages"]
+    packages = result["project"][0]["packages"]
 
     assert packages[0]["unit_type"] == "conventional_scope_burst"
     assert packages[0]["commit_count"] == 2

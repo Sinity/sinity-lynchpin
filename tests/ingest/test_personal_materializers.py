@@ -293,7 +293,7 @@ def test_active_profile_bookmark_is_queryable_and_unreadable_snapshot_refuses(mo
 
 def test_materialize_communications_reads_outlook_csv(monkeypatch, tmp_path):
     exports = tmp_path / "exports"
-    outlook = exports / "accounts" / "outlook" / "raw"
+    outlook = exports / "account" / "outlook" / "raw"
     outlook.mkdir(parents=True)
     csv_path = outlook / "sent.CSV"
     with csv_path.open("w", encoding="cp1250", newline="") as handle:
@@ -324,7 +324,7 @@ def test_materialize_communications_reads_outlook_csv(monkeypatch, tmp_path):
         (),
         {
             "data_root": exports,
-            "accounts_root": exports / "accounts",
+            "accounts_root": exports / "account",
             "libraries_root": tmp_path / "libraries",
             "teams_root": tmp_path / "teams",
             "fbmessenger_gdpr_root": tmp_path / "messenger",

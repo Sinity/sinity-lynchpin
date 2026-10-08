@@ -76,7 +76,7 @@ def test_split_parts_reconstruct_and_verify_raw_xml(tmp_path):
     subprocess.run(["python", "-I", str(extracted / "reconstruct.py")], cwd=extracted, check=True)
     assert (extracted / "sample/source/large.bin").read_bytes() == data
     assert (extracted / "sample/source/schema.xml").read_text() == "<original/>\n"
-    assert json.loads((root / "attachments.json").read_text())["projects"] == ["sample"]
+    assert json.loads((root / "attachments.json").read_text())["project"] == ["sample"]
 
 
 def test_default_attachments_include_portfolio_and_individual_projects(tmp_path):
@@ -85,7 +85,7 @@ def test_default_attachments_include_portfolio_and_individual_projects(tmp_path)
         source = root / name / "source"
         source.mkdir(parents=True)
         (source / "main.py").write_text(f"PROJECT = {name!r}\n")
-    (root / "portfolio.json").write_text('{"projects": []}')
+    (root / "portfolio.json").write_text('{"project": []}')
 
     manifest = build_attachments(root, ["first", "second"], limit=500_000_000)
 
@@ -152,7 +152,7 @@ def test_reader_filters_snapshot_before_pagination_and_refuses_missing_views(tmp
         {"name": "primary", "snapshot_id": "primary-id"},
         {"name": "worktree", "snapshot_id": "worktree-id"},
     ]}))
-    reports = tmp_path / "reports"
+    reports = tmp_path / "report"
     reports.mkdir()
     records = [
         {"snapshot_id": "primary-id", "evidence_id": None},
@@ -219,17 +219,17 @@ def test_candidate_report_keeps_unbound_lifecycle_records_out_of_snapshot_rows(t
 
     build_reports(tmp_path, project="fixture", task_roots=[])
 
-    candidates = [json.loads(line) for line in (tmp_path / "reports/candidate-evidence.jsonl").read_text().splitlines()]
+    candidates = [json.loads(line) for line in (tmp_path / "report/candidate-evidence.jsonl").read_text().splitlines()]
     assert [(row["snapshot_id"], row["evidence_id"]) for row in candidates] == [
         ("primary-id", "bound"), ("primary-id", "job-ref")]
     assert candidates[1]["acceptance"] is None
     assert candidates[1]["execution"]["execution_evidence"]["selector"] == ["verify_quick"]
-    coverage = json.loads((tmp_path / "reports/coverage.json").read_text())["candidate_evidence"]
+    coverage = json.loads((tmp_path / "report/coverage.json").read_text())["candidate_evidence"]
     assert coverage["unbound_native_records"] == 1
     assert coverage["lifecycle_observations_kept_separate"] == 1
     assert coverage["bound_detailed_jobs"] == 1
     assert coverage["unbound_detail_reasons"] == {"complete_content_scope_unavailable": 1}
-    report = json.loads((tmp_path / "reports/coverage.json").read_text())
+    report = json.loads((tmp_path / "report/coverage.json").read_text())
     assert report["dataset_coverage"]["verification/records.jsonl"] == {
         "status": "available", "records": len(records),
     }
@@ -293,14 +293,14 @@ def test_candidate_acceptance_requires_authored_version_and_exact_execution(tmp_
 
     build_reports(tmp_path, project="fixture", task_roots=[])
 
-    rows = [json.loads(line) for line in (tmp_path / "reports/candidate-evidence.jsonl").read_text().splitlines()]
+    rows = [json.loads(line) for line in (tmp_path / "report/candidate-evidence.jsonl").read_text().splitlines()]
     bound = [row for row in rows if row["acceptance"] is not None]
     assert [(row["snapshot_id"], row["evidence_id"]) for row in bound] == [("dirty", "bound")]
     assert bound[0]["acceptance"]["criterion_version"] == "criterion-v1"
     assert {row["evidence_id"] for row in rows} == {
         "bound", "wrong-version", "wrong-selector", "wrong-workload", "unobserved-command",
     }
-    reasons = json.loads((tmp_path / "reports/coverage.json").read_text())["candidate_evidence"]["unbound_detail_reasons"]
+    reasons = json.loads((tmp_path / "report/coverage.json").read_text())["candidate_evidence"]["unbound_detail_reasons"]
     assert reasons == {"complete_content_scope_unavailable": 1, "endpoint_content_mismatch": 1}
 
 
@@ -374,8 +374,8 @@ def test_clean_endpoint_fallback_does_not_override_content_contradiction(tmp_pat
 
     build_reports(tmp_path, project="fixture", task_roots=[])
 
-    assert (tmp_path / "reports/candidate-evidence.jsonl").read_text() == ""
-    coverage = json.loads((tmp_path / "reports/coverage.json").read_text())["candidate_evidence"]
+    assert (tmp_path / "report/candidate-evidence.jsonl").read_text() == ""
+    coverage = json.loads((tmp_path / "report/coverage.json").read_text())["candidate_evidence"]
     assert coverage["unbound_detail_reasons"] == {"endpoint_content_mismatch": 1}
 
 

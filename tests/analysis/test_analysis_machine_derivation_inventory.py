@@ -182,7 +182,7 @@ def test_default_derivation_roots_include_polylogue_project(monkeypatch, tmp_pat
     )
 
     assert inv._default_roots() == (
-        ("sinex", inv.Path("/realm/projects/sinex/repo")),
+        ("sinex", inv.Path("/realm/project/sinex/repo")),
         ("polylogue", polylogue_root),
         ("sinity-lynchpin", lynchpin_root),
     )

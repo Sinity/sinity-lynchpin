@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 ProjectClassifier = Callable[[str], Optional[str]]
-PROJECT_ROOT = Path("/realm/projects")
+PROJECT_ROOT = Path("/realm/project")
 
 
 @dataclass(frozen=True)
@@ -121,15 +121,15 @@ def classify_rust_simple(filename: str) -> str | None:
 
 ALL_PROJECTS: dict[str, ProjectEntry] = {
     # Active
-    "sinex": ProjectEntry("sinex", "/realm/projects/sinex/repo", "ai", True, (".rs",), classify_sinex),
-    "sinex-target-vision": ProjectEntry("sinex-target-vision", "/realm/projects/sinex-target-vision/repo", "ai", True, (".rs", ".py", ".md"), classify_rust_simple),
-    "sinnix": ProjectEntry("sinnix", "/realm/projects/sinnix/repo", "mixed", True, (".nix",), classify_sinnix),
-    "sinity-lynchpin": ProjectEntry("sinity-lynchpin", "/realm/projects/sinity-lynchpin/repo", "ai", True, (".py",), classify_sinity_analysis),
-    "polylogue": ProjectEntry("polylogue", "/realm/projects/polylogue/repo", "ai", True, (".py",), classify_rust_simple),
-    "intercept-bounce": ProjectEntry("intercept-bounce", "/realm/projects/intercept-bounce/repo", "ai", True, (".rs",), classify_rust_simple),
-    "scribe-tap": ProjectEntry("scribe-tap", "/realm/projects/scribe-tap/repo", "ai", True, (".c", ".h", ".py"), classify_rust_simple),
-    "knowledge-extract": ProjectEntry("knowledge-extract", "/realm/projects/knowledge-extract/repo", "ai", True, (".py",), classify_rust_simple),
-    "pwrank": ProjectEntry("pwrank", "/realm/projects/pwrank/repo", "pre-ai", True, (".py", ".vue", ".js"), classify_rust_simple),
+    "sinex": ProjectEntry("sinex", "/realm/project/sinex/repo", "ai", True, (".rs",), classify_sinex),
+    "sinex-target-vision": ProjectEntry("sinex-target-vision", "/realm/project/sinex-target-vision/repo", "ai", True, (".rs", ".py", ".md"), classify_rust_simple),
+    "sinnix": ProjectEntry("sinnix", "/realm/project/sinnix/repo", "mixed", True, (".nix",), classify_sinnix),
+    "sinity-lynchpin": ProjectEntry("sinity-lynchpin", "/realm/project/sinity-lynchpin/repo", "ai", True, (".py",), classify_sinity_analysis),
+    "polylogue": ProjectEntry("polylogue", "/realm/project/polylogue/repo", "ai", True, (".py",), classify_rust_simple),
+    "intercept-bounce": ProjectEntry("intercept-bounce", "/realm/project/intercept-bounce/repo", "ai", True, (".rs",), classify_rust_simple),
+    "scribe-tap": ProjectEntry("scribe-tap", "/realm/project/scribe-tap/repo", "ai", True, (".c", ".h", ".py"), classify_rust_simple),
+    "knowledge-extract": ProjectEntry("knowledge-extract", "/realm/project/knowledge-extract/repo", "ai", True, (".py",), classify_rust_simple),
+    "pwrank": ProjectEntry("pwrank", "/realm/project/pwrank/repo", "pre-ai", True, (".py", ".vue", ".js"), classify_rust_simple),
     "knowledgebase": ProjectEntry("knowledgebase", "/realm/archive/knowledgebase", "ai", False, (), classify_knowledgebase),
     # Inactive
     "WSoC13-SpaceCombat-Game": ProjectEntry("WSoC13-SpaceCombat-Game", "_inactive/WSoC13-SpaceCombat-Game", "pre-ai", False, (".cpp", ".h"), None),
@@ -180,7 +180,7 @@ def canonical_project_name(value: object, *, include_inactive: bool = False) -> 
     text = text.rstrip("/").removesuffix(".git")
     text = text.split("#", 1)[0]
 
-    marker = next((root for root in ("/realm/projects/", "/realm/project/") if root in text), None)
+    marker = next((root for root in ("/realm/project/", "/realm/project/") if root in text), None)
     if marker is not None:
         rel = text.split(marker, 1)[1]
         head = rel.split("/", 1)[0]

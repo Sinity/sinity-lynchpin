@@ -681,7 +681,7 @@ def test_lynchpin_machine_pressure_rejects_unsupported_limit(
         ({"action": "communications", "query": "update"}, "invalid_argument"),
         ({"action": "web", "view": "daily", "query": "update"}, "invalid_argument"),
         ({"action": "web", "view": "daily", "limit": 5}, "invalid_argument"),
-        ({"action": "reports", "start": "2026-01-01"}, "invalid_argument"),
+        ({"action": "report", "start": "2026-01-01"}, "invalid_argument"),
         ({"action": "health", "view": "typo"}, "invalid_view"),
     ],
 )

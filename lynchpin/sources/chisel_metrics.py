@@ -68,7 +68,7 @@ def _tokei_stats(root: Path, paths: list[str]) -> tuple[dict[str, dict[str, Any]
         for language, language_stats in payload.items():
             if language == "Total":
                 continue
-            for row in language_stats.get("reports") or ():
+            for row in language_stats.get("report") or ():
                 report_path = Path(str(row.get("name", "")))
                 try:
                     name = report_path.resolve().relative_to(root.resolve()).as_posix()

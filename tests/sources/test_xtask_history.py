@@ -59,12 +59,12 @@ def test_xtask_history_exposes_workspace_provenance(tmp_path: Path) -> None:
         conn.execute("ALTER TABLE invocations ADD COLUMN git_branch TEXT")
         conn.execute(
             "UPDATE invocations SET workspace_root = ?, workspace_name = ?, git_branch = ?",
-            ("/realm/worktrees/sinex-q102", "sinex-q102", "feature/x"),
+            ("/realm/worktree/sinex-q102", "sinex-q102", "feature/x"),
         )
 
     row = next(iter(iter_invocations(path=db)))
 
-    assert row.workspace_root == "/realm/worktrees/sinex-q102"
+    assert row.workspace_root == "/realm/worktree/sinex-q102"
     assert row.workspace_name == "sinex-q102"
     assert row.git_branch == "feature/x"
 

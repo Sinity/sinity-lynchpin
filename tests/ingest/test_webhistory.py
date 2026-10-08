@@ -234,7 +234,7 @@ def test_run_writes_success_receipt_with_retention_window(monkeypatch, tmp_path)
     _FixedDateTime.current = started
     monkeypatch.setattr(webhistory, "datetime", _FixedDateTime)
     monkeypatch.setattr(webhistory, "extract_browser_data", lambda **_kwargs: [])
-    report_dir = tmp_path / "reports"
+    report_dir = tmp_path / "report"
 
     report = webhistory.run(
         raw_dir=tmp_path / "raw",
@@ -251,7 +251,7 @@ def test_run_writes_success_receipt_with_retention_window(monkeypatch, tmp_path)
 
 
 def test_schedule_status_surfaces_missed_and_failed_runs(tmp_path) -> None:
-    report_dir = tmp_path / "reports"
+    report_dir = tmp_path / "report"
     report_dir.mkdir()
     now = datetime(2026, 8, 31, 10, 0, tzinfo=timezone.utc)
     (report_dir / "last_run.json").write_text(

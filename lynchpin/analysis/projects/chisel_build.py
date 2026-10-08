@@ -2515,7 +2515,7 @@ def _generate_snapshot_overview(
     xml_snapshot_count = sum(1 for path in out_dir.glob("*.xml") if path.is_file())
     from lynchpin.sources.chisel_compact import open_text, resolved_stream
 
-    differences_path = resolved_stream(out_dir / "reports/snapshot-differences.jsonl")
+    differences_path = resolved_stream(out_dir / "report/snapshot-differences.jsonl")
     snapshot_difference_count = 0
     if differences_path.is_file():
         with open_text(differences_path) as differences:
@@ -3514,7 +3514,7 @@ def _write_root_index(
         "growth_analysis": "growth/README.md"
         if (output_root / "growth" / "README.md").exists()
         else None,
-        "projects": projects,
+        "project": projects,
     }
     json_path = output_root / "index.json"
     md_path = output_root / "index.md"
@@ -4152,7 +4152,7 @@ def _publish_chisel_bundles(
             report_builder=report_builder,
         )
         successful = all(
-            r.get("status") == "generated" for r in result["projects"].values()
+            r.get("status") == "generated" for r in result["project"].values()
         )
         if successful:
             plans = [REPO_PLANS[name] for name in names]
@@ -4162,7 +4162,7 @@ def _publish_chisel_bundles(
                 result["portfolio"] = build_portfolio(
                     candidate,
                     plans,
-                    result["projects"],
+                    result["project"],
                     result["generated_at"],
                 )
             with chisel_terminal.timed_step("publication validation"):
@@ -4185,7 +4185,7 @@ def _publish_chisel_bundles(
                 f"[yellow]Not published[/yellow] ({result['total_elapsed_s']:.1f}s): candidate incomplete; "
                 f"previous packages retained at {root}"
             )
-        for row in result["projects"].values():
+        for row in result["project"].values():
             row["published"] = successful
         return result
 
@@ -4380,7 +4380,7 @@ def _build_chisel_candidate(
         "total_bytes": total_bytes,
         "index": {"json": index_json, "markdown": index_md},
         "growth": growth_portfolio,
-        "projects": results,
+        "project": results,
     }
 
 

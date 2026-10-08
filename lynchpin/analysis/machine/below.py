@@ -14,7 +14,7 @@ from typing import Any, Sequence
 from lynchpin.core.io import save_json
 
 
-DEFAULT_STABILITY_ROOT = Path("/realm/devices/sinnix-prime/stability-lab")
+DEFAULT_STABILITY_ROOT = Path("/realm/device/sinnix-prime/stability-lab")
 DEFAULT_LIVE_BELOW_STORE = Path("/realm/state/below/store")
 
 

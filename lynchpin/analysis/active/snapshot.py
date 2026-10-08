@@ -53,7 +53,7 @@ def build_active_project_snapshot(
             "velocity_caveat": "commit counts are a heartbeat signal only; scope, touched surfaces, quality gates, and cross-source evidence remain separate dimensions",
             "touch_caveat": "raw path-touch counts can be dominated by large moves/deletes; capped_category_touches limits each commit/category contribution to 25 for a robust companion view",
         },
-        "projects": rows,
+        "project": rows,
     }
 
 

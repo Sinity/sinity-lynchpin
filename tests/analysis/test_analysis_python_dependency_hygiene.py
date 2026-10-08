@@ -145,13 +145,13 @@ dependencies = ["requests>=2", "PyYAML"]
 
     snapshot = tmp_path / "snapshot.json"
     snapshot.write_text(
-        json.dumps({"projects": [{"project": "demo", "path": str(repo)}]}),
+        json.dumps({"project": [{"project": "demo", "path": str(repo)}]}),
         encoding="utf-8",
     )
     import_graph = tmp_path / "import_graph.json"
     import_graph.write_text(
         json.dumps({
-            "projects": [
+            "project": [
                 {
                     "project": "demo",
                     "modules": [
@@ -186,7 +186,7 @@ dependencies = ["requests>=2", "PyYAML"]
         import_graph_file=import_graph,
     )
 
-    project = payload["projects"][0]
+    project = payload["project"][0]
     assert project["observed_external_import_count"] == 1
     assert project["observed_external_imports"] == ["requests"]
     advisories = project["audit"]["advisories"]
@@ -199,7 +199,7 @@ dependencies = ["requests>=2", "PyYAML"]
 
 def test_build_requires_project_snapshot(tmp_path: Path) -> None:
     import_graph = tmp_path / "import_graph.json"
-    import_graph.write_text(json.dumps({"projects": []}), encoding="utf-8")
+    import_graph.write_text(json.dumps({"project": []}), encoding="utf-8")
 
     with pytest.raises(FileNotFoundError, match="active project snapshot is missing"):
         build_active_python_dependency_hygiene(
@@ -210,7 +210,7 @@ def test_build_requires_project_snapshot(tmp_path: Path) -> None:
 
 def test_build_requires_python_import_graph(tmp_path: Path) -> None:
     snapshot = tmp_path / "snapshot.json"
-    snapshot.write_text(json.dumps({"projects": []}), encoding="utf-8")
+    snapshot.write_text(json.dumps({"project": []}), encoding="utf-8")
 
     with pytest.raises(FileNotFoundError, match="active Python import graph is missing"):
         build_active_python_dependency_hygiene(

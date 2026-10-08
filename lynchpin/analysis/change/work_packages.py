@@ -138,7 +138,7 @@ def build_active_work_packages(
             "linkage_policy": "packages are commit-rooted; non-git evidence should link later by refs, time, project, and surface",
             "caveat": "work packages are landed-code units, not value judgments or final task lifecycle classifications",
         },
-        "projects": sorted(project_rows, key=lambda row: str(row["project"])),
+        "project": sorted(project_rows, key=lambda row: str(row["project"])),
         "summary": _summary(packages, project_rows),
     }
 
@@ -167,7 +167,7 @@ def run_active_work_packages(
 
 
 def _project_meta(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    projects = payload.get("projects")
+    projects = payload.get("project")
     if not isinstance(projects, list):
         return {}
     result: dict[str, dict[str, Any]] = {}
