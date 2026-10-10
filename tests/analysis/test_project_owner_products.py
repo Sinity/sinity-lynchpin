@@ -430,6 +430,7 @@ def test_compact_orientation_keeps_bindings_work_and_independent_gaps(monkeypatc
     result = context.project_context(project="demo", start="2026-01-01", end="2026-01-14", budget_bytes=8192)
     projection = result["presentation"]
     assert len(json.dumps(projection, ensure_ascii=False, separators=(",", ":")).encode()) <= 8192
+    assert len(json.dumps(projection, separators=(",", ":")).encode()) <= 8192
     components = {row["name"]: row for row in projection["components"]}
     work = components["tasks"]["sections"]["work"]
     assert work["items"][0]["ref"] == REF
@@ -452,6 +453,7 @@ def test_compact_rows_are_budgeted_without_rewriting_coverage(monkeypatch):
     result = context.project_context(project="demo", start="2026-01-01", end="2026-01-14", budget_bytes=8192)
     projection = result["presentation"]
     assert len(json.dumps(projection, ensure_ascii=False, separators=(",", ":")).encode()) <= 8192
+    assert len(json.dumps(projection, separators=(",", ":")).encode()) <= 8192
     components = {row["name"]: row for row in projection["components"]}
     work = components["tasks"]["sections"]["work"]
     assert 0 < len(work["items"]) < 300

@@ -7,7 +7,9 @@ from typing import Any
 
 
 def _bytes(value: Any) -> int:
-    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode())
+    # Gateway snapshots and result bounds use escaped JSON. Its size also
+    # bounds UTF-8 JSON, including non-ASCII task titles and error text.
+    return len(json.dumps(value, separators=(",", ":")).encode())
 
 
 def _fields(row: dict[str, Any], names: tuple[str, ...]) -> dict[str, Any]:
@@ -43,8 +45,8 @@ def compact_context(result: dict[str, Any], budget: int) -> dict[str, Any]:
         entry["full_data_pointer"] = f"/components/{index}/data"
         entry["freshness"] = _fields(data, ("observed_at", "watermark", "temporal"))
         gaps = data.get("gaps", [])
-        entry["gaps"] = [gap[:160] if isinstance(gap, str) else gap for gap in gaps[:1]]
-        entry["gaps_truncated"] = any(isinstance(gap, str) and len(gap) > 160 for gap in gaps[:1])
+        entry["gaps"] = [gap[:96] if isinstance(gap, str) else gap for gap in gaps[:1]]
+        entry["gaps_truncated"] = any(isinstance(gap, str) and len(gap) > 96 for gap in gaps[:1])
         entry["gaps_omitted"] = max(0, len(gaps) - 1)
         entry["sections"] = {}
         output["components"].append(entry)
