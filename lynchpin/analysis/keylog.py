@@ -697,7 +697,23 @@ def write_keylog_analysis(
         input_files = _analysis_input_files(start=start, end=end, bindings_path=bindings_path)
         input_signature = _input_signature(input_files)
         input_version = input_versions(input_files)
-        if store.selection_is_readable() and store.metadata.get("input_signature") == input_signature and target.exists():
+        # Open files may grow during a scan, so they cannot participate in the
+        # closed-input stability check. They must still invalidate reuse on
+        # the next refresh, together with the requested analysis window.
+        refresh_files = list(keylog.log_files(
+            start=start - timedelta(days=1), end=end + timedelta(days=1), ensure=False,
+        ))
+        if bindings_path.exists():
+            refresh_files.append(bindings_path)
+        refresh_signature = deterministic_input_digest((
+            start.isoformat(), end.isoformat(), _input_signature(tuple(refresh_files)),
+        ))
+        if (
+            store.selection_is_readable()
+            and store.metadata.get("input_signature") == input_signature
+            and store.metadata.get("refresh_input_signature") == refresh_signature
+            and target.exists()
+        ):
             payload = load_json(target)
             if isinstance(payload, dict) and manifest_versions_current(payload, input_files):
                 return _analysis_from_payload(payload)
@@ -753,7 +769,10 @@ def write_keylog_analysis(
             format="ndjson", input_digest=input_signature, row_count=1,
             first_date=day, last_date=day,
         )
-    store.publish(selected, metadata={"dataset": "lynchpin.keylog_analysis", "input_signature": input_signature})
+    store.publish(selected, metadata={
+        "dataset": "lynchpin.keylog_analysis", "input_signature": input_signature,
+        "refresh_input_signature": refresh_signature,
+    })
     return analysis
 
 

@@ -491,3 +491,39 @@ def test_analysis_input_signature_is_stable_while_the_open_day_grows(tmp_path, m
     )
 
     assert before == after
+
+
+def test_refresh_observes_open_day_growth_without_rescanning_closed_days(tmp_path, monkeypatch) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    today = date(2026, 6, 7)
+    monkeypatch.setattr(keylog_analysis, "_open_log_date", lambda: today)
+    for day in ("2026-06-05", "2026-06-06", "2026-06-07"):
+        _write_day(logs, day, "KEY_A", 2)
+    bindings = tmp_path / "bindings.nix"
+    bindings.write_text('{ bind = [ "SUPER, Return, exec, kitty" ]; }', encoding="utf-8")
+    monkeypatch.setattr(keylog, "get_config", lambda: SimpleNamespace(keylog_root=tmp_path))
+    out = tmp_path / "analysis.json"
+    window = {"start": date(2026, 6, 5), "end": today}
+    first = keylog_analysis.write_keylog_analysis(out, bindings_path=bindings, **window)
+    assert first.keypress_count == 6
+    _write_day(logs, "2026-06-07", "KEY_A", 5)
+    keylog._indexed_log_files.cache_clear()
+    scanned = []
+    original = keylog_analysis._scan_day_counters
+    def recording_scan(**kwargs):
+        scanned.append((kwargs["start"], kwargs["end"]))
+        return original(**kwargs)
+    monkeypatch.setattr(keylog_analysis, "_scan_day_counters", recording_scan)
+    second = keylog_analysis.write_keylog_analysis(out, bindings_path=bindings, **window)
+    assert second.keypress_count == 9
+    assert scanned == [(date(2026, 6, 6), today)]
+    scanned.clear()
+    third = keylog_analysis.write_keylog_analysis(out, bindings_path=bindings, **window)
+    assert third.keypress_count == 9
+    assert scanned == []
+    narrower = keylog_analysis.write_keylog_analysis(
+        out, bindings_path=bindings, start=today, end=today,
+    )
+    assert narrower.keypress_count == 5
+    assert scanned == []
