@@ -44,7 +44,7 @@ class ContextInput(ProjectInput):
         default=56000,
         ge=8192,
         le=262144,
-        description="Presentation target; complete owner component data is retained when exceeded.",
+        description="Exact byte bound for the compact presentation; complete owner component data remains retained.",
     )
 
 

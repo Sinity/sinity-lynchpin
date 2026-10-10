@@ -11,6 +11,7 @@ from lynchpin.analysis.projects.campaign_history import (
     verification_regression,
 )
 from lynchpin.analysis.projects.owner_products import classify_task_scope
+from lynchpin.analysis.projects.context_projection import compact_context
 from lynchpin.core.serialization import jsonable
 from lynchpin.core.projects import canonical_project_name
 from lynchpin.graph.context_pack import project_graph_context
@@ -52,11 +53,14 @@ def _component(
     data = jsonable(data)
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
     coverage = data.get("coverage", "retained_graph" if refresh_id else "unknown")
-    unavailable = coverage == "unavailable"
+    unavailable = coverage == "unavailable" or data.get("outcome") == "unavailable"
+    degraded = data.get("outcome") == "partial" or (
+        isinstance(coverage, dict) and coverage.get("complete") is False
+    )
     return {
         "name": name,
         "owner": owner,
-        "status": "unavailable" if unavailable else "available",
+        "status": "unavailable" if unavailable else "degraded" if degraded else "available",
         "source_ref": source_ref,
         "source_revision": data.get("revision", data.get("task_revision", refresh_id)),
         "refresh_id": refresh_id,
@@ -154,6 +158,7 @@ def project_context(
             raise ValueError("AgentCTL returned an invalid runtime snapshot")
     except Exception as error:
         runtime = {"rows": [], "coverage": "unavailable", "gaps": [str(error)]}
+    components.append(_component("runtime", "agentctl", f"agentctl://projects/{project}/batches", runtime))
     for name, function in (
         ("trajectory", project_trajectory),
         ("verification", verification_regression),
@@ -215,10 +220,14 @@ def project_context(
         component["presentation_budget_exceeded"] = (
             component["payload_bytes"] > budget_bytes
         )
+    states = [component["status"] for component in components]
     result["outcome"] = (
-        "partial" if any(c["status"] == "unavailable" for c in components) else "ok"
+        "unavailable" if all(state == "unavailable" for state in states)
+        else "partial" if any(state != "available" for state in states)
+        else "ok"
     )
     result["presentation_budget_exceeded"] = (
         len(json.dumps(result, ensure_ascii=False).encode()) > budget_bytes
     )
+    result["presentation"] = compact_context(result, budget_bytes)
     return result

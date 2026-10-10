@@ -203,7 +203,7 @@ def test_context_is_graph_pinned_and_owner_failure_is_independent(monkeypatch):
     [
         ("read_tasks", {"tasks"}),
         ("classify_task_scope", {"tasks"}),
-        ("read_batches", {"trajectory", "verification"}),
+        ("read_batches", {"runtime", "trajectory", "verification"}),
         ("project_trajectory", {"trajectory"}),
         ("verification_regression", {"verification"}),
     ],
@@ -212,16 +212,8 @@ def test_context_isolates_owner_and_product_exceptions(
     monkeypatch, failure, unavailable
 ):
     setup_context(monkeypatch)
-    monkeypatch.setattr(
-        context,
-        "read_batches",
-        lambda project: {
-            "rows": [],
-            "revision": "runtime-one",
-            "coverage": "retained_records",
-            "gaps": [],
-        },
-    )
+    from tests.analysis.test_campaign_evidence import runtime
+    monkeypatch.setattr(context, "read_batches", lambda project: runtime())
 
     def fail(*args, **kwargs):
         raise RuntimeError("Synthetic owner failure")
@@ -429,3 +421,68 @@ def test_project_owner_actions_dispatch_validated_inputs(
     assert result["data"]["owner_route"] == owner_route
     assert result["data"]["arguments"]["project"] == "demo"
     assert result["data"]["arguments"]["roots"] == ["demo-1"]
+
+
+def test_compact_orientation_keeps_bindings_work_and_independent_gaps(monkeypatch):
+    setup_context(monkeypatch, huge=True)
+    from tests.analysis.test_campaign_evidence import runtime
+    monkeypatch.setattr(context, "read_batches", lambda project: runtime())
+    result = context.project_context(project="demo", start="2026-01-01", end="2026-01-14", budget_bytes=8192)
+    projection = result["presentation"]
+    assert len(json.dumps(projection, ensure_ascii=False, separators=(",", ":")).encode()) <= 8192
+    components = {row["name"]: row for row in projection["components"]}
+    work = components["tasks"]["sections"]["work"]
+    assert work["items"][0]["ref"] == REF
+    assert "description" not in work["items"][0]
+    bindings = components["runtime"]["sections"]["bindings"]
+    assert bindings["items"][0]["task_reference"] == "attempt-1"
+    assert "do not prove a live process" in components["runtime"]["binding_authority"]
+    for row in projection["components"]:
+        assert row["payload_revision"] == next(c for c in result["components"] if c["name"] == row["name"])["payload_revision"]
+        for section in row["sections"].values():
+            assert section["observed_count"] == len(section["items"]) + section["omitted_count"]
+
+
+def test_compact_rows_are_budgeted_without_rewriting_coverage(monkeypatch):
+    setup_context(monkeypatch)
+    tasks = snapshot(status="in_progress")
+    tasks.update(source_ref="beads://projects/demo/owner/read", revision="task-one")
+    tasks["nodes"] = [dict(tasks["nodes"][0], id=f"demo-{i}", ref=f"sinnix://projects/demo/beads/demo-{i}", title="界" * 500) for i in range(300)]
+    monkeypatch.setattr(context, "read_tasks", lambda *a, **kw: tasks)
+    result = context.project_context(project="demo", start="2026-01-01", end="2026-01-14", budget_bytes=8192)
+    projection = result["presentation"]
+    assert len(json.dumps(projection, ensure_ascii=False, separators=(",", ":")).encode()) <= 8192
+    components = {row["name"]: row for row in projection["components"]}
+    work = components["tasks"]["sections"]["work"]
+    assert 0 < len(work["items"]) < 300
+    assert work["omitted_count"] == 300 - len(work["items"])
+    assert components["tasks"]["coverage"]["complete"]
+    assert work["items"][0]["title_truncated"]
+    assert components["runtime"]["status"] == "unavailable"
+    assert "Owner offline" in components["runtime"]["gaps"]
+    assert len(result["components"][1]["data"]["nodes"]) == 300
+
+
+def test_context_reports_no_usable_owner_as_unavailable(monkeypatch):
+    setup_context(monkeypatch)
+    def fail(*args, **kwargs):
+        raise RuntimeError("Synthetic owner failure")
+    monkeypatch.setattr(context, "_graph", fail)
+    monkeypatch.setattr(context, "read_tasks", fail)
+    result = context.project_context(project="demo", start="2026-01-01", end="2026-01-14")
+    assert result["outcome"] == "unavailable"
+    assert result["presentation"]["outcome"] == "unavailable"
+    assert all(row["status"] == "unavailable" for row in result["components"])
+
+
+def test_long_owner_error_does_not_erase_other_compact_components(monkeypatch):
+    setup_context(monkeypatch)
+    def fail(*args, **kwargs):
+        raise RuntimeError("界" * 20000)
+    monkeypatch.setattr(context, "_graph", fail)
+    result = context.project_context(project="demo", start="2026-01-01", end="2026-01-14", budget_bytes=8192)
+    rows = {row["name"]: row for row in result["presentation"]["components"]}
+    assert rows["evidence"]["status"] == "unavailable"
+    assert rows["evidence"]["gaps_truncated"]
+    assert rows["tasks"]["sections"]["work"]["items"][0]["ref"] == REF
+    assert result["components"][0]["gaps"] == ["界" * 20000]
