@@ -74,8 +74,8 @@ class KeylogCoverage:
     days: frozenset[date]
 
 
-def keylog_coverage() -> KeylogCoverage:
-    files = log_files()
+def keylog_coverage(*, ensure: bool = True) -> KeylogCoverage:
+    files = log_files(ensure=ensure)
     if not files:
         return KeylogCoverage(days=frozenset())
     days: set[date] = set()
@@ -88,18 +88,16 @@ def keylog_coverage() -> KeylogCoverage:
     return KeylogCoverage(days=frozenset(days))
 
 
-def repair_input_revision() -> tuple[object, ...]:
+def repair_input_revision(*, ensure: bool = True) -> tuple[object, ...]:
     """Return signatures for the external signals used by AFK repair."""
     cfg = get_config()
-    keylog_root = cfg.keylog_root / "logs"
-    keylog_files = sorted(keylog_root.glob("*.jsonl")) if keylog_root.exists() else []
-    atuin_path = cfg.data_root / "activity/terminal/shell/atuin/history.ndjson"
-    atuin_db = getattr(cfg, "atuin_db", Path())
+    from .terminal import canonical_atuin_history_path
+    native = getattr(cfg, "atuin_db", None)
     paths = [
         cfg.sleep_jsonl,
-        atuin_path,
-        atuin_db,
-        *keylog_files,
+        canonical_atuin_history_path(),
+        *([native] if ensure and isinstance(native, Path) else []),
+        *log_files(ensure=False),
     ]
     return tuple(file_signature(path) for path in paths)
 
@@ -108,12 +106,13 @@ def _sleep_source_signature() -> object:
     return file_signature(get_config().sleep_jsonl)
 
 
-def _atuin_source_signature() -> tuple[object, ...]:
+def _atuin_source_signature(*, ensure: bool = True) -> tuple[object, ...]:
     cfg = get_config()
-    atuin_db = getattr(cfg, "atuin_db", Path())
+    from .terminal import canonical_atuin_history_path
+    atuin_db = getattr(cfg, "atuin_db", None)
     return (
-        file_signature(cfg.data_root / "activity/terminal/shell/atuin/history.ndjson"),
-        file_signature(atuin_db),
+        file_signature(canonical_atuin_history_path()),
+        file_signature(atuin_db) if ensure and isinstance(atuin_db, Path) else None,
     )
 
 
@@ -142,7 +141,7 @@ def _sleep_intervals() -> tuple[tuple[datetime, datetime], ...]:
 
 
 @lru_cache(maxsize=4)
-def _atuin_timestamps_cached(signature: object) -> tuple[datetime, ...]:
+def _atuin_timestamps_cached(signature: object, ensure: bool = True) -> tuple[datetime, ...]:
     del signature
     try:
         from .terminal import commands
@@ -151,19 +150,20 @@ def _atuin_timestamps_cached(signature: object) -> tuple[datetime, ...]:
         cmds = list(commands(
             start=datetime(2020, 1, 1, tzinfo=timezone.utc),
             end=datetime.now(timezone.utc) + timedelta(days=1),
+            ensure=ensure,
         ))
         return tuple(sorted((c.timestamp for c in cmds if c.timestamp is not None), key=_instant))
     except Exception:
         return ()
 
 
-def _atuin_timestamps() -> tuple[datetime, ...]:
+def _atuin_timestamps(*, ensure: bool = True) -> tuple[datetime, ...]:
     """All atuin command timestamps across the archive.
 
     Sorted list for binary-search overlap tests. Atuin coverage starts
     ~2025-04. Pre-2025-04 returns empty (no atuin signal).
     """
-    return _atuin_timestamps_cached(_atuin_source_signature())
+    return _atuin_timestamps_cached(_atuin_source_signature(ensure=ensure), ensure)
 
 
 def _overlapping_sleep(start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
@@ -184,9 +184,9 @@ def _overlapping_sleep(start: datetime, end: datetime) -> list[tuple[datetime, d
     return overlaps
 
 
-def _atuin_in_window(start: datetime, end: datetime) -> bool:
+def _atuin_in_window(start: datetime, end: datetime, *, ensure: bool = True) -> bool:
     """True iff at least one atuin command timestamp falls in [start, end)."""
-    ts = _atuin_timestamps()
+    ts = _atuin_timestamps(ensure=ensure)
     if not ts:
         return False
     lo = bisect.bisect_left(ts, _instant(start), key=_instant)
@@ -255,6 +255,7 @@ def repair_afk_events(
     *,
     keylog_silent_threshold_s: float = KEYLOG_SILENT_THRESHOLD_S,
     stuck_window_threshold_s: float = STUCK_WINDOW_THRESHOLD_S,
+    ensure: bool = True,
 ) -> Iterator[RepairedAFKEvent]:
     """Yield AFK events with multi-signal repair applied.
 
@@ -270,7 +271,7 @@ def repair_afk_events(
       4. Keylog-silent: where keylog covers, gaps ≥ 30 min with no
          atuin commands → AFK
     """
-    coverage = keylog_coverage()
+    coverage = keylog_coverage(ensure=ensure)
 
     for event in events:
         status = str((event.data or {}).get("status") or "").strip().lower()
@@ -295,7 +296,7 @@ def repair_afk_events(
         # or substantial empty-app stretch. Saves orders of magnitude in
         # the common case (most not-afk events are < 30 min).
         wnd_events = (
-            list(window_events(start=event.start, end=event.end))
+            list(window_events(start=event.start, end=event.end, ensure=ensure))
             if duration_s((event.start, event.end)) >= 60 * 60
             else []
         )
@@ -324,7 +325,7 @@ def repair_afk_events(
             # Positive-activity rescue: atuin command during this stretch
             # implies real activity even if no focus changes (e.g., long
             # build running in background).
-            if _atuin_in_window(s_c, e_c):
+            if _atuin_in_window(s_c, e_c, ensure=ensure):
                 continue
             forced_afk.append((s_c, e_c, "stuck-window"))
 
@@ -332,7 +333,7 @@ def repair_afk_events(
         keylog_spans = tuple(_covered_keylog_spans(event.start, event.end, coverage.days))
         if keylog_spans:
             kp_times: list[datetime] = []
-            for path in _candidate_files(event.start, event.end):
+            for path in _candidate_files(event.start, event.end, ensure=ensure):
                 try:
                     stat = path.stat()
                 except OSError:
@@ -351,7 +352,7 @@ def repair_afk_events(
                 for s, e in silent_windows:
                     if _is_covered_by_sleep(s, e, sleep_overlaps):
                         continue
-                    if _atuin_in_window(s, e):
+                    if _atuin_in_window(s, e, ensure=ensure):
                         continue
                     forced_afk.append((s, e, "keylog-silent"))
 

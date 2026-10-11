@@ -71,7 +71,7 @@ def test_fill_aw_reads_preconverged_activitywatch_derived() -> None:
     with (
         patch(
             "lynchpin.materialization.ensure_materialized",
-            lambda name, *, window: ensure_calls.append((name, window)),
+            lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
         ),
         patch(
             "lynchpin.sources.activitywatch_derived.iter_derived_daily_activity",
@@ -146,7 +146,7 @@ def test_fill_irc_converges_product_daily_rollup() -> None:
     with (
         patch(
             "lynchpin.materialization.ensure_materialized",
-            lambda name, *, window: ensure_calls.append((name, window)),
+            lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
         ),
         patch("lynchpin.sources.irc_raw.daily_irc_activity", fake_daily_irc_activity),
     ):
@@ -260,7 +260,7 @@ def test_fill_keylog_adds_keybind_usage_counts() -> None:
         patch("lynchpin.core.io.load_json_if_exists", return_value=None),
         patch(
             "lynchpin.materialization.ensure_materialized",
-            lambda name, *, window: ensure_calls.append((name, window)),
+            lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
         ),
         patch("lynchpin.analysis.keylog.analyze_keylog", return_value=analysis),
     ):
@@ -299,7 +299,7 @@ def test_fill_keylog_reuses_covering_keylog_analysis_artifact() -> None:
         patch("lynchpin.core.io.resolve_analysis_path", lambda name: name),
         patch(
             "lynchpin.materialization.ensure_materialized",
-            lambda name, *, window: ensure_calls.append((name, window)),
+            lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
         ),
         patch("lynchpin.analysis.keylog.analyze_keylog", fail_analysis),
     ):
@@ -333,7 +333,7 @@ def test_fill_keylog_daily_converges_personal_daily_signals_product() -> None:
     with (
         patch(
             "lynchpin.materialization.ensure_materialized",
-            lambda name, *, window: ensure_calls.append((name, window)),
+            lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
         ),
         patch("lynchpin.sources.personal_signals.iter_personal_daily_signals", fake_iter_personal_daily_signals),
     ):
@@ -364,7 +364,7 @@ def test_fill_web_converges_webhistory_product() -> None:
     with (
         patch(
             "lynchpin.materialization.ensure_materialized",
-            lambda name, *, window: ensure_calls.append((name, window)),
+            lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
         ),
         patch("lynchpin.sources.web.daily_browsing", fake_daily_browsing),
     ):
@@ -417,7 +417,7 @@ def test_fill_spotify_queries_product_half_open_end_for_public_inclusive_window(
     with (
         patch(
             "lynchpin.materialization.ensure_materialized",
-            lambda name, *, window: ensure_calls.append((name, window)),
+            lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
         ),
         patch(
             "lynchpin.sources.personal_signals.iter_spotify_daily_signals",
@@ -448,7 +448,7 @@ def test_fill_terminal_converges_atuin_product() -> None:
     with (
         patch(
             "lynchpin.materialization.ensure_materialized",
-            lambda name, *, window: ensure_calls.append((name, window)),
+            lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
         ),
         patch("lynchpin.sources.terminal.daily_terminal_activity", fake_daily_terminal_activity),
     ):

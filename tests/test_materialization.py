@@ -5,6 +5,7 @@ from lynchpin.sources.activitywatch_event_index import activitywatch_event_index
 import json
 import os
 import sqlite3
+import pytest
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -2176,7 +2177,8 @@ def test_activitywatch_audit_reads_precise_covered_dates(monkeypatch, tmp_path) 
     assert row.covered_dates == (date(2026, 6, 5), date(2026, 6, 7))
 
 
-def test_activitywatch_derived_audit_reads_precise_covered_dates(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("repair_identity, expected", [([], "ready"), (None, "partial"), ([{"path": "changed"}], "partial")])
+def test_activitywatch_derived_audit_reads_precise_covered_dates(monkeypatch, tmp_path, repair_identity, expected) -> None:
     from lynchpin import materialization
     from lynchpin.ingest.activitywatch_derived_materialize import (
         ACTIVITYWATCH_DERIVED_SCHEMA_VERSION,
@@ -2196,6 +2198,7 @@ def test_activitywatch_derived_audit_reads_precise_covered_dates(monkeypatch, tm
         json.dumps(
             {
                 "row_count": 2,
+                "repair_input_versions": repair_identity,
                 "first_date": "2026-06-05",
                 "last_date": "2026-06-07",
                 "covered_dates": ["2026-06-05", "2026-06-07"],
@@ -2213,12 +2216,13 @@ def test_activitywatch_derived_audit_reads_precise_covered_dates(monkeypatch, tm
     monkeypatch.setattr(materialization, "activitywatch_derived_manifest_path", lambda: manifest)
     monkeypatch.setattr(materialization, "activitywatch_derived_path", lambda kind: paths[kind])
     monkeypatch.setattr(materialization, "activitywatch_derived_input_files", lambda: (canonical,))
+    monkeypatch.setattr(materialization, "activitywatch_repair_input_versions", lambda **_kwargs: [])
 
     row = materialization._activitywatch_derived_dataset(
         SimpleNamespace(data_root=tmp_path)
     )
 
-    assert row.status == "ready"
+    assert row.status == expected
     assert row.covered_dates == (date(2026, 6, 5), date(2026, 6, 7))
 
 

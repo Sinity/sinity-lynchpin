@@ -229,6 +229,16 @@ ActivityWatch derived reads resolve retained partitions under the configured
 derived root after a root move. A failed window materialization is reported
 to the reader rather than silently returning an older partition set.
 
+After the materialization plan, promotion reads prepared canonical products
+without starting another materializer inside its database connection. A stale
+or unavailable requested window remains a failed read; proven closed history
+can remain readable when only the open tail is stale. Operator daily fills check that
+result before reading rows, so failed refreshes cannot appear as current data.
+ActivityWatch derived manifests identify the canonical index and independent
+AFK repair evidence; a closed input change during construction prevents
+publication. The open keyboard file can grow without aborting construction;
+its recorded identity still makes later growth visible as stale evidence.
+
 High-amplification canonical products use immutable logical partitions selected by an atomic manifest. ActivityWatch events and activity-content daily rows use logical days, keylog analysis uses logical days, and title metadata uses source months. A maintenance tail may replace only affected selections. Artifact bytes are content-addressed, so an unchanged partition keeps its path and inode on a warm rerun. Reuse and publication verify retained bytes against their full digest; a mismatch preserves the retained file and refuses publication. Ordinary paged reads do not rehash artifacts. GC planning excludes the selected partitions and caller-declared retained or in-flight generation roots, and introduces no deletion policy. The previous manifest remains the serving manifest until every new artifact has been staged, validated, and the replacement manifest has been fsynced.
 
 Keylog analysis keeps separate checks for stable inputs and cache reuse. Closed capture files must remain unchanged through the scan. The reuse signature also observes the open capture file and requested window, so a later refresh sees appended events without repeatedly rejecting a scan while capture continues. Per-day counters preserve unchanged historical days.

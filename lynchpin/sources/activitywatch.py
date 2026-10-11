@@ -108,11 +108,11 @@ _ACTIVE_STATUSES = {"not-afk", "active", "present"}
 _AFK_STATUSES = {"afk", "away"}
 
 
-def _activitywatch_cache_revision() -> tuple[object, object]:
+def _activitywatch_cache_revision(*, ensure: bool = True) -> tuple[object, object]:
     from .activitywatch_raw import activitywatch_source_revision
     from .activitywatch_repair import repair_input_revision
 
-    return activitywatch_source_revision(), repair_input_revision()
+    return activitywatch_source_revision(include_native=ensure), repair_input_revision(ensure=ensure)
 
 
 def _polylogue_attribution_revision() -> tuple[object, ...]:
@@ -132,7 +132,7 @@ def _repaired_afk_events(
     start: datetime, end: datetime, *, ensure: bool = True
 ) -> tuple[list[Interval], list[Interval]]:
     active, afk = _repaired_afk_events_cached(
-        _instant(start), _instant(end), ensure, _activitywatch_cache_revision()
+        _instant(start), _instant(end), ensure, _activitywatch_cache_revision(ensure=ensure)
     )
     return list(active), list(afk)
 
@@ -162,7 +162,7 @@ def _repaired_afk_events_cached(
     )
     active_segs: list[Interval] = []
     afk_segs: list[Interval] = []
-    for repaired in repair_afk_events(raw):
+    for repaired in repair_afk_events(raw, ensure=ensure):
         s, e = as_local(repaired.start), as_local(repaired.end)
         # Clip to requested window AND skip segments outside it
         if _instant(e) <= _instant(start) or _instant(s) >= _instant(end):
@@ -248,7 +248,7 @@ def focus_spans(
     upper = end_of_day_local(end)
     spans = list(
         _focus_spans_cached(
-            _instant(lower), _instant(upper), min_duration_s, ensure, _activitywatch_cache_revision()
+            _instant(lower), _instant(upper), min_duration_s, ensure, _activitywatch_cache_revision(ensure=ensure)
         )
     )
     if not enrich_polylogue:

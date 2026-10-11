@@ -6,11 +6,13 @@ import argparse
 import json
 import shutil
 import sys
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
+from ..core.cache import input_versions
+from ..core.config import get_config
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
 from ..core.parse import as_local
@@ -35,7 +37,6 @@ from ..sources.activitywatch_derived import (
 )
 from ..sources.activitywatch_event_index import activitywatch_event_index_manifest_path
 from ..sources.activitywatch_raw import canonical_activitywatch_events_path
-from .activitywatch_event_index_materialize import activitywatch_event_index_input_files
 from .manifest_windows import merge_manifest_covered_dates
 from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
 
@@ -98,6 +99,20 @@ def materialize_activitywatch_derived(
     if published_manifest.exists():
         shutil.copyfile(published_manifest, staged_manifest)
     manifest: dict[str, Any] | None = None
+    source_versions = input_versions(activitywatch_derived_input_files())
+    repair_versions = activitywatch_repair_input_versions()
+    closed_repair_versions = activitywatch_repair_input_versions(closed_only=True)
+    _existing_partitions(previous, root=root, repair_window=(clipped_start, clipped_end))
+    if not _repair_reuse_is_proven(previous, closed_repair_versions, clipped_start, clipped_end):
+        raise MaterializationError(
+            "activitywatch_derived_materialize",
+            reason="independent repair evidence changed; rebuild all retained dates before recording its new identity",
+        )
+    if not _canonical_reuse_is_proven(previous, source_versions, clipped_start, clipped_end):
+        raise MaterializationError(
+            "activitywatch_derived_materialize",
+            reason="canonical partitions changed outside the rebuilt frontier; rebuild affected retained dates",
+        )
     chunk_start = clipped_start
     while chunk_start < clipped_end:
         chunk_end = min(chunk_start + timedelta(days=chunk_days), clipped_end)
@@ -106,6 +121,15 @@ def materialize_activitywatch_derived(
         )
         chunk_start = chunk_end
     assert manifest is not None  # loop runs at least once (clipped_end > clipped_start)
+    if (input_versions(activitywatch_derived_input_files()) != source_versions
+            or activitywatch_repair_input_versions(closed_only=True) != closed_repair_versions):
+        raise MaterializationError(
+            "activitywatch_derived_materialize",
+            reason="ActivityWatch derivation inputs changed during construction; retaining the published generation",
+        )
+    manifest["input_versions"] = source_versions
+    manifest["repair_input_versions"] = repair_versions
+    manifest["closed_repair_input_versions"] = closed_repair_versions
     manifest["window_start"] = clipped_start.isoformat()
     manifest["window_end"] = clipped_end.isoformat()
     write_manifest(staged_manifest, manifest)
@@ -304,10 +328,99 @@ def _materialize_window(
 
 
 def activitywatch_derived_input_files() -> tuple[Path, ...]:
-    indexed = activitywatch_event_index_input_files()
-    if indexed:
-        return indexed
+    # The index producer owns native DB/WAL freshness. These readers consume
+    # the published index and its immutable partitions, including declared
+    # paths that have gone missing (absence must invalidate the product).
+    manifest = activitywatch_event_index_manifest_path()
+    if manifest.exists():
+        payload = _load_json(manifest)
+        products = payload.get("product_paths", {})
+        paths = (
+            tuple(Path(path) for _, path in sorted(products.items()) if isinstance(path, str))
+            if isinstance(products, dict) else ()
+        )
+        return (manifest, *paths)
     return tuple(path for path in (canonical_activitywatch_events_path(),) if path.exists())
+
+
+def activitywatch_repair_input_versions(*, closed_only: bool = False) -> list[dict[str, Any]]:
+    """Record independent repair evidence, including optional absence.
+
+    Missing evidence stays missing; its later arrival changes this identity.
+    Atuin's native database is owned by its producer, while repair reads the
+    canonical history. Keyboard repair reads the capture files directly.
+    """
+    from ..sources.keylog import log_files
+    from ..sources.terminal import canonical_atuin_history_path
+
+    keyboard = log_files(
+            ensure=False,
+            end=datetime.now(UTC).date() - timedelta(days=1) if closed_only else None,
+        )
+    result = []
+    for source, paths in (("sleep", (get_config().sleep_jsonl,)),
+                          ("atuin", (canonical_atuin_history_path(),)),
+                          ("keylog", keyboard)):
+        for item in input_versions(paths):
+            item["source"] = source
+            if source == "keylog":
+                try:
+                    item["date"] = date.fromisoformat(Path(item["path"]).stem).isoformat()
+                except ValueError:
+                    item["date"] = None
+            result.append(item)
+    return sorted(result, key=lambda item: item["path"])
+
+
+def _repair_reuse_is_proven(previous: dict[str, Any], current: list[dict[str, Any]], start: date, end: date) -> bool:
+    outside = {date.fromisoformat(day) for day in previous.get("covered_dates", [])
+               if isinstance(day, str) and not start.isoformat() <= day < end.isoformat()}
+    if not outside:
+        return True
+    # The full recorded identity includes yesterday's then-open file. Its
+    # transition to a closed input need only rebuild the dates it can affect.
+    expected = previous.get("repair_input_versions")
+    if expected is None:
+        return previous.get("closed_repair_input_versions") == current
+    old = {item["path"]: item for item in expected}
+    new = {item["path"]: item for item in current}
+    for path in old.keys() | new.keys():
+        before, after = old.get(path), new.get(path)
+        item = after or before
+        assert item is not None
+        if item.get("source") == "keylog" and item.get("date"):
+            day = date.fromisoformat(item["date"])
+            if day >= datetime.now(UTC).date():
+                continue  # still-open inputs are observed, not stability gates
+            if before != after and any(abs((retained - day).days) <= 1 for retained in outside):
+                return False
+        elif before != after:
+            return False
+    return True
+
+
+def _canonical_reuse_is_proven(previous: dict[str, Any], current: list[dict[str, Any]], start: date, end: date) -> bool:
+    outside = {date.fromisoformat(day) for day in previous.get("covered_dates", [])
+               if isinstance(day, str) and not start.isoformat() <= day < end.isoformat()}
+    if not outside:
+        return True
+    expected = previous.get("input_versions")
+    if not isinstance(expected, list):
+        return False
+    pointer = str(activitywatch_event_index_manifest_path())
+    old = {item["path"]: item for item in expected if item["path"] != pointer}
+    new = {item["path"]: item for item in current if item["path"] != pointer}
+    changed = [path for path in old.keys() | new.keys() if old.get(path) != new.get(path)]
+    for path in changed:
+        try:
+            day = date.fromisoformat(Path(path).stem)
+        except ValueError:
+            return False
+        # Indexed events can extend beyond their starting day. Rebuild the
+        # retained suffix, rather than assuming every event lasts one day.
+        if any(retained >= day - timedelta(days=1) for retained in outside):
+            return False
+    return True
 
 
 def _default_window(start: date | None, end: date | None) -> tuple[date, date]:

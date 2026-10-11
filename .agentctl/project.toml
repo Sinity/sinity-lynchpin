@@ -56,6 +56,13 @@ pool = "pytest"
 result = "exit"
 cache = "tree+environment"
 
+[operations.verify_activitywatch_freshness]
+description = "Verify canonical ActivityWatch input identities and derived freshness"
+exec = ["pytest", "-q", "tests/ingest/test_activitywatch_derived_materialize.py", "tests/test_materialization.py", "tests/test_read_convergence.py", "tests/cli/test_materialize.py", "tests/analysis/test_substrate_promote_personal.py", "tests/analysis/test_operator_daily_logical_dates.py", "tests/analysis/test_operator_daily_machine_pressure.py", "tests/sources/test_source_activitywatch.py", "tests/sources/test_activitywatch_repair.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
 [operations.verify_webhistory_base]
 description = "Verify retained-segment candidate merge and input identity contracts"
 exec = ["pytest", "-q", "tests/ingest/test_webhistory.py", "tests/test_materialization.py", "tests/sources/test_google_takeout.py", "tests/sources/test_activitywatch_derived.py::test_missing_manifest_partitions_are_named_gaps_not_empty_days", "-k", "webhistory or chrome or missing_manifest_partitions"]

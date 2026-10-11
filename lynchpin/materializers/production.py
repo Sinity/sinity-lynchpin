@@ -143,6 +143,21 @@ def ensure_materialized(
     contract = audit.source_contract(name)
     before = audit._audit_one(name, cfg=cfg)
 
+    if name == "activitywatch_derived" and not force and budget == "inline":
+        # Canonical input identity belongs to this derivative, but freshness
+        # against new native events belongs to the index producer. Check that
+        # boundary before accepting an otherwise unchanged derivative.
+        upstream = audit.ensure_materialized(
+            "activitywatch_event_index", window=window, budget=budget, cfg=cfg
+        )
+        if upstream.status not in {"ready", "updated", "coverage_bound"}:
+            return audit._materialization_result(
+                before, status="failed", changed=False,
+                reason=f"dependency activitywatch_event_index: {upstream.reason}",
+                started=started, window=window,
+            )
+        before = audit._audit_one(name, cfg=cfg)
+
     if (
         name == "activity_content"
         and audit._product_recently_refreshed(name)

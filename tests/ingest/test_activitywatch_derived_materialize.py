@@ -8,6 +8,81 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.mark.parametrize("start, expected", [(date(2026, 1, 3), True), (date(2026, 1, 4), False)])
+def test_repair_reuse_bounds_newly_closed_keyboard_file(start, expected):
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    old = {"path": "/synthetic/2026-01-04.jsonl", "source": "keylog", "date": "2026-01-04", "stat": [1]}
+    current = [{**old, "stat": [2]}]
+    previous = {"covered_dates": ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"], "repair_input_versions": [old]}
+    assert mod._repair_reuse_is_proven(previous, current, start, date(2026, 1, 5)) is expected
+    assert not mod._repair_reuse_is_proven(previous, [{**old, "source": "sleep", "stat": [2]}], start, date(2026, 1, 5))
+
+
+def test_canonical_reuse_requires_changed_partition_suffix(monkeypatch):
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    monkeypatch.setattr(mod, "activitywatch_event_index_manifest_path", lambda: Path("/synthetic/manifest.json"))
+    old = {"path": "/synthetic/2026-01-03.ndjson", "stat": [1]}
+    previous = {"covered_dates": ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"], "input_versions": [old]}
+    current = [{**old, "stat": [2]}]
+    assert mod._canonical_reuse_is_proven(previous, current, date(2026, 1, 2), date(2026, 1, 5))
+    assert not mod._canonical_reuse_is_proven(previous, current, date(2026, 1, 3), date(2026, 1, 4))
+
+
+def test_derived_inputs_follow_canonical_index_not_live_database(monkeypatch, tmp_path):
+    from lynchpin.core.cache import input_versions
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    from lynchpin.sources import activitywatch_event_index as index
+
+    manifest = index.activitywatch_event_index_manifest_path(tmp_path)
+    manifest.parent.mkdir(parents=True)
+    partition = manifest.parent / "generations" / "first" / "2026-06-06.ndjson"
+    partition.parent.mkdir(parents=True)
+    partition.write_text("{}\n", encoding="utf-8")
+    manifest.write_text(json.dumps({"product_paths": {"2026-06-06": str(partition)}}))
+    native = tmp_path / "native.db"
+    native.write_bytes(b"original")
+    monkeypatch.setattr(mod, "activitywatch_event_index_manifest_path", lambda: manifest)
+
+    inputs = mod.activitywatch_derived_input_files()
+    assert manifest in inputs
+    assert partition in inputs
+    assert native not in inputs
+    versions = input_versions(inputs)
+    native.write_bytes(b"unrelated live change")
+    assert input_versions(mod.activitywatch_derived_input_files()) == versions
+    partition.write_text('{"changed": true}\n', encoding="utf-8")
+    assert input_versions(mod.activitywatch_derived_input_files()) != versions
+    partition.unlink()
+    assert partition in mod.activitywatch_derived_input_files()
+    replacement = partition.parent.parent / "second" / partition.name
+    replacement.parent.mkdir()
+    replacement.write_text("{}\n", encoding="utf-8")
+    manifest.write_text(json.dumps({"product_paths": {"2026-06-06": str(replacement)}}))
+    assert replacement in mod.activitywatch_derived_input_files()
+    assert partition not in mod.activitywatch_derived_input_files()
+    assert input_versions(mod.activitywatch_derived_input_files()) != versions
+
+
+def test_activitywatch_derived_repair_inputs_record_optional_absence_and_arrival(monkeypatch, tmp_path):
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    from lynchpin.sources import keylog, terminal
+
+    sleep = tmp_path / "sleep.jsonl"
+    shell = tmp_path / "history.ndjson"
+    keyboard = tmp_path / "keyboard.jsonl"
+    monkeypatch.setattr(mod, "get_config", lambda: SimpleNamespace(sleep_jsonl=sleep))
+    monkeypatch.setattr(terminal, "canonical_atuin_history_path", lambda: shell)
+    monkeypatch.setattr(keylog, "log_files", lambda **kwargs: [keyboard] if keyboard.exists() else [])
+    absent = mod.activitywatch_repair_input_versions()
+    assert len(absent) == 2
+    assert all(item["stat"] is None for item in absent)
+    assert mod.activitywatch_repair_input_versions() == absent
+    for path in (sleep, shell, keyboard):
+        before = mod.activitywatch_repair_input_versions()
+        path.write_text("{}\n")
+        assert mod.activitywatch_repair_input_versions() != before
+
+
 def test_materialize_activitywatch_derived_writes_graph_products(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_derived_materialize as mod
     from lynchpin.ingest.activitywatch_derived_materialize import ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
@@ -127,7 +202,8 @@ def test_materialize_repairs_missing_partition_only_inside_requested_window(
                     "product_paths": product_paths,
                     "partition_row_counts": product_counts,
                     "row_count": 1,
-                    "covered_dates": [day.isoformat()],
+                        "covered_dates": [day.isoformat()],
+                        "closed_repair_input_versions": mod.activitywatch_repair_input_versions(closed_only=True),
                 }
             ),
             encoding="utf-8",
@@ -253,16 +329,21 @@ def test_materialize_activitywatch_derived_replaces_only_requested_window(monkey
 
 
 def test_materialize_activitywatch_derived_preserves_sparse_covered_dates(monkeypatch, tmp_path):
+    from lynchpin.core.cache import input_versions
     from lynchpin.ingest import activitywatch_derived_materialize as mod
 
     manifest_path = tmp_path / "activitywatch/graph/manifest.json"
     manifest_path.parent.mkdir(parents=True)
     manifest_path.write_text(
-        json.dumps({"schema_version": mod.ACTIVITYWATCH_DERIVED_SCHEMA_VERSION, "covered_dates": ["2026-06-05", "2026-06-07"], "first_date": "2026-06-05", "last_date": "2026-06-07"}),
+        json.dumps({"schema_version": mod.ACTIVITYWATCH_DERIVED_SCHEMA_VERSION, "covered_dates": ["2026-06-05", "2026-06-07"], "first_date": "2026-06-05", "last_date": "2026-06-07", "closed_repair_input_versions": mod.activitywatch_repair_input_versions(closed_only=True)}),
         encoding="utf-8",
     )
     canonical = tmp_path / "events.ndjson"
     canonical.write_text("{}\n", encoding="utf-8")
+
+    seeded = mod._load_json(manifest_path)
+    seeded["input_versions"] = input_versions((canonical,))
+    manifest_path.write_text(json.dumps(seeded))
 
     monkeypatch.setattr(mod, "activitywatch_derived_input_files", lambda: (canonical,))
     monkeypatch.setattr(mod, "focus_spans", lambda **kwargs: ())
@@ -498,7 +579,8 @@ def test_default_window_uses_current_index_instead_of_stale_carrier(
     assert mod._default_window(None, None) == (date(2026, 8, 1), date(2026, 8, 3))
 
 
-def test_failed_later_chunk_preserves_published_manifest(monkeypatch, tmp_path):
+@pytest.mark.parametrize("failure", ["exception", "input_change", "closed_repair_change", "open_repair_change", "prior_repair_change"])
+def test_failed_later_chunk_preserves_published_manifest(monkeypatch, tmp_path, failure):
     from lynchpin.ingest import activitywatch_derived_materialize as mod
     from lynchpin.sources.activitywatch_models import AWDayActivity
 
@@ -513,11 +595,25 @@ def test_failed_later_chunk_preserves_published_manifest(monkeypatch, tmp_path):
     ):
         monkeypatch.setattr(mod, name, lambda **_kwargs: ())
     monkeypatch.setattr(mod, "_clip_to_real_coverage", lambda start, end: (start, end))
-    monkeypatch.setattr(mod, "activitywatch_derived_input_files", lambda: ())
+    source = tmp_path / "source.ndjson"
+    source.write_text("{}\n")
+    monkeypatch.setattr(mod, "activitywatch_derived_input_files", lambda: (source,))
+    if failure.endswith("repair_change"):
+        from lynchpin.core.cache import input_versions
+        monkeypatch.setattr(mod, "activitywatch_derived_input_files", lambda: ())
+        monkeypatch.setattr(
+            mod, "activitywatch_repair_input_versions",
+            lambda closed_only=False: [] if closed_only and failure == "open_repair_change" else [
+                {**item, "source": "keylog", "date": datetime.now(timezone.utc).date().isoformat()}
+                if failure == "open_repair_change" else item for item in input_versions((source,))
+            ],
+        )
 
     def daily(*, start, **_kwargs):
         if start == date(2026, 8, 3):
-            raise RuntimeError("injected later chunk failure")
+            if failure == "exception":
+                raise RuntimeError("injected later chunk failure")
+            source.write_text('{"changed": true}\n')
         return (
             AWDayActivity(start, 1.0, 0.0, 0.0, 1, "coding", "fixture", (0.0,) * 24),
         )
@@ -528,7 +624,26 @@ def test_failed_later_chunk_preserves_published_manifest(monkeypatch, tmp_path):
     )
     manifest = mod.activitywatch_derived_manifest_path(tmp_path)
     before = manifest.read_bytes()
-    with pytest.raises(RuntimeError, match="later chunk failure"):
+    if failure == "prior_repair_change":
+        source.write_text('{"changed": true}\n')
+        from lynchpin.core.errors import MaterializationError
+        with pytest.raises(MaterializationError, match="rebuild all retained dates"):
+            mod.materialize_activitywatch_derived(
+                start=date(2026, 8, 2), end=date(2026, 8, 4), root=tmp_path
+            )
+        assert manifest.read_bytes() == before
+        return
+    if failure == "open_repair_change":
+        result = mod.materialize_activitywatch_derived(
+            start=date(2026, 8, 2), end=date(2026, 8, 4), root=tmp_path
+        )
+        assert manifest.read_bytes() != before
+        assert result["repair_input_versions"] != mod.activitywatch_repair_input_versions()
+        return
+    from lynchpin.core.errors import MaterializationError
+    error = RuntimeError if failure == "exception" else MaterializationError
+    message = "later chunk failure" if failure == "exception" else "inputs changed"
+    with pytest.raises(error, match=message):
         mod.materialize_activitywatch_derived(
             start=date(2026, 8, 2), end=date(2026, 8, 4), root=tmp_path
         )

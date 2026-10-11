@@ -63,7 +63,7 @@ def _patch_signals(
         else KeylogCoverage(days=frozenset())
     )
 
-    def mock_window_events(*, start, end):
+    def mock_window_events(*, start, end, ensure=True):
         return [w for w in window_objs if w.start < end and w.end > start]
 
     return [
@@ -104,6 +104,17 @@ def _exit(ctxs):
 
 
 # ── Sleep-overlap repair (highest priority) ──────────────────────────
+
+
+def test_canonical_repair_propagates_disabled_refresh() -> None:
+    ctxs = _patch_signals(window_events_spec=[(0, 8 * 3600, {"app": "editor"})])
+    mocks = _enter(ctxs)
+    try:
+        assert list(repair_afk_events([_aw("not-afk", 0, 8 * 3600)], ensure=False))
+        for index in (0, 2, 3, 5):
+            assert mocks[index].call_args.kwargs["ensure"] is False
+    finally:
+        _exit(ctxs)
 
 
 def test_sleep_overlap_flips_to_afk() -> None:
@@ -176,11 +187,11 @@ def test_focus_product_keeps_positive_observations_during_selected_afk(monkeypat
     command = BASE + timedelta(minutes=60)
     monkeypatch.setattr(activitywatch, "afk_events", lambda **_kwargs: iter((event,)))
     monkeypatch.setattr(activitywatch, "window_events", lambda **_kwargs: iter(()))
-    monkeypatch.setattr(activitywatch, "_activitywatch_cache_revision", lambda: ())
+    monkeypatch.setattr(activitywatch, "_activitywatch_cache_revision", lambda **_kwargs: ())
     monkeypatch.setattr(activitywatch, "_keypress_timestamps", lambda *_args: ((keypress,), "covered"))
-    monkeypatch.setattr(repair, "keylog_coverage", lambda: KeylogCoverage(days=frozenset()))
+    monkeypatch.setattr(repair, "keylog_coverage", lambda **_kwargs: KeylogCoverage(days=frozenset()))
     monkeypatch.setattr(repair, "_sleep_intervals", lambda: (sleep, later_sleep))
-    monkeypatch.setattr(repair, "_atuin_timestamps", lambda: (command,))
+    monkeypatch.setattr(repair, "_atuin_timestamps", lambda **_kwargs: (command,))
     monkeypatch.setattr(repair, "window_events", lambda **_kwargs: iter(()))
     activitywatch._repaired_afk_events_cached.cache_clear()
     activitywatch._focus_spans_cached.cache_clear()

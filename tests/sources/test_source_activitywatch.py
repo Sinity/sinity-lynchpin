@@ -605,7 +605,7 @@ def test_fold_interval_clipping_preserves_elapsed_overlap(monkeypatch):
     assert clipped[0].start.timestamp() == first.timestamp()
     assert clipped[0].end.timestamp() == second.timestamp()
     monkeypatch.setattr(aw, "afk_events", lambda **kwargs: [])
-    monkeypatch.setattr(repair, "repair_afk_events", lambda rows: [
+    monkeypatch.setattr(repair, "repair_afk_events", lambda rows, **_kwargs: [
         SimpleNamespace(start=first, end=second, status="not-afk")
     ])
     aw._repaired_afk_events_cached.cache_clear()
@@ -635,7 +635,7 @@ def test_focus_cache_distinguishes_both_occurrences_of_repeated_hour(monkeypatch
     from lynchpin.sources.activitywatch_models import _WindowSpan
     zone = ZoneInfo("Europe/Warsaw")
     monkeypatch.setenv("TZ", "Europe/Warsaw")
-    monkeypatch.setattr(aw, "_activitywatch_cache_revision", lambda: "fold-cache")
+    monkeypatch.setattr(aw, "_activitywatch_cache_revision", lambda **_kwargs: "fold-cache")
     monkeypatch.setattr(aw, "_repaired_afk_events_cached", lambda start, end, *args: ([(start, end)], []))
     monkeypatch.setattr(aw, "_window_spans", lambda start, end, **kwargs: [
         _WindowSpan(start, end, str(start.fold), "fixture", None, None)
@@ -657,11 +657,11 @@ def test_afk_cache_distinguishes_repeated_hour_requests(monkeypatch, api, status
     from lynchpin.sources import activitywatch as aw, activitywatch_repair as repair
     zone = ZoneInfo("Europe/Warsaw")
     monkeypatch.setenv("TZ", "Europe/Warsaw")
-    monkeypatch.setattr(aw, "_activitywatch_cache_revision", lambda: "afk-fold-cache")
+    monkeypatch.setattr(aw, "_activitywatch_cache_revision", lambda **_kwargs: "afk-fold-cache")
     monkeypatch.setattr(aw, "afk_events", lambda start, end, **kwargs: [
         SimpleNamespace(start=start, end=end, status=status)
     ])
-    monkeypatch.setattr(repair, "repair_afk_events", lambda rows: rows)
+    monkeypatch.setattr(repair, "repair_afk_events", lambda rows, **_kwargs: rows)
     aw._repaired_afk_events_cached.cache_clear()
     for fold in (0, 1):
         start = datetime(2025, 10, 26, 2, 10, tzinfo=zone, fold=fold)

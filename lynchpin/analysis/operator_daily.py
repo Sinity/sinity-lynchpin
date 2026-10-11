@@ -25,8 +25,9 @@ Design:
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Optional, TypeVar
 
 from ..core.coverage import CoverageBounds
@@ -237,6 +238,7 @@ def operator_daily_matrix(
     *,
     skip_slow: bool = False,
     include_external: bool = False,
+    connection: Any | None = None,
 ) -> list[OperatorDay]:
     """Build the panoramic daily matrix for [start, end] inclusive.
 
@@ -246,7 +248,8 @@ def operator_daily_matrix(
                    scans (clipboard, raw_log, samsung, and keylog keybind
                    attribution). Product-backed web, terminal, Polylogue, IRC,
                    keylog daily counts, and Spotify daily signals still load
-                   because their refresh/read path is cheap and bounded.
+                   through their canonical products; refreshing stale products
+                   can still require substantial local work.
         include_external: if True, additionally fill external/network/model-
                    dependent enrichment — weather (Open-Meteo API), mood
                    (HF sentiment models), web_category (LLM classifier), and
@@ -275,7 +278,7 @@ def operator_daily_matrix(
 
     bounds = _load_coverage_bounds()
 
-    ctx = _FillContext(rows=rows, present=present, bounds=bounds, start=start, end=end)
+    ctx = _FillContext(rows=rows, present=present, bounds=bounds, start=start, end=end, connection=connection)
 
     # ── ActivityWatch (presence is part of daily_activity) ──
     _try_fill(ctx, "activitywatch", lambda: _fill_aw(ctx))
@@ -359,6 +362,7 @@ class _FillContext:
     start: date
     end: date
     source: str = field(default="")  # current source label (set by _try_fill)
+    connection: Any | None = None
 
     @property
     def end_exclusive(self) -> date:
@@ -430,12 +434,27 @@ def _try_fill(ctx: _FillContext, source: str, fn: Callable[[], None]) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def _fill_aw(ctx: _FillContext) -> None:
+def _require_product(name: str, *, window: tuple[date, date]) -> None:
     from ..materialization import ensure_materialized
-    from ..sources.activitywatch_derived import iter_derived_daily_activity
 
-    ensure_materialized("activitywatch_derived", window=(ctx.start, ctx.end_exclusive))
-    daily = iter_derived_daily_activity(start=ctx.start, end=ctx.end, ensure=False)
+    result = ensure_materialized(name, window=window)
+    if result.status not in {"ready", "updated", "coverage_bound"}:
+        raise RuntimeError(f"{name} unavailable: {result.status}: {result.reason}")
+
+
+def _fill_aw(ctx: _FillContext) -> None:
+    from ..sources.activitywatch_derived import iter_derived_daily_activity
+    from ..core.primitives import logical_date
+
+    available_end = ctx.end_exclusive
+    try:
+        _require_product("activitywatch_derived", window=(ctx.start, available_end))
+    except RuntimeError:
+        available_end = min(available_end, logical_date(datetime.now().astimezone()))
+        if available_end <= ctx.start:
+            raise
+        _require_product("activitywatch_derived", window=(ctx.start, available_end))
+    daily = iter_derived_daily_activity(start=ctx.start, end=available_end - timedelta(days=1), ensure=False)
     for d in daily:
         if d.date in ctx.rows and ctx.mark(d.date):
             r = ctx.rows[d.date]
@@ -553,7 +572,8 @@ def _fill_machine_pressure(ctx: _FillContext) -> None:
 
     from ..substrate.connection import connect, substrate_path
 
-    with connect(substrate_path(), read_only=True) as conn:
+    with (nullcontext(ctx.connection) if ctx.connection is not None
+          else connect(substrate_path(), read_only=True)) as conn:
         metric_rows = conn.execute(
             f"""
             SELECT
@@ -640,10 +660,9 @@ def _fill_polylogue(ctx: _FillContext) -> None:
 
 
 def _fill_web(ctx: _FillContext) -> None:
-    from ..materialization import ensure_materialized
     from ..sources.web import daily_browsing
 
-    ensure_materialized("webhistory", window=(ctx.start, ctx.end_exclusive))
+    _require_product("webhistory", window=(ctx.start, ctx.end_exclusive))
     daily = daily_browsing(start=ctx.start, end=ctx.end, ensure=False)
     for d in daily:
         if d.date in ctx.rows and ctx.mark(d.date):
@@ -653,10 +672,9 @@ def _fill_web(ctx: _FillContext) -> None:
 
 
 def _fill_terminal(ctx: _FillContext) -> None:
-    from ..materialization import ensure_materialized
     from ..sources.terminal import daily_terminal_activity
 
-    ensure_materialized("atuin", window=(ctx.start, ctx.end_exclusive))
+    _require_product("atuin", window=(ctx.start, ctx.end_exclusive))
     daily = daily_terminal_activity(start=ctx.start, end=ctx.end, ensure=False)
     for d in daily:
         if d.date in ctx.rows and ctx.mark(d.date):
@@ -665,10 +683,9 @@ def _fill_terminal(ctx: _FillContext) -> None:
 
 
 def _fill_spotify(ctx: _FillContext) -> None:
-    from ..materialization import ensure_materialized
     from ..sources.personal_signals import iter_spotify_daily_signals
 
-    ensure_materialized("spotify_daily", window=(ctx.start, ctx.end_exclusive))
+    _require_product("spotify_daily", window=(ctx.start, ctx.end_exclusive))
     for d in iter_spotify_daily_signals(start=ctx.start, end=ctx.end_exclusive, ensure=False):
         if d.date in ctx.rows and ctx.mark(d.date):
             ctx.rows[d.date].spotify_hours = round(d.minutes_played / 60.0, 2)
@@ -680,10 +697,9 @@ def _fill_keylog(ctx: _FillContext) -> None:
 
 
 def _fill_keylog_daily(ctx: _FillContext) -> None:
-    from ..materialization import ensure_materialized
     from ..sources.personal_signals import iter_personal_daily_signals
 
-    ensure_materialized("personal_daily_signals", window=(ctx.start, ctx.end_exclusive))
+    _require_product("personal_daily_signals", window=(ctx.start, ctx.end_exclusive))
     metrics_by_day: dict[date, dict[str, float]] = {}
     for row in iter_personal_daily_signals(start=ctx.start, end=ctx.end_exclusive, ensure=False):
         if row.source != "keylog":
@@ -741,9 +757,7 @@ def _fill_keylog_keybinds(ctx: _FillContext) -> None:
 
 
 def _keylog_keybind_usage_rows(start: date, end: date) -> list[dict[str, Any]] | None:
-    from ..materialization import ensure_materialized
-
-    ensure_materialized("keylog_analysis", window=(start, end + timedelta(days=1)))
+    _require_product("keylog_analysis", window=(start, end + timedelta(days=1)))
     artifact_rows = _keylog_artifact_keybind_usage_rows(start, end)
     if artifact_rows is not None:
         return artifact_rows
@@ -817,10 +831,9 @@ def _fill_clipboard(ctx: _FillContext) -> None:
 
 
 def _fill_irc(ctx: _FillContext) -> None:
-    from ..materialization import ensure_materialized
     from ..sources.irc_raw import daily_irc_activity
 
-    ensure_materialized("irc", window=(ctx.start, ctx.end_exclusive))
+    _require_product("irc", window=(ctx.start, ctx.end_exclusive))
     for day_row in daily_irc_activity(start=ctx.start, end=ctx.end, ensure=False):
         if day_row.date in ctx.rows and ctx.mark(day_row.date):
             r = ctx.rows[day_row.date]

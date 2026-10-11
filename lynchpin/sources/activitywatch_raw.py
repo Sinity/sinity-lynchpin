@@ -110,7 +110,7 @@ def observe_activitywatch_inputs(paths: Sequence[Path]) -> ActivityWatchInputObs
     )
 
 
-def activitywatch_source_revision() -> tuple[object, ...]:
+def activitywatch_source_revision(*, include_native: bool = True) -> tuple[object, ...]:
     """Return signatures for mutable ActivityWatch inputs and indexes.
 
     Consumers use this as an in-process cache key.  Include publication
@@ -118,7 +118,7 @@ def activitywatch_source_revision() -> tuple[object, ...]:
     database does not.
     """
     paths: list[Path] = []
-    for db in _candidate_dbs():
+    for db in _candidate_dbs() if include_native else ():
         paths.extend((db, Path(f"{db}-wal"), Path(f"{db}-shm")))
     canonical = canonical_activitywatch_events_path()
     index_manifest = activitywatch_event_index_manifest_path()

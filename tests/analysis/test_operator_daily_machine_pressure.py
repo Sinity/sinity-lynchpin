@@ -39,7 +39,7 @@ def _kill(conn: Any, day: int, hour: int, source_row_id: int, refresh_id: str) -
     )
 
 
-def _machine_rows(start: date, end: date) -> dict[date, od.OperatorDay]:
+def _machine_rows(start: date, end: date, connection: Any | None = None) -> dict[date, od.OperatorDay]:
     rows = {
         start + timedelta(days=offset): od.OperatorDay(date=start + timedelta(days=offset))
         for offset in range((end - start).days + 1)
@@ -52,11 +52,24 @@ def _machine_rows(start: date, end: date) -> dict[date, od.OperatorDay]:
         start=start,
         end=end,
         source="machine",
+        connection=connection,
     )
     od._fill_machine_pressure(ctx)
     for day, row in rows.items():
         row.sources_present = frozenset(present[day])
     return rows
+
+
+def test_machine_fill_reuses_promotion_connection(tmp_path, monkeypatch):
+    import pytest
+
+    with connect(tmp_path / "candidate.duckdb") as conn:
+        apply_schema(conn)
+        _metric(conn, 1, 0, "candidate", memory_psi_some_avg10=7.0, io_psi_some_avg10=2.0)
+        monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: pytest.fail("must reuse the promotion connection"))
+        rows = _machine_rows(date(2026, 7, 1), date(2026, 7, 1), connection=conn)
+        assert "machine" in rows[date(2026, 7, 1)].sources_present
+        assert conn.execute("SELECT COUNT(*) FROM machine_metric_sample").fetchone()[0] == 1
 
 
 def test_machine_kill_and_psi_daily_fill(tmp_path, monkeypatch):

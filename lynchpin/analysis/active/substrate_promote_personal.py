@@ -193,7 +193,7 @@ def promote_personal_sources(
 
             operator_rows = [
                 r
-                for r in operator_daily_matrix(window_start, window_end - timedelta(days=1))
+                for r in operator_daily_matrix(window_start, window_end - timedelta(days=1), connection=conn)
                 if window_start <= r.date < window_end
             ]
             if operator_rows:

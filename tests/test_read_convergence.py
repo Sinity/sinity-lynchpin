@@ -10,6 +10,75 @@ from pathlib import Path
 from lynchpin import materialization
 
 
+def test_unbounded_stale_read_requires_a_recent_refresh():
+    from dataclasses import replace
+    row = replace(_row("activitywatch_event_index", last=date(2026, 8, 1), status="partial"), tail_stale=True)
+    assert not materialization._materialized_enough_for_window(row, None)
+    assert materialization._materialized_enough_for_window(row, None, just_refreshed=True)
+    assert materialization._materialized_enough_for_window(row, None, recently_refreshed=True)
+
+
+def test_prepared_activitywatch_keeps_closed_history_when_only_tail_is_stale(monkeypatch):
+    from dataclasses import replace
+    from datetime import datetime
+    from lynchpin.core.primitives import logical_date
+    today = logical_date(datetime.now().astimezone())
+    yesterday = today - timedelta(days=1)
+    row = replace(_row("activitywatch_derived", last=today, status="partial"),
+                  first_date=yesterday, covered_dates=(yesterday, today), tail_stale=True)
+    monkeypatch.setattr(materialization, "_audit_one", lambda *_args, **_kwargs: row)
+    with materialization.prepared_product_reads():
+        assert materialization.ensure_materialized("activitywatch_derived", window=(yesterday, today)).status == "ready"
+        assert materialization.ensure_materialized("activitywatch_derived", window=(yesterday, today + timedelta(days=1))).status == "failed"
+
+
+@pytest.mark.parametrize("status, expected", [("ready", "ready"), ("partial", "failed"), ("missing", "failed")])
+def test_prepared_product_reads_never_start_a_writer(monkeypatch, status, expected):
+    row = _row("activitywatch_derived", last=date(2026, 8, 1), status=status)
+    monkeypatch.setattr(materialization, "_audit_one", lambda *_args, **_kwargs: row)
+    monkeypatch.setattr(materialization, "_ensure_materialized_once", lambda *_args, **_kwargs: pytest.fail("prepared reads must not rebuild"))
+    with materialization.prepared_product_reads():
+        result = materialization.ensure_materialized("activitywatch_derived")
+        assert result.status == expected
+        assert result.changed is False
+        assert materialization.ensure_materialized("activitywatch_derived", force=True).status == "failed"
+    assert not materialization._PREPARED_PRODUCT_READS.get()
+
+
+def test_operator_daily_refuses_failed_product_before_reading(monkeypatch):
+    from types import SimpleNamespace
+    from lynchpin.analysis import operator_daily
+    monkeypatch.setattr(materialization, "ensure_materialized", lambda *_args, **_kwargs: SimpleNamespace(status="failed", reason="injected failure"))
+    with pytest.raises(RuntimeError, match="injected failure"):
+        operator_daily._require_product("personal_daily_signals", window=(date(2026, 8, 1), date(2026, 8, 2)))
+
+
+@pytest.mark.parametrize("upstream_status, expected", [("ready", "ready"), ("failed", "failed")])
+def test_activitywatch_derived_reuse_checks_native_index_freshness(monkeypatch, upstream_status, expected):
+    from types import SimpleNamespace
+    from lynchpin.materializers import production
+
+    row = _row("activitywatch_derived", last=date(2026, 8, 1))
+    audits = []
+    dependencies = []
+
+    def audit(name, **_kwargs):
+        audits.append(name)
+        return row
+
+    def ensure(name, **_kwargs):
+        dependencies.append(name)
+        return SimpleNamespace(status=upstream_status, reason="index freshness")
+
+    monkeypatch.setattr(materialization, "_audit_one", audit)
+    monkeypatch.setattr(materialization, "ensure_materialized", ensure)
+    result = production.ensure_materialized("activitywatch_derived")
+    assert result.status == expected
+    assert result.changed is False
+    assert dependencies == ["activitywatch_event_index"]
+    assert len(audits) == (2 if upstream_status == "ready" else 1)
+
+
 @pytest.mark.parametrize("end, expected", [(date(2026, 8, 2), "ready"), (date(2026, 8, 3), "failed")])
 def test_activity_content_cooldown_requires_requested_coverage(monkeypatch, tmp_path, end, expected):
     from dataclasses import replace

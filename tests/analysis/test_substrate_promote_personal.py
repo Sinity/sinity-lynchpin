@@ -178,7 +178,8 @@ def test_promote_personal_sources_translates_operator_day_window(monkeypatch) ->
     calls: list[tuple[date, date]] = []
     promoted_dates: list[date] = []
 
-    def fake_operator_daily_matrix(start: date, end: date):
+    def fake_operator_daily_matrix(start: date, end: date, *, connection):
+        assert connection is not None
         calls.append((start, end))
         return [
             SimpleNamespace(date=date(2026, 5, 1)),

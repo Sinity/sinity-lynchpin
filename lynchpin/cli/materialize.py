@@ -285,7 +285,8 @@ def main(argv: list[str] | None = None) -> int:
                 if not args.all or args.only or args.history == "incremental":
                     forwarded.extend(("--existing-products", "--graph-only"))
                 _progress(f"promoting substrate snapshot: {args.start}..{args.end}")
-                with _measure_incremental_phase("graph_compute") as graph_measurement:
+                from ..materialization import prepared_product_reads
+                with prepared_product_reads(), _measure_incremental_phase("graph_compute") as graph_measurement:
                     code = snapshot_main(forwarded)
                 _record_incremental_phase(
                     generation,
@@ -304,16 +305,17 @@ def main(argv: list[str] | None = None) -> int:
 
                     # A graph refresh alone does not restore its typed inputs.
                     # Promote both in this candidate under the same identity.
-                    typed = run_substrate_promote(
-                        commit_facts_file=resolve_analysis_path("active_commit_facts.json"),
-                        file_changes_file=resolve_analysis_path("active_file_change_facts.json"),
-                        symbol_changes_file=resolve_analysis_path("active_symbol_changes.json"),
-                        ai_attribution_file=resolve_analysis_path("active_ai_attribution.json"),
-                        refresh_id=publication_refresh_id,
-                        window_start=date.fromisoformat(args.start),
-                        window_end=date.fromisoformat(args.end),
-                        write_evidence_graph=False,
-                    )
+                    with prepared_product_reads():
+                        typed = run_substrate_promote(
+                            commit_facts_file=resolve_analysis_path("active_commit_facts.json"),
+                            file_changes_file=resolve_analysis_path("active_file_change_facts.json"),
+                            symbol_changes_file=resolve_analysis_path("active_symbol_changes.json"),
+                            ai_attribution_file=resolve_analysis_path("active_ai_attribution.json"),
+                            refresh_id=publication_refresh_id,
+                            window_start=date.fromisoformat(args.start),
+                            window_end=date.fromisoformat(args.end),
+                            write_evidence_graph=False,
+                        )
                     if typed.status == "error":
                         raise _CandidateRejected(1, f"typed source promotion failed: {typed.reason}")
 

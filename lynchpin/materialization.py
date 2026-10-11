@@ -20,6 +20,8 @@ import os
 import sqlite3
 import uuid
 from concurrent.futures import Future
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
@@ -69,6 +71,9 @@ from .ingest.activity_content_materialize import (
 from .ingest.activitywatch_derived_materialize import (
     ACTIVITYWATCH_DERIVED_SCHEMA_VERSION,
     activitywatch_derived_input_files,
+    activitywatch_repair_input_versions,
+    _canonical_reuse_is_proven,
+    _repair_reuse_is_proven,
 )
 from .ingest.health_coverage_materialize import health_coverage_path
 from .ingest.terminal_materialize import ATUIN_HISTORY_SCHEMA_VERSION, atuin_input_files
@@ -311,6 +316,23 @@ class ReadConvergencePlan:
         }
 
 
+_PREPARED_PRODUCT_READS: ContextVar[bool] = ContextVar("prepared_product_reads", default=False)
+
+
+@contextmanager
+def prepared_product_reads():
+    """Read prepared canonical products without starting another writer.
+
+    Promotion enters this after its materialization plan. Unavailable or stale
+    inputs remain failed reads; this boundary never turns them into readiness.
+    """
+    token = _PREPARED_PRODUCT_READS.set(True)
+    try:
+        yield
+    finally:
+        _PREPARED_PRODUCT_READS.reset(token)
+
+
 def ensure_materialized(
     name: str,
     *,
@@ -323,6 +345,15 @@ def ensure_materialized(
     if budget not in {"inline", "manual"}:
         raise ValueError(f"unsupported materialization budget: {budget}")
     cfg = cfg or get_config()
+    if _PREPARED_PRODUCT_READS.get():
+        row = _audit_one(name, cfg=cfg)
+        closed_window = name == "activitywatch_derived" and window is not None and window[1] <= logical_date(datetime.now().astimezone())
+        ready = not force and (row.status == "ready" or row.tail_stale and closed_window) and _materialized_enough_for_window(row, window, just_refreshed=closed_window and row.tail_stale)
+        return _materialization_result(
+            row, status="ready" if ready else "failed", changed=False,
+            reason=row.reason if ready else f"prepared product unavailable: {row.reason}",
+            started=datetime.now(timezone.utc), window=window,
+        )
     if budget == "manual" or force:
         return _ensure_materialized_once(
             name, window=window, budget=budget, force=force, cfg=cfg
@@ -1254,7 +1285,7 @@ def _materialized_enough_for_window(
     recently_refreshed: bool = False,
 ) -> bool:
     if window is None:
-        return True
+        return not row.tail_stale or just_refreshed or recently_refreshed
     contract = source_contract(row.name)
     if row.name in {"activitywatch", "activitywatch_event_index"}:
         # ActivityWatch products have a known first and last date. A request
@@ -2092,9 +2123,15 @@ def _activitywatch_derived_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     elif products_ready and not schema_current:
         status: Status = "partial"
         reason = "ActivityWatch derived graph product schema is older than the current reader contract"
+    elif products_ready and meta.get("repair_input_versions") != activitywatch_repair_input_versions():
+        status = "partial"
+        today = logical_date(datetime.now().astimezone())
+        tail_stale = _repair_reuse_is_proven(meta, activitywatch_repair_input_versions(closed_only=True), today, today + timedelta(days=1)) and _canonical_reuse_is_proven(meta, input_versions(input_files), today, today + timedelta(days=1))
+        reason = "ActivityWatch derived products lack current independent repair evidence identities"
     elif products_ready and not inputs_current:
         status: Status = "partial"
-        tail_stale = True
+        today = logical_date(datetime.now().astimezone())
+        tail_stale = _canonical_reuse_is_proven(meta, input_versions(input_files), today, today + timedelta(days=1))
         reason = "ActivityWatch derived graph products were built from an older canonical event product"
     elif products_ready:
         status = "ready"
