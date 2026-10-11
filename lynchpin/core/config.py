@@ -560,8 +560,7 @@ def _resolve_spotify_export(root: Path) -> Path:
 
 def _resolve_raindrop_csv(env_value: Optional[str], root: Path) -> Optional[Path]:
     if env_value:
-        c = Path(env_value)
-        return c if c.exists() else None
+        return Path(env_value)
     if not root.exists():
         return None
     candidates = sorted(root.glob("raindrop*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)

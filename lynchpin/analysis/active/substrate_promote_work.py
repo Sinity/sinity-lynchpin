@@ -52,7 +52,8 @@ def promote_work_sources(
         # mirror before reading. Rows carry their own workspace provenance, and
         # a worktree still running an older xtask is absorbed at the source with
         # `xtask history unify`.
-        has_xtask = xtask_history_path().exists()
+        xtask_path = xtask_history_path()
+        has_xtask = xtask_path.exists()
         agentctl_unavailable_reason: str | None
         try:
             agentctl_snapshot = read_observation_snapshot()
@@ -187,7 +188,9 @@ def promote_work_sources(
                 f"{breakdown}, polylogue_verification_rejected={polylogue_rejected} "
                 f"(first: {polylogue_snapshot.rejected[0][1]})"
             )
-        if polylogue_contract_violated or polylogue_rejected:
+        if not has_xtask:
+            breakdown = f"{breakdown}; xtask history unavailable: {xtask_path}"
+        if not has_xtask or polylogue_contract_violated or polylogue_rejected:
             status = "degraded"
             reason = breakdown
         elif not counts["work_observations"]:
@@ -248,7 +251,7 @@ def _work_window_bounds(
     """
     effective_today = today or date.today()
     effective_end = window_end
-    if window_end <= effective_today:
+    if window_end == effective_today:
         effective_end = window_end + timedelta(days=1)
     return (
         datetime.combine(window_start, time.min, tzinfo=timezone.utc),

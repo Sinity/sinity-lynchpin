@@ -236,3 +236,9 @@ def test_chisel_managed_job_uses_its_owned_scratch(monkeypatch, tmp_path):
     monkeypatch.setenv("LYNCHPIN_CHISEL_SCRATCH_ROOT", str(tmp_path / "host-default"))
     cfg = LynchpinConfig.from_env()
     assert cfg.chisel_scratch() == tmp_path / "job-owned/chisel"
+
+
+def test_missing_explicit_raindrop_csv_remains_configured(tmp_path):
+    from lynchpin.core.config import _resolve_raindrop_csv
+    missing = tmp_path / "selected.csv"
+    assert _resolve_raindrop_csv(str(missing), tmp_path) == missing

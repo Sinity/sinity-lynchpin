@@ -76,6 +76,7 @@ class RaindropBookmarkLive:
             excerpt=self.excerpt,
             cover=self.cover,
             favorite=self.favorite,
+            updated=self.updated,
             raw={
                 "source": "raindrop_live", "collection": self.collection,
                 **({"updated": self.updated.isoformat()} if self.updated else {}),

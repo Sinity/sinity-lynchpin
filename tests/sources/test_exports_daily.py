@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 import json
+import pytest
 from types import SimpleNamespace
 
 from lynchpin.sources import exports_messenger, exports_raindrop
@@ -14,9 +15,9 @@ def test_daily_messenger_returns_list():
     assert isinstance(result, list)
 
 
-def test_daily_raindrop_returns_list():
-    result = daily_raindrop_activity(start=date(2020, 1, 1), end=date(2025, 12, 31))
-    assert isinstance(result, list)
+def test_daily_raindrop_missing_is_not_empty():
+    with pytest.raises(FileNotFoundError):
+        daily_raindrop_activity(start=date(2020, 1, 1), end=date(2025, 12, 31))
 
 
 def test_messenger_day_activity_fields():
@@ -29,12 +30,15 @@ def test_messenger_day_activity_fields():
         assert day.message_count > 0
 
 
-def test_raindrop_day_activity_fields():
-    result = daily_raindrop_activity(start=date(2020, 1, 1), end=date(2025, 12, 31))
-    if result:
-        day = result[0]
-        assert hasattr(day, "bookmarks_added")
-        assert day.bookmarks_added > 0
+def test_raindrop_day_activity_fields(tmp_path, monkeypatch):
+    raw = tmp_path / "raindrop-raw"
+    raw.mkdir()
+    (raw / "raindrop.csv").write_text("id,url,title,created,tags\n17,https://example.org,Example,2024-06-01T12:00:00Z,one\n")
+    monkeypatch.setenv("LYNCHPIN_RAINDROP_DIR", str(raw))
+    result = daily_raindrop_activity(start=date(2024, 6, 1), end=date(2024, 6, 2))
+    assert len(result) == 1
+    assert result[0].date == date(2024, 6, 1)
+    assert result[0].bookmarks_added == 1 and result[0].unique_tags == 1
 
 
 def test_messenger_default_reader_materializes(monkeypatch, tmp_path):

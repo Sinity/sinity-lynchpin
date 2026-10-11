@@ -99,6 +99,8 @@ def test_raindrop_ordinary_reader_adopts_complete_api_bundle(tmp_path, monkeypat
     row = rows[0]
     assert row.id == 17 and row.updated == datetime(2026, 8, 1, 12, tzinfo=timezone.utc)
     assert row.state == "active" and row.tags == ["one, two"]
+    assert row.api_observed_at == datetime(2026, 8, 2, tzinfo=timezone.utc)
+    assert row.observed_at == row.api_observed_at
     assert row.highlights == (highlight,)
     assert all(row.metadata[key] == value for key, value in metadata.items())
     assert set(report["input_files"]) == {str(path) for path in snapshot.iterdir()}
@@ -111,6 +113,7 @@ def test_raindrop_ordinary_reader_adopts_complete_api_bundle(tmp_path, monkeypat
     mod.materialize_raindrop()
     row = list(source.iter_raindrop_bookmarks(ensure=False))[0]
     assert row.title == "new CSV" and row.metadata["title"] == "retained"
+    assert row.observed_at > row.api_observed_at
     assert row.raw["source_file"] == str(csv_path) and row.raw["api_source"] == str(snapshot)
     assert row.highlights == (highlight,)
     before = mod.raindrop_bookmarks_path().read_bytes()

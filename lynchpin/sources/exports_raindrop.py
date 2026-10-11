@@ -47,6 +47,8 @@ class RaindropBookmark:
     state: str | None = None
     metadata: dict[str, object] = field(default_factory=dict)
     highlights: tuple[dict, ...] = ()
+    observed_at: datetime | None = None
+    api_observed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +160,8 @@ def iter_raindrop_bookmarks(
                     cover=_strip(row.get("cover")),
                     favorite=favorite,
                     raw=row,
+                    observed_at=parse_datetime(row.get("observed_at")),
+                    api_observed_at=parse_datetime(row.get("api_observed_at")),
                     updated=parse_datetime(row.get("updated")),
                     state=row.get("state") or None,
                     metadata=json.loads(row["metadata_json"]) if row.get("metadata_json") else {},
