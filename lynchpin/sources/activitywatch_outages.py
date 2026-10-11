@@ -52,6 +52,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
 
+from ..core.parse import as_local
+from ..core.primitives import duration_s
 from .activitywatch_models import AWEvent
 from .activitywatch_raw import afk_events, web_events, window_events
 
@@ -90,7 +92,7 @@ class DataOutage:
 
     @property
     def duration_s(self) -> float:
-        return (self.end - self.start).total_seconds()
+        return duration_s((self.start, self.end))
 
 
 def _gaps_in_bucket(
@@ -102,17 +104,17 @@ def _gaps_in_bucket(
 ) -> list[tuple[datetime, datetime]]:
     """Return gaps ≥ threshold_s between consecutive event endtimes and the
     next event's starttime, clipped to [start, end]."""
-    sorted_events = sorted(events, key=lambda e: e.start)
+    sorted_events = sorted(events, key=lambda e: e.start.timestamp())
     gaps: list[tuple[datetime, datetime]] = []
     prev_end = start
     for ev in sorted_events:
-        if ev.start < prev_end:
-            prev_end = max(prev_end, ev.end)
+        if ev.start.timestamp() < prev_end.timestamp():
+            prev_end = max((prev_end, ev.end), key=lambda dt: dt.timestamp())
             continue
-        if (ev.start - prev_end).total_seconds() >= threshold_s:
+        if duration_s((prev_end, ev.start)) >= threshold_s:
             gaps.append((prev_end, ev.start))
-        prev_end = max(prev_end, ev.end)
-    if (end - prev_end).total_seconds() >= threshold_s:
+        prev_end = max((prev_end, ev.end), key=lambda dt: dt.timestamp())
+    if duration_s((prev_end, end)) >= threshold_s:
         gaps.append((prev_end, end))
     return gaps
 
@@ -123,8 +125,12 @@ def _count_events_in_window(
     start: datetime,
     end: datetime,
 ) -> int:
-    """Number of events whose starttime falls inside [start, end]."""
-    return sum(1 for ev in events if start <= ev.start < end)
+    """Number of events overlapping the half-open coverage interval."""
+    lower, upper = start.timestamp(), end.timestamp()
+    return sum(1 for ev in events if ev.start.timestamp() < upper and (
+        ev.end.timestamp() > lower or
+        ev.end.timestamp() == ev.start.timestamp() and lower <= ev.start.timestamp()
+    ))
 
 
 def detect_data_outages(
@@ -145,6 +151,9 @@ def detect_data_outages(
          window+web both have events → pattern C (afk-only down)
       4. Skip gaps shorter than threshold (operator AFK).
     """
+    start, end = as_local(start), as_local(end)
+    if end.timestamp() <= start.timestamp():
+        return []
     afk = list(afk_events(start=start, end=end, ensure=ensure))
     if not afk:
         # No AFK data at all → the entire window is an outage of some kind.

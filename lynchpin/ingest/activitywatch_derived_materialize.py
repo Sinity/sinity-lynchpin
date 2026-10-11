@@ -40,7 +40,7 @@ from .manifest_windows import merge_manifest_covered_dates
 from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
 
 
-ACTIVITYWATCH_DERIVED_SCHEMA_VERSION = 4
+ACTIVITYWATCH_DERIVED_SCHEMA_VERSION = 5
 
 # Bound on how many days of source events a single pass may hold in memory.
 # The heavy allocations are the AWEvent objects and span intermediates inside

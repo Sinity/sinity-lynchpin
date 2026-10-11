@@ -1566,18 +1566,15 @@ def _activitywatch_real_coverage_floor() -> date | None:
 
 def _daily_outage_hours(*, start: datetime, end: datetime, ensure: bool = True) -> dict[date, float]:
     """Compute per-day AW outage seconds from cross-bucket gap detection."""
-    try:
-        from .activitywatch_outages import detect_data_outages
-        outages = detect_data_outages(start=start, end=end, ensure=ensure)
-    except Exception:
-        return {}
+    from .activitywatch_outages import detect_data_outages
+    outages = detect_data_outages(start=as_local(start), end=as_local(end), ensure=ensure)
 
     by_day: dict[date, float] = defaultdict(float)
     for outage in outages:
-        d = logical_date(outage.start)
         # Only count patterns A (full outage) and B (awatcher process died)
         # Pattern C (afk-only silent) is tricky — window+web still work,
         # so it's partial. Count at 50% weight.
         weight = 1.0 if outage.pattern in ("A", "B") else 0.5
-        by_day[d] += outage.duration_s * weight
+        for day, segment in split_by_day(outage.start, outage.end):
+            by_day[day] += duration_s(segment) * weight
     return dict(by_day)
