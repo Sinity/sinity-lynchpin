@@ -24,7 +24,10 @@ from lynchpin.sources.polylogue import PolylogueReadiness
 UTC = timezone.utc
 
 
-def test_content_metadata_coverage_converges_activity_content(monkeypatch) -> None:
+def test_content_metadata_coverage_converges_activity_content(monkeypatch, tmp_path) -> None:
+    pinned = (tmp_path / "generation" / "daily.ndjson", tmp_path / "generation" / "title_usage.ndjson")
+    seen_paths = []
+    monkeypatch.setattr("lynchpin.sources.activity_content.activity_content_bundle_paths", lambda: pinned)
     ensure_calls = []
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
@@ -32,7 +35,7 @@ def test_content_metadata_coverage_converges_activity_content(monkeypatch) -> No
     )
     monkeypatch.setattr(
         "lynchpin.sources.activity_content.iter_activity_content_days",
-        lambda *, start, end, ensure=True: [
+        lambda *, path=None, start, end, ensure=True: seen_paths.append(path) or [
             SimpleNamespace(
                 focused_seconds=3600.0,
                 matched_seconds=2700.0,
@@ -45,7 +48,7 @@ def test_content_metadata_coverage_converges_activity_content(monkeypatch) -> No
     )
     monkeypatch.setattr(
         "lynchpin.sources.activity_content.iter_activity_title_usage",
-        lambda *, start, end, ensure=True: (),
+        lambda *, path=None, start, end, ensure=True: seen_paths.append(path) or (),
     )
 
     rendered = _render_content_metadata_coverage(
@@ -56,6 +59,7 @@ def test_content_metadata_coverage_converges_activity_content(monkeypatch) -> No
     assert ensure_calls == [
         ("activity_content", (date(2026, 5, 1), date(2026, 5, 3)))
     ]
+    assert seen_paths == list(pinned)
     assert "Title metadata coverage: 75.0%" in rendered
 
 

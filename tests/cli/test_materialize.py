@@ -422,7 +422,11 @@ def test_standalone_materialization_does_not_mutate_published_substrate(monkeypa
 # Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch) -> None:
+def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch, tmp_path) -> None:
+    pinned = (tmp_path / "generation" / "daily.ndjson", tmp_path / "generation" / "title_usage.ndjson")
+    next_selection = (tmp_path / "later" / "daily.ndjson", tmp_path / "later" / "title_usage.ndjson")
+    selection = [pinned]
+    monkeypatch.setattr("lynchpin.sources.activity_content.activity_content_bundle_paths", lambda: selection[0])
     import lynchpin.cli.substrate_snapshot as snapshot
 
     ensure_calls: list[tuple[str, tuple[date, date] | None]] = []
@@ -463,11 +467,14 @@ def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch) -
             dimensions={},
         )
 
-    def fake_iter_activity_content_days(*, start=None, end=None, ensure=True):
+    def fake_iter_activity_content_days(*, path=None, start=None, end=None, ensure=True):
+        assert path == pinned[0]
+        selection[0] = next_selection
         read_windows.append(("activity_content_days", start, end, ensure))
         return iter(())
 
-    def fake_iter_activity_title_usage(*, start=None, end=None, ensure=True):
+    def fake_iter_activity_title_usage(*, path=None, start=None, end=None, ensure=True):
+        assert path == pinned[1]
         read_windows.append(("activity_title_usage", start, end, ensure))
         return iter(())
 

@@ -13,6 +13,7 @@ from ..core.config import get_config
 __all__ = [
     "ActivityContentDay",
     "ActivityTitleUsage",
+    "activity_content_bundle_paths",
     "activity_content_daily_path",
     "activity_content_manifest_path",
     "activity_title_usage_path",
@@ -72,6 +73,12 @@ def activity_title_usage_path(root: Path | None = None) -> Path:
     return base / "activity_content/title_usage.ndjson"
 
 
+def activity_content_bundle_paths() -> tuple[Path, Path]:
+    """Pin both products to the same selected generation for a compound read."""
+    daily = activity_content_daily_path().resolve()
+    return daily, daily.with_name(activity_title_usage_path().name)
+
+
 def iter_activity_content_days(
     path: Path | None = None,
     *,
@@ -83,7 +90,7 @@ def iter_activity_content_days(
         from ..materialization import ensure_materialized
 
         ensure_materialized("activity_content", window=_window(start, end))
-    target = path or activity_content_daily_path()
+    target = (path or activity_content_daily_path()).resolve()
     selected_paths = _partition_paths(target, product="activity_content.daily") if path is None else ()
     if selected_paths:
         for selected in selected_paths:
@@ -133,7 +140,7 @@ def iter_activity_title_usage(
         from ..materialization import ensure_materialized
 
         ensure_materialized("activity_content", window=_window(start, end))
-    target = path or activity_title_usage_path()
+    target = (path or activity_title_usage_path()).resolve()
     if not target.exists():
         raise FileNotFoundError(
             f"canonical ActivityWatch title-usage materialization is missing: {target}. "

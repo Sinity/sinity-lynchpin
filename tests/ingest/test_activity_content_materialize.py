@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import date
 
+import pytest
+
 
 def test_materialize_activity_content_records_input_high_water(monkeypatch, tmp_path):
     from lynchpin.ingest import activity_content_materialize
@@ -146,7 +148,10 @@ def test_materialize_activity_content_stays_scoped_once_bootstrapped(monkeypatch
 
     usage_output = tmp_path / "title_usage.ndjson"
     facts_path = usage_output.with_name(f"{usage_output.stem}.facts.sqlite3")
-    activity_content_materialize._TitleUsageStore(facts_path).close()  # simulates an already-bootstrapped store
+    with activity_content_materialize._TitleUsageStore(facts_path) as store:
+        store.ensure_row(title_hash="fixture", app="fixture", normalized_title="fixture",
+                         example_title="fixture", classification=None)
+        store.add(title_hash="fixture", app="fixture", day=date(2026, 1, 15), seconds=120.0)
 
     monkeypatch.setattr(activity_content_materialize, "activity_content_input_files", lambda: (aw, titles))
     monkeypatch.setattr(activity_content_materialize, "load_title_classification_map", lambda: {})
@@ -273,3 +278,199 @@ def test_corrupt_usage_export_migrates_from_retained_facts(tmp_path):
             for line in artifacts.read(ref).decode().splitlines()]
     assert len(rows) == 1
     assert rows[0]["focused_seconds"] == 60
+
+
+@pytest.fixture
+def content_refresh(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from lynchpin.ingest import activity_content_materialize as materializer
+    from lynchpin.sources import activity_content
+    from lynchpin.sources.activitywatch import FocusSpan
+
+    derived = tmp_path / "derived"
+    output = derived / "activity_content" / "daily.ndjson"
+    events = tmp_path / "events.ndjson"
+    events.write_text("{}\n")
+    monkeypatch.setattr(materializer, "activity_content_input_files", lambda: (events,))
+    monkeypatch.setattr(materializer, "load_title_classification_map", lambda: {})
+    monkeypatch.setattr(activity_content, "get_config", lambda: SimpleNamespace(derived_root=derived))
+    seconds = {date(2026, 1, 1): 60, date(2026, 1, 2): 60}
+
+    def spans(*, start, end, **kwargs):
+        for day, duration in sorted(seconds.items()):
+            timestamp = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=12)
+            if start <= timestamp < end:
+                yield FocusSpan(start=timestamp, end=timestamp + timedelta(seconds=duration),
+                                kind="focused", app="fixture", title="fixture", mode=None, project=None)
+
+    monkeypatch.setattr(materializer, "focus_spans", spans)
+
+    def refresh(start=date(2026, 1, 1), end=date(2026, 1, 3)):
+        return materializer.materialize_activity_content(start=start, end=end, output=output)
+
+    def totals():
+        import sqlite3
+        daily = sum(row.focused_seconds for row in activity_content.iter_activity_content_days(ensure=False))
+        usage = sum(row.focused_seconds for row in activity_content.iter_activity_title_usage(ensure=False))
+        with sqlite3.connect(output.parent / "title_usage.facts.sqlite3") as connection:
+            facts = connection.execute("SELECT SUM(focused_seconds) FROM title_usage_daily").fetchone()[0]
+        manifest = json.loads(output.with_suffix(".manifest.json").read_text())
+        return daily, usage, facts, manifest["focused_seconds"]
+
+    return materializer, output, seconds, refresh, totals
+
+
+@pytest.mark.parametrize("stage", ["daily", "title", "usage_selection", "daily_selection", "manifest", "facts_commit", "pointer_before", "pointer_after"])
+def test_activity_content_interrupted_bundle_is_complete(content_refresh, monkeypatch, stage):
+    materializer, output, seconds, refresh, totals = content_refresh
+    refresh()
+    assert totals() == (120, 120, 120, 120)
+    seconds[date(2026, 1, 2)] = 120
+
+    with monkeypatch.context() as patch:
+        if stage in {"daily", "title"}:
+            original = materializer.atomic_write_ndjson
+            def interrupt(path, rows):
+                original(path, rows)
+                if path.name == ("daily.ndjson" if stage == "daily" else "title_usage.ndjson"):
+                    raise RuntimeError("injected publication interruption")
+            patch.setattr(materializer, "atomic_write_ndjson", interrupt)
+        elif stage in {"usage_selection", "daily_selection"}:
+            original = materializer.ArtifactStore.publish
+            def interrupt(store, *args, **kwargs):
+                result = original(store, *args, **kwargs)
+                if store.root.name == (".title_usage.partitions" if stage == "usage_selection" else ".daily.partitions"):
+                    raise RuntimeError("injected publication interruption")
+                return result
+            patch.setattr(materializer.ArtifactStore, "publish", interrupt)
+        elif stage == "manifest":
+            original = materializer.write_manifest
+            def interrupt(*args, **kwargs):
+                original(*args, **kwargs)
+                raise RuntimeError("injected publication interruption")
+            patch.setattr(materializer, "write_manifest", interrupt)
+        elif stage == "facts_commit":
+            original = materializer._TitleUsageStore.__exit__
+            def interrupt(*args, **kwargs):
+                original(*args, **kwargs)
+                raise RuntimeError("injected publication interruption")
+            patch.setattr(materializer._TitleUsageStore, "__exit__", interrupt)
+        else:
+            original = materializer._select_bundle
+            def interrupt(*args, **kwargs):
+                if stage == "pointer_after":
+                    original(*args, **kwargs)
+                raise RuntimeError("injected publication interruption")
+            patch.setattr(materializer, "_select_bundle", interrupt)
+        with pytest.raises(RuntimeError, match="injected"):
+            refresh(start=date(2026, 1, 2))
+    expected = 180 if stage == "pointer_after" else 120
+    assert totals() == (expected,) * 4
+    assert len(list((output.parent / ".daily.generations").glob("gen-*"))) == 2
+    refresh(start=date(2026, 1, 2))
+    assert totals() == (180,) * 4
+
+
+def test_failed_bootstrap_does_not_turn_file_creation_into_completion(content_refresh, monkeypatch):
+    materializer, output, seconds, refresh, totals = content_refresh
+    output.parent.mkdir(parents=True)
+    output.write_text(json.dumps({"date": "2026-01-01", "focused_seconds": 60,
+                                 "matched_seconds": 0, "source_counts": {}}) + "\n")
+    original = materializer.focus_spans
+    with monkeypatch.context() as patch:
+        def fail(**kwargs):
+            raise RuntimeError("source unavailable")
+        patch.setattr(materializer, "focus_spans", fail)
+        with pytest.raises(RuntimeError, match="source unavailable"):
+            refresh(start=date(2026, 1, 2))
+    assert not (output.parent / "title_usage.facts.sqlite3").exists()
+    monkeypatch.setattr(materializer, "focus_spans", original)
+    refresh(start=date(2026, 1, 2))
+    assert totals() == (120,) * 4
+
+
+def test_activity_content_rejects_changed_inputs_before_selection(content_refresh, monkeypatch):
+    from lynchpin.core.errors import MaterializationError
+    materializer, output, seconds, refresh, totals = content_refresh
+    refresh()
+    original = materializer.focus_spans
+    def change(**kwargs):
+        yield from original(**kwargs)
+        materializer.activity_content_input_files()[0].write_text("changed input\n")
+    monkeypatch.setattr(materializer, "focus_spans", change)
+    with pytest.raises(MaterializationError, match="inputs changed"):
+        refresh(start=date(2026, 1, 2))
+    assert totals() == (120,) * 4
+
+
+def test_compound_content_reader_keeps_one_generation(content_refresh):
+    from lynchpin.sources import activity_content
+    materializer, output, seconds, refresh, totals = content_refresh
+    refresh()
+    daily, usage = activity_content.activity_content_bundle_paths()
+    seconds[date(2026, 1, 2)] = 120
+    refresh(start=date(2026, 1, 2))
+    assert totals() == (180,) * 4
+    assert sum(row.focused_seconds for row in activity_content.iter_activity_content_days(daily)) == 120
+    assert sum(row.focused_seconds for row in activity_content.iter_activity_title_usage(usage)) == 120
+
+
+def test_unchanged_unbounded_content_reuses_selection(content_refresh, monkeypatch):
+    materializer, output, seconds, refresh, totals = content_refresh
+    refresh()
+    root = output.parent / ".daily.generations"
+    before = {path.name for path in root.iterdir()}
+    def fail(**kwargs):
+        raise AssertionError("warm reuse must not acquire inputs again")
+    monkeypatch.setattr(materializer, "focus_spans", fail)
+    manifest = materializer.materialize_activity_content(output=output)
+    assert manifest["focused_seconds"] == 120
+    assert {path.name for path in root.iterdir()} == before
+
+
+@pytest.mark.parametrize("entrance_name", ["daily.ndjson", "daily.manifest.json", "title_usage.ndjson", "title_usage.facts.sqlite3", ".daily.partitions", ".title_usage.partitions"])
+def test_legacy_adoption_keeps_entrances_readable(content_refresh, monkeypatch, entrance_name, tmp_path):
+    from types import SimpleNamespace
+    from lynchpin.sources import activity_content
+    materializer, output, seconds, refresh, totals = content_refresh
+    refresh()
+    legacy = tmp_path / "legacy" / "activity_content"
+    materializer._copy_bundle(output.resolve().parent, legacy, materializer._bundle_names(output))
+    monkeypatch.setattr(activity_content, "get_config", lambda: SimpleNamespace(derived_root=legacy.parent))
+    original = materializer.os.replace
+    with monkeypatch.context() as patch:
+        def interrupt(source, destination):
+            if destination.name.startswith("preimage-") and destination.name.endswith("-" + entrance_name):
+                assert sum(row.focused_seconds for row in activity_content.iter_activity_content_days(ensure=False)) == 120
+                assert sum(row.focused_seconds for row in activity_content.iter_activity_title_usage(ensure=False)) == 120
+                raise RuntimeError("injected adoption interruption")
+            return original(source, destination)
+        patch.setattr(materializer.os, "replace", interrupt)
+        with pytest.raises(RuntimeError, match="adoption interruption"):
+            materializer.materialize_activity_content(start=date(2026, 1, 2), end=date(2026, 1, 3), output=legacy / output.name)
+    materializer.materialize_activity_content(start=date(2026, 1, 2), end=date(2026, 1, 3), output=legacy / output.name)
+    assert sum(row.focused_seconds for row in activity_content.iter_activity_content_days(ensure=False)) == 120
+    assert sum(row.focused_seconds for row in activity_content.iter_activity_title_usage(ensure=False)) == 120
+
+
+def test_daily_rounding_does_not_reject_complete_facts(content_refresh):
+    materializer, output, seconds, refresh, totals = content_refresh
+    for day in range(1, 4):
+        seconds[date(2026, 1, day)] = 60.0004
+    refresh(end=date(2026, 1, 4))
+    daily, usage, facts, manifest = totals()
+    assert daily == manifest == 180
+    assert usage == pytest.approx(180.001)
+    assert facts == pytest.approx(180.0012)
+
+
+def test_bootstrap_checks_fact_days_not_only_the_grand_total(content_refresh):
+    import sqlite3
+    materializer, output, seconds, refresh, totals = content_refresh
+    refresh()
+    with sqlite3.connect(output.parent / "title_usage.facts.sqlite3") as connection:
+        connection.execute("DELETE FROM title_usage_daily WHERE day = '2026-01-01'")
+        connection.execute("UPDATE title_usage_daily SET focused_seconds = 120 WHERE day = '2026-01-02'")
+    refresh(start=date(2026, 1, 2))
+    assert totals() == (120,) * 4

@@ -316,12 +316,13 @@ def promote_personal_sources(
     if selection.includes(SOURCE_ACTIVITY_CONTENT):
         try:
             ensure_input_product("activity_content")
-            from lynchpin.sources.activity_content import iter_activity_content_days, iter_activity_title_usage
+            from lynchpin.sources.activity_content import activity_content_bundle_paths, iter_activity_content_days, iter_activity_title_usage
 
-            content_rows = list(iter_activity_content_days(start=window_start, end=window_end, ensure=False))
+            content_daily, content_usage = activity_content_bundle_paths()
+            content_rows = list(iter_activity_content_days(path=content_daily, start=window_start, end=window_end, ensure=False))
             usage_rows = [
                 row
-                for row in iter_activity_title_usage(start=window_start, end=window_end, ensure=False)
+                for row in iter_activity_title_usage(path=content_usage, start=window_start, end=window_end, ensure=False)
                 if row.last_date is not None
                 and row.first_date is not None
             ]

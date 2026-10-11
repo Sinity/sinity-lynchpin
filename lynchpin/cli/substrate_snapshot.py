@@ -319,7 +319,7 @@ def _promote_snapshot_daily_signals(
         record_source_status,
     )
     from lynchpin.materialization import ensure_materialized
-    from lynchpin.sources.activity_content import iter_activity_content_days, iter_activity_title_usage
+    from lynchpin.sources.activity_content import activity_content_bundle_paths, iter_activity_content_days, iter_activity_title_usage
     from lynchpin.sources.personal_signals import iter_personal_daily_signals
     from lynchpin.sources.title_metadata import title_metadata_path
     from lynchpin.sources.title_metadata import title_metadata_manifest_path
@@ -380,7 +380,8 @@ def _promote_snapshot_daily_signals(
             input_fingerprint=manifest_fingerprint,
         )
         content_start = incremental_tail_start or start
-        content_rows = list(iter_activity_content_days(start=content_start, end=end, ensure=False))
+        content_daily, content_usage = activity_content_bundle_paths()
+        content_rows = list(iter_activity_content_days(path=content_daily, start=content_start, end=end, ensure=False))
         content_count = promote_activity_content_days(
             conn,
             refresh_id=refresh_id,
@@ -402,7 +403,7 @@ def _promote_snapshot_daily_signals(
             refresh_id=refresh_id,
             rows=(
                 row
-                for row in iter_activity_title_usage(start=content_start, end=end, ensure=False)
+                for row in iter_activity_title_usage(path=content_usage, start=content_start, end=end, ensure=False)
                 if row.last_date is not None and row.first_date is not None
             ),
             previous_refresh_id=previous_refresh_id,

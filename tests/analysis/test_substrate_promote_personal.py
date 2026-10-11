@@ -5,7 +5,11 @@ from datetime import date
 from types import SimpleNamespace
 
 
-def test_promote_personal_sources_bounds_activity_content_reads(monkeypatch) -> None:
+def test_promote_personal_sources_bounds_activity_content_reads(monkeypatch, tmp_path) -> None:
+    pinned = (tmp_path / "generation" / "daily.ndjson", tmp_path / "generation" / "title_usage.ndjson")
+    next_selection = (tmp_path / "later" / "daily.ndjson", tmp_path / "later" / "title_usage.ndjson")
+    selection = [pinned]
+    monkeypatch.setattr("lynchpin.sources.activity_content.activity_content_bundle_paths", lambda: selection[0])
     from lynchpin.analysis.active.substrate_promote_personal import promote_personal_sources
     from lynchpin.analysis.active.substrate_promote_status import (
         SOURCE_ACTIVITY_CONTENT,
@@ -29,11 +33,14 @@ def test_promote_personal_sources_bounds_activity_content_reads(monkeypatch) -> 
         assert window == (date(2026, 5, 1), date(2026, 5, 4))
         return SimpleNamespace(status="ready", reason="ready")
 
-    def fake_iter_activity_content_days(*, start=None, end=None, ensure=True):
+    def fake_iter_activity_content_days(*, path=None, start=None, end=None, ensure=True):
+        assert path == pinned[0]
+        selection[0] = next_selection
         content_windows.append((start, end, ensure))
         yield ContentRow(date=start)
 
-    def fake_iter_activity_title_usage(*, start=None, end=None, ensure=True):
+    def fake_iter_activity_title_usage(*, path=None, start=None, end=None, ensure=True):
+        assert path == pinned[1]
         usage_windows.append((start, end, ensure))
         yield UsageRow(first_date=start, last_date=start)
 

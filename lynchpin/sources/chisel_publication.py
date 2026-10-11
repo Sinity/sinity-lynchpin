@@ -9,8 +9,6 @@ previous visible tree untouched.
 from __future__ import annotations
 
 import contextlib
-import ctypes
-import errno
 import fcntl
 import hashlib
 import gzip
@@ -22,6 +20,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Sequence
+
+from ..core.io import atomic_exchange_paths
 
 
 _LOCKS_GUARD = threading.Lock()
@@ -220,21 +220,6 @@ def _archive_previous(old_root: Path, candidate_root: Path, names: Sequence[str]
         os.link(path, archive_dir / path.name)
 
 
-def _exchange_directories(left: Path, right: Path) -> None:
-    """Atomically exchange sibling directories with Linux renameat2."""
-    libc = ctypes.CDLL(None, use_errno=True)
-    renameat2 = getattr(libc, "renameat2", None)
-    if renameat2 is None:
-        raise OSError(errno.ENOSYS, "renameat2 is unavailable; refusing non-atomic publication")
-    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
-                          ctypes.c_uint]
-    renameat2.restype = ctypes.c_int
-    result = renameat2(-100, os.fsencode(left), -100, os.fsencode(right), 2)  # RENAME_EXCHANGE
-    if result != 0:
-        code = ctypes.get_errno()
-        raise OSError(code, os.strerror(code), f"{left} <-> {right}")
-
-
 def publish_candidate(candidate_root: Path, output_root: Path, names: Sequence[str]) -> None:
     """Validate selected projects and atomically publish the complete tree.
 
@@ -256,7 +241,7 @@ def publish_candidate(candidate_root: Path, output_root: Path, names: Sequence[s
     if not output_root.exists():
         os.replace(candidate_root, output_root)
         return
-    _exchange_directories(candidate_root, output_root)
+    atomic_exchange_paths(candidate_root, output_root)
 
 
 def publish_project_homes(candidate_root: Path, output_root: Path, names: Sequence[str]) -> dict[str, str]:

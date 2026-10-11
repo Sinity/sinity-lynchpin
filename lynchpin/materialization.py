@@ -2150,9 +2150,9 @@ def _title_metadata_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 def _activity_content_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     contract = source_contract("activity_content")
-    path = activity_content_daily_path()
-    usage = activity_title_usage_path()
-    manifest = activity_content_manifest_path()
+    path = activity_content_daily_path().resolve()
+    usage = path.with_name(activity_title_usage_path().name)
+    manifest = path.with_name(activity_content_manifest_path().name)
     meta = _load_json(manifest)
     input_files = activity_content_input_files()
     ready = _product_with_manifest_exists(path, manifest) and usage.exists()

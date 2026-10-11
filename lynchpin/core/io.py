@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import json
+import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from os import PathLike
@@ -194,3 +197,18 @@ def materialize_analysis_artifacts() -> dict[str, Any]:
 def require_analysis_artifact(name: str) -> dict[str, Any]:
     """Load a required analysis artifact as a JSON object or raise typed errors."""
     return load_json_object(resolve_analysis_path(name), label=name)
+
+
+def atomic_exchange_paths(left: Path, right: Path) -> None:
+    """Atomically exchange sibling filesystem entrances with Linux renameat2."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise OSError(errno.ENOSYS, "renameat2 is unavailable; refusing non-atomic publication")
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+                          ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(-100, os.fsencode(left), -100, os.fsencode(right), 2)  # RENAME_EXCHANGE
+    if result != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), f"{left} <-> {right}")

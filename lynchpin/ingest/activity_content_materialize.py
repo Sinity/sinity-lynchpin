@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
+import uuid
 import sqlite3
 import sys
 from collections import Counter, defaultdict
+from contextlib import closing
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-from ..core.io import latest_mtime_iso
-from ..core.cache import manifest_versions_current
+from ..core.io import atomic_exchange_paths, latest_mtime_iso
+from ..core.errors import MaterializationError
+from ..core.cache import input_versions, manifest_versions_current
 from ..core.parse import local_tz
 from ..core.primitives import duration_s, split_by_day
 from ..sources.activity_content import activity_content_daily_path, activity_title_usage_path
@@ -20,7 +25,7 @@ from ..sources.activitywatch import focus_spans
 from ..sources.activitywatch_raw import canonical_activitywatch_events_path
 from ..sources.title_metadata import hash_title, load_title_classification_map, normalize_title, title_metadata_path
 from ..sources.title_metadata_rules import classify_title_via_rules
-from ._manifest import atomic_write_ndjson, write_manifest
+from ._manifest import atomic_write_ndjson, product_lock, write_manifest
 from ..materializers.partition_store import ArtifactStore, ProductPartitionKey, deterministic_input_digest
 
 
@@ -271,7 +276,145 @@ class _TitleUsageStore:
         self.connection.close()
 
 
+def _bundle_names(output: Path) -> tuple[str, ...]:
+    return (output.name, output.with_suffix(".manifest.json").name,
+            "title_usage.ndjson", "title_usage.facts.sqlite3",
+            f".{output.stem}.partitions", ".title_usage.partitions")
+
+
+def _copy_bundle(source: Path, destination: Path, names: tuple[str, ...]) -> None:
+    destination.mkdir(mode=0o700, parents=True)
+    for name in names:
+        original = source / name
+        target = destination / name
+        if not original.exists():
+            continue
+        if original.is_dir():
+            # Artifact bytes are immutable; manifest updates replace their inode.
+            shutil.copytree(original, target, copy_function=os.link)
+        elif name.endswith(".sqlite3"):
+            # Even a legacy accumulator with a live WAL needs a native snapshot.
+            with closing(sqlite3.connect(original.resolve().as_uri() + "?mode=ro", uri=True)) as reader:
+                with closing(sqlite3.connect(target)) as writer:
+                    reader.backup(writer)
+        else:
+            os.link(original.resolve(), target)
+
+
+def _select_bundle(root: Path, generation: Path) -> None:
+    temporary = root / f".current-{uuid.uuid4().hex}"
+    temporary.symlink_to(generation.name, target_is_directory=True)
+    os.replace(temporary, root / "current")
+    _fsync_directory(root)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _adopt_entrance(entrance: Path, link_target: Path, root: Path) -> None:
+    temporary = entrance.with_name(f".entrance-{uuid.uuid4().hex}")
+    temporary.symlink_to(link_target, target_is_directory=entrance.name.endswith(".partitions"))
+    if entrance.exists() or entrance.is_symlink():
+        # Exchange also supports nonempty native store directories. At no point
+        # does a reader lose the old entrance; its original object remains here.
+        atomic_exchange_paths(temporary, entrance)
+        _fsync_directory(entrance.parent)
+        preserved = root / f"preimage-{uuid.uuid4().hex}-{entrance.name}"
+        os.replace(temporary, preserved)
+        _fsync_directory(root)
+    else:
+        os.replace(temporary, entrance)
+
+
 def materialize_activity_content(
+    *, start: date | None = None, end: date | None = None, output: Path | None = None,
+) -> dict[str, Any]:
+    """Stage the accumulator and both products, then select them together.
+
+    Old and interrupted generations remain recoverable. Stable file entrances
+    traverse one directory pointer; readers resolve it before opening a product.
+    """
+    output = output or activity_content_daily_path()
+    names = _bundle_names(output)
+    root = output.parent / f".{output.stem}.generations"
+    with product_lock(output):
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        current = root / "current"
+        if not current.is_symlink():
+            legacy = root / f"legacy-{uuid.uuid4().hex}"
+            _copy_bundle(output.parent, legacy, names)
+            _flush_bundle(legacy)
+            _select_bundle(root, legacy)
+        # Preserve original entrances before replacing them with selected links.
+        # An interrupted adoption serves the same legacy bytes through either path.
+        for name in names:
+            entrance = output.parent / name
+            link_target = Path(root.name) / "current" / name
+            if entrance.is_symlink() and os.readlink(entrance) == str(link_target):
+                continue
+            _adopt_entrance(entrance, link_target, root)
+        _fsync_directory(output.parent)
+        previous = current.resolve(strict=True)
+        selected_output = previous / output.name
+        if start is None or end is None:
+            files = activity_content_input_files()
+            daily_store = ArtifactStore(previous / f".{output.stem}.partitions")
+            usage_store = ArtifactStore(previous / ".title_usage.partitions")
+            selected_manifest = _read_manifest(selected_output.with_suffix(".manifest.json"))
+            if (selected_manifest.get("generation_id") == previous.name
+                    and daily_store.selection_is_readable() and usage_store.selection_is_readable()
+                    and daily_store.metadata.get("input_signature") == _input_signature(files)
+                    and manifest_versions_current(selected_manifest, files)):
+                return selected_manifest
+        generation = root / f"gen-{uuid.uuid4().hex}"
+        _copy_bundle(previous, generation, names)
+        staged_output = generation / output.name
+        manifest = _materialize_activity_content(start=start, end=end, output=staged_output)
+        manifest["generation_id"] = generation.name
+        write_manifest(staged_output.with_suffix(".manifest.json"), manifest)
+        if not _usage_store_complete(generation / "title_usage.facts.sqlite3", _read_existing_daily(staged_output)):
+            raise MaterializationError("activity_content", reason="staged accumulator and daily totals disagree")
+        # Closed SQLite facts, outputs and store manifests must all survive before
+        # the one publication rename. No rollback can undo a selected generation.
+        _flush_bundle(generation)
+        _select_bundle(root, generation)
+        return manifest
+
+
+def _flush_bundle(generation: Path) -> None:
+    for path in generation.rglob("*"):
+        if path.is_file():
+            with path.open("rb") as handle:
+                os.fsync(handle.fileno())
+    for directory in sorted((path for path in generation.rglob("*") if path.is_dir()),
+                            key=lambda path: len(path.parts), reverse=True):
+        _fsync_directory(directory)
+    _fsync_directory(generation)
+
+
+def _usage_store_complete(path: Path, daily: dict[date, dict[str, Any]]) -> bool:
+    if not path.exists():
+        return False
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                return False
+            observed = dict(connection.execute("SELECT day, SUM(focused_seconds) FROM title_usage_daily GROUP BY day"))
+        expected = {day.isoformat(): float(row["focused_seconds"]) for day, row in daily.items()}
+        # Daily exports round to milliseconds independently; rounding error must
+        # not accumulate across history or hide facts assigned to the wrong day.
+        return all(abs(float(observed.get(day, 0)) - expected.get(day, 0)) <= 0.001
+                   for day in observed.keys() | expected.keys())
+    except (sqlite3.Error, OSError):
+        return False
+
+
+def _materialize_activity_content(
     *,
     start: date | None = None,
     end: date | None = None,
@@ -288,16 +431,7 @@ def materialize_activity_content(
     partition_store = ArtifactStore(output.with_name(f".{output.stem}.partitions"))
     usage_partition_store = ArtifactStore(usage_output.with_name(f".{usage_output.stem}.partitions"))
     input_signature = _input_signature(input_files)
-    if (
-        not bounded_request
-        and partition_store.selection_is_readable()
-        and usage_partition_store.selection_is_readable()
-    ):
-        metadata = partition_store.metadata
-        if metadata.get("input_signature") == input_signature and output.exists():
-            existing_manifest = _read_manifest(output.with_suffix(".manifest.json"))
-            if manifest_versions_current(existing_manifest, input_files):
-                return existing_manifest
+    acquired_versions = input_versions(input_files)
     classifications = load_title_classification_map()
 
     existing_by_day = _read_partitioned_daily(partition_store)
@@ -315,14 +449,10 @@ def materialize_activity_content(
 
     facts_path = usage_output.with_name(f"{usage_output.stem}.facts.sqlite3")
     _migrate_usage_store(usage_partition_store, usage_output)
-    if not facts_path.exists() and existing_by_day:
-        # One-time migration (lynchpin-d36): the persistent per-day title-usage
-        # store is new. If it doesn't exist yet but daily.ndjson already has
-        # history, this call's window must widen to that full existing range
-        # once — otherwise title_usage.ndjson (rebuilt below purely from this
-        # store) would be silently truncated from years of lifetime totals
-        # down to just the narrow window this call happened to ask for. Every
-        # later call, once the store exists, stays scoped to what it asks for.
+    if not _usage_store_complete(facts_path, existing_by_day) and existing_by_day:
+        # A created database is not proof that bootstrap committed. Reconstruct
+        # preserved daily history when the accumulator is missing or disagrees;
+        # otherwise a narrow retry can silently discard earlier title facts.
         start = min(start, min(existing_by_day))
         end = max(end, max(existing_by_day) + timedelta(days=1))
         _progress(
@@ -481,6 +611,7 @@ def materialize_activity_content(
             "matched_seconds": round(matched_seconds_total, 3),
             "matched_ratio": round(matched_seconds_total / focused_seconds_total, 6) if focused_seconds_total else 0.0,
             "source_counts": dict(sorted(source_counts.items())),
+            "input_versions": acquired_versions,
             "input_files": [str(path) for path in input_files],
             "input_file_count": len(input_files),
             "input_latest_mtime": latest_mtime_iso(input_files),
@@ -492,6 +623,8 @@ def materialize_activity_content(
             },
             "title_usage_partition_store": str(usage_partition_store.root),
         }
+        if input_versions(input_files) != acquired_versions:
+            raise MaterializationError("activity_content", reason="inputs changed during acquisition; previous generation retained")
         write_manifest(output.with_suffix(".manifest.json"), manifest)
         return manifest
 

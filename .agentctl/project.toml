@@ -49,6 +49,13 @@ pool = "pytest"
 result = "exit"
 cache = "tree+environment"
 
+[operations.verify_activity_content]
+description = "Verify coherent ActivityContent publication, bootstrap and compound readers"
+exec = ["just", "verify-activity-content"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
 [operations.verify_webhistory_base]
 description = "Verify retained-segment candidate merge and input identity contracts"
 exec = ["pytest", "-q", "tests/ingest/test_webhistory.py", "tests/test_materialization.py", "-k", "webhistory"]

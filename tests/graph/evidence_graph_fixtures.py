@@ -85,6 +85,10 @@ def _mock_empty_sources(monkeypatch, tmp_path):
         lambda **kwargs: (),
     )
     monkeypatch.setattr(
+        "lynchpin.sources.activity_content.activity_content_bundle_paths",
+        lambda: (tmp_path / "daily.ndjson", tmp_path / "title_usage.ndjson"),
+    )
+    monkeypatch.setattr(
         "lynchpin.sources.activity_content.iter_activity_content_days",
         lambda **kwargs: (),
     )

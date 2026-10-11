@@ -963,11 +963,12 @@ def _render_project_relationships(graph: EvidenceGraph, *, limit: int = 12) -> s
 
 def _render_content_metadata_coverage(*, start: date, end: date) -> str:
     from ..materialization import ensure_materialized
-    from ..sources.activity_content import iter_activity_content_days, iter_activity_title_usage
+    from ..sources.activity_content import activity_content_bundle_paths, iter_activity_content_days, iter_activity_title_usage
 
     try:
         ensure_materialized("activity_content", window=(start, end))
-        days = list(iter_activity_content_days(start=start, end=end, ensure=False))
+        content_daily, content_usage = activity_content_bundle_paths()
+        days = list(iter_activity_content_days(path=content_daily, start=start, end=end, ensure=False))
     except FileNotFoundError:
         return "- Activity-content metadata coverage unavailable: canonical product is missing."
     if not days:
@@ -980,7 +981,7 @@ def _render_content_metadata_coverage(*, start: date, end: date) -> str:
     content = _sum_seconds_buckets(row.content_type_seconds for row in days)
     unmatched = [
         row
-        for row in iter_activity_title_usage(start=start, end=end, ensure=False)
+        for row in iter_activity_title_usage(path=content_usage, start=start, end=end, ensure=False)
         if not row.matched
         and row.first_date is not None
         and row.last_date is not None
