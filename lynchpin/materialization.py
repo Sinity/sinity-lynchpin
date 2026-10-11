@@ -1969,6 +1969,8 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
         for day in covered_dates
         if day.isoformat() in paths_by_day
     )
+    from .sources.activitywatch_event_index import activitywatch_event_index_recipe
+    recipe_current = meta.get("transform_recipe") == activitywatch_event_index_recipe()
     schema_current = meta.get("schema_version") == ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
     missing_days = [
         day for day, path in paths_by_day.items() if not path.is_file()
@@ -1985,7 +1987,7 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
     repair_completed = bool(meta.get("canonical_row_count_verified")) or bool(
         meta.get("full_source_scan_completed")
     )
-    repair_required = products_ready and schema_current and not repair_completed
+    repair_required = products_ready and schema_current and (not repair_completed or not recipe_current)
     tail_stale = False
     if schema_current and missing_days:
         status = "partial"
@@ -1996,6 +1998,9 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
     elif products_ready and not schema_current:
         status: Status = "partial"
         reason = "ActivityWatch event index schema is older than the current reader contract"
+    elif products_ready and not recipe_current:
+        status = "partial"
+        reason = "ActivityWatch event index transformation rules changed or were not recorded; full rebuild required"
     elif products_ready and repair_required:
         status = "partial"
         reason = "ActivityWatch event index needs an explicit full rebuild from canonical or live-source authority"

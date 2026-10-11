@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from lynchpin.sources.activitywatch_event_index import activitywatch_event_index_recipe
+
 import json
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -134,6 +136,7 @@ def test_missing_manifest_partitions_are_named_gaps_not_empty_days(
         json.dumps(
             {
                 "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+                "transform_recipe": activitywatch_event_index_recipe(),
                 "product_paths": {day: str(missing_index)},
             }
         ),

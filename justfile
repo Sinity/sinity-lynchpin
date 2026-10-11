@@ -80,3 +80,9 @@ verify-temporal-consumers *args:
     just lint
     just typecheck
     pytest -q tests/core/test_primitives.py tests/sources/test_source_activitywatch.py tests/sources/test_source_spotify.py tests/ingest/test_activity_content_materialize.py tests/ingest/test_temporal_signals_materialize.py tests/ingest/test_personal_materializers.py "$@"
+
+[positional-arguments]
+verify-index-recipe *args:
+    just lint
+    just typecheck
+    pytest -q tests/ingest/test_activitywatch_event_index_materialize.py tests/sources/test_activitywatch_derived.py tests/test_materialization.py -k 'event_index or indexed or recipe' "$@"

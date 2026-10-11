@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from lynchpin.sources.activitywatch_event_index import activitywatch_event_index_recipe
+
 import json
 import os
 import sqlite3
@@ -2305,6 +2307,7 @@ def test_activitywatch_event_index_audit_rejects_missing_manifest_member(
         json.dumps(
             {
                 "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+                "transform_recipe": activitywatch_event_index_recipe(),
                 "row_count": 1,
                 "covered_dates": ["2026-06-06"],
                 "product_paths": {"2026-06-06": str(missing)},
@@ -2368,6 +2371,7 @@ def test_activitywatch_event_index_audit_reads_precise_covered_dates(monkeypatch
                     canonical_manifest.stat().st_mtime, timezone.utc
                 ).astimezone().isoformat(),
                 "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+                "transform_recipe": activitywatch_event_index_recipe(),
                 "canonical_row_count_verified": False,
                 "full_source_scan_completed": True,
             }
@@ -2390,6 +2394,14 @@ def test_activitywatch_event_index_audit_reads_precise_covered_dates(monkeypatch
 
     assert row.status == "ready"
     assert row.covered_dates == (date(2026, 6, 5),)
+    payload = json.loads(manifest.read_text())
+    payload.pop("transform_recipe")
+    manifest.write_text(json.dumps(payload))
+    stale = materialization._activitywatch_event_index_dataset(SimpleNamespace(data_root=tmp_path))
+    assert stale.status == "partial"
+    assert stale.repair_required is True
+    assert stale.tail_stale is False
+    assert "transformation rules" in stale.reason
 
 
 def test_activitywatch_event_index_does_not_compare_legacy_monolith_counts(monkeypatch, tmp_path) -> None:
@@ -2417,6 +2429,7 @@ def test_activitywatch_event_index_does_not_compare_legacy_monolith_counts(monke
                     canonical_manifest.stat().st_mtime, timezone.utc
                 ).astimezone().isoformat(),
                 "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+                "transform_recipe": activitywatch_event_index_recipe(),
                 "canonical_row_count_verified": True,
             }
         ),
@@ -3307,7 +3320,8 @@ def test_machine_audit_requires_every_manifest_selected_partition(monkeypatch, t
     tables["metric_sample"]["partitions"] = {
         "2026-01-01": {"path": str(partition.relative_to(tmp_path)), "row_count": 1}
     }
-    manifest.write_text(json.dumps({"schema_version": 2, "tables": tables}), encoding="utf-8")
+    manifest.write_text(json.dumps({"schema_version": 2,
+                "transform_recipe": activitywatch_event_index_recipe(), "tables": tables}), encoding="utf-8")
     monkeypatch.setattr(materialization, "canonical_machine_table_path", lambda name: tmp_path / f"{name}.ndjson")
     monkeypatch.setattr(materialization, "machine_input_files", lambda _cfg: ())
     cfg = SimpleNamespace(machine_telemetry_db=tmp_path / "absent.sqlite", machine_capture_root=tmp_path)

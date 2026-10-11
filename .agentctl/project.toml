@@ -286,3 +286,10 @@ exec = ["just", "verify-temporal-consumers"]
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"
+
+[operations.verify_index_recipe]
+description = "Verify ActivityWatch partition recipe invalidation and native readers"
+exec = ["just", "verify-index-recipe"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"

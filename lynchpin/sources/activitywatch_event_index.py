@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from importlib.resources import files
+import zoneinfo
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
 from ..core.config import get_config
 from ..core.errors import SourceUnavailableError
-from ..core.primitives import logical_date
+from ..core.parse import local_tz
+from ..core.primitives import DAY_BOUNDARY_HOUR, logical_date
 from .activitywatch_models import AWEvent
 
 ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION = 2
 
 __all__ = [
     "ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION",
+    "activitywatch_event_index_recipe",
     "activitywatch_event_index_dir",
     "activitywatch_event_index_generation_dir",
     "activitywatch_event_index_manifest_path",
@@ -23,6 +28,34 @@ __all__ = [
     "activitywatch_event_index_product_paths",
     "iter_indexed_activitywatch_events",
 ]
+
+
+def activitywatch_event_index_recipe() -> dict[str, Any]:
+    """Identify the day-key and deduplication rules used by this process."""
+    from .activitywatch_dedup import MERGE_PULSETIME_S
+
+    tz = local_tz()
+    key = getattr(tz, "key", None)
+    timezone_identity: dict[str, Any]
+    if isinstance(key, str):
+        rules = None
+        for directory in zoneinfo.TZPATH:
+            path = Path(directory) / key
+            if path.is_file():
+                rules = path.read_bytes()
+                break
+        if rules is None:
+            try:
+                rules = files("tzdata.zoneinfo").joinpath(*key.split("/")).read_bytes()
+            except (ModuleNotFoundError, FileNotFoundError) as exc:
+                raise SourceUnavailableError("activitywatch_event_index", reason="timezone rules are unavailable") from exc
+        timezone_identity = {"key": key, "rules_sha256": hashlib.sha256(rules).hexdigest()}
+    else:
+        offset = tz.utcoffset(None)
+        timezone_identity = {"name": str(tz), "offset_seconds": offset.total_seconds() if offset is not None else None}
+    return {"version": 1, "day_boundary_hour": DAY_BOUNDARY_HOUR,
+            "timezone": timezone_identity, "deduplication": "bucket-start-end-data-merge-v1",
+            "merge_pulsetime_seconds": MERGE_PULSETIME_S}
 
 
 def activitywatch_event_index_dir(root: Path | None = None) -> Path:
@@ -61,7 +94,10 @@ def activitywatch_event_index_product_paths(root: Path | None = None) -> dict[st
     Schema v1 stored stable filenames directly. Schema v2 points at immutable
     generation files, so replacing the manifest is the publication boundary.
     """
-    payload = _index_manifest(root)
+    return _product_paths(_index_manifest(root))
+
+
+def _product_paths(payload: dict[str, Any]) -> dict[str, Path]:
     raw_paths = payload.get("product_paths")
     if not isinstance(raw_paths, dict):
         return {}
@@ -89,8 +125,10 @@ def iter_indexed_activitywatch_events(
     first = logical_date(start) - timedelta(days=1)
     last = logical_date(end - timedelta(microseconds=1)) if end > start else logical_date(start)
     manifest = _index_manifest(root)
-    product_paths = activitywatch_event_index_product_paths(root)
+    product_paths = _product_paths(manifest)
     generation_manifest = manifest.get("schema_version") == ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
+    if generation_manifest and manifest.get("transform_recipe") != activitywatch_event_index_recipe():
+        raise SourceUnavailableError("activitywatch_event_index", reason="transformation rules changed or were not recorded; an explicit full rebuild is required")
     rows: list[AWEvent] = []
     cursor = first
     while cursor <= last:

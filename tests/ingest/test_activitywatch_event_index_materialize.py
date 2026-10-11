@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from lynchpin.sources.activitywatch_event_index import activitywatch_event_index_recipe
+
 import json
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -191,6 +193,7 @@ def test_materialize_activitywatch_event_index_replaces_only_requested_window(mo
     (tmp_path / "activitywatch/events_by_day/manifest.json").write_text(
         json.dumps(
             {
+                "transform_recipe": activitywatch_event_index_recipe(),
                 "product_paths": {
                     "2026-06-05": str(day_before),
                     "2026-06-06": str(day_window),
@@ -252,6 +255,7 @@ def test_event_index_repairs_missing_member_only_inside_requested_window(
             json.dumps(
                 {
                     "schema_version": 2,
+                "transform_recipe": activitywatch_event_index_recipe(),
                     "product_paths": {missing_day.isoformat(): str(missing)},
                     "row_counts": {missing_day.isoformat(): 1},
                     "covered_dates": [missing_day.isoformat()],
@@ -345,6 +349,7 @@ def test_failed_index_generation_does_not_replace_serving_manifest(monkeypatch, 
     manifest_path = tmp_path / "activitywatch/events_by_day/manifest.json"
     previous = {
         "schema_version": 2,
+                "transform_recipe": activitywatch_event_index_recipe(),
         "product_paths": {"2026-06-06": str(serving)},
         "row_counts": {"2026-06-06": 1},
         "covered_dates": ["2026-06-06"],
@@ -455,3 +460,80 @@ def test_event_index_freshness_tracks_committed_wal_state_it_read(monkeypatch, t
         assert materialization._manifest_inputs_current(refreshed, mod.activitywatch_event_index_input_files())
     finally:
         writer.close()
+
+
+def test_timezone_recipe_change_requires_full_rebuild(monkeypatch, tmp_path):
+    from lynchpin.core.errors import MaterializationError, SourceUnavailableError
+    from lynchpin.core.parse import local_tz
+    from lynchpin.ingest import activitywatch_event_index_materialize as mod
+    from lynchpin.sources.activitywatch_event_index import (
+        activitywatch_event_index_manifest_path, iter_indexed_activitywatch_events,
+    )
+
+    db = tmp_path / "aw.sqlite"
+    db.write_bytes(b"fixture")
+    monkeypatch.setattr(mod, "activitywatch_input_files", lambda cfg: (db,))
+    event = SimpleNamespace(bucket="aw-watcher-window_fixture",
+                            start=datetime(2026, 6, 6, 4, 30, tzinfo=timezone.utc),
+                            end=datetime(2026, 6, 6, 4, 35, tzinfo=timezone.utc), data={"app": "fixture"})
+    monkeypatch.setattr(mod, "events_from_activitywatch_dbs", lambda *args, **kwargs: iter([event]))
+    try:
+        monkeypatch.setenv("TZ", "UTC")
+        local_tz.cache_clear()
+        old = mod.materialize_activitywatch_event_index(root=tmp_path, full=True)
+        assert old["covered_dates"] == ["2026-06-05"]
+        manifest_path = activitywatch_event_index_manifest_path(tmp_path)
+        before = manifest_path.read_bytes()
+        payloads = {path: Path(path).read_bytes() for path in old["product_paths"].values()}
+        monkeypatch.setenv("TZ", "Europe/Warsaw")
+        local_tz.cache_clear()
+        with pytest.raises(MaterializationError, match="explicit full=True"):
+            mod.materialize_activitywatch_event_index(root=tmp_path, start=date(2026, 6, 6), end=date(2026, 6, 7))
+        with pytest.raises(SourceUnavailableError, match="full rebuild"):
+            list(iter_indexed_activitywatch_events(root=tmp_path, bucket_prefix="aw-watcher-window",
+                start=datetime(2026, 6, 5, tzinfo=timezone.utc), end=datetime(2026, 6, 7, tzinfo=timezone.utc)))
+        with monkeypatch.context() as patch:
+            def fail(*args, **kwargs):
+                raise RuntimeError("injected acquisition failure")
+            patch.setattr(mod, "events_from_activitywatch_dbs", fail)
+            with pytest.raises(RuntimeError, match="acquisition failure"):
+                mod.materialize_activitywatch_event_index(root=tmp_path, full=True)
+        assert manifest_path.read_bytes() == before
+        assert all(Path(path).read_bytes() == data for path, data in payloads.items())
+        new = mod.materialize_activitywatch_event_index(root=tmp_path, full=True)
+        assert new["covered_dates"] == ["2026-06-06"]
+        assert new["row_count"] == 1
+        assert new["transform_recipe"] != old["transform_recipe"]
+        from lynchpin.sources import activitywatch_event_index as reader
+        loads = []
+        original = reader._index_manifest
+        def load_once(root=None):
+            loads.append(root)
+            assert len(loads) == 1
+            return original(root)
+        monkeypatch.setattr(reader, "_index_manifest", load_once)
+        rows = list(iter_indexed_activitywatch_events(root=tmp_path, bucket_prefix="aw-watcher-window",
+                start=datetime(2026, 6, 5, tzinfo=timezone.utc), end=datetime(2026, 6, 7, tzinfo=timezone.utc)))
+        assert len(rows) == 1
+        assert len(loads) == 1
+    finally:
+        local_tz.cache_clear()
+
+
+def test_missing_recipe_refuses_partial_relabelling(monkeypatch, tmp_path):
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.ingest import activitywatch_event_index_materialize as mod
+    from lynchpin.sources.activitywatch_event_index import activitywatch_event_index_manifest_path
+
+    db = tmp_path / "aw.sqlite"
+    db.write_bytes(b"fixture")
+    monkeypatch.setattr(mod, "activitywatch_input_files", lambda cfg: (db,))
+    monkeypatch.setattr(mod, "events_from_activitywatch_dbs", lambda *args, **kwargs: iter(()))
+    result = mod.materialize_activitywatch_event_index(root=tmp_path, full=True)
+    result.pop("transform_recipe")
+    path = activitywatch_event_index_manifest_path(tmp_path)
+    path.write_text(json.dumps(result))
+    before = path.read_bytes()
+    with pytest.raises(MaterializationError, match="not recorded"):
+        mod.materialize_activitywatch_event_index(root=tmp_path, start=date(2026, 6, 6), end=date(2026, 6, 7))
+    assert path.read_bytes() == before

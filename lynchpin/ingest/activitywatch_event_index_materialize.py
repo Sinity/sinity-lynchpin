@@ -16,6 +16,7 @@ from ..core.primitives import date_to_dt_range, logical_date
 from ..sources.activitywatch_dedup import dedup_and_merge
 from ..sources.activitywatch_event_index import (
     ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+    activitywatch_event_index_recipe,
     activitywatch_event_index_dir,
     activitywatch_event_index_generation_dir,
     activitywatch_event_index_manifest_path,
@@ -56,6 +57,7 @@ def materialize_activitywatch_event_index(
     # Observe before reading so the manifest names a state the read consumed.
     observation = observe_activitywatch_inputs(_index_input_paths(databases))
 
+    recipe = activitywatch_event_index_recipe()
     previous: dict[str, Any] = {}
     if window_dates is None and not full:
         raise MaterializationError(
@@ -75,6 +77,11 @@ def materialize_activitywatch_event_index(
         rows = _iter_live_rows(databases=databases)
     else:
         previous = _read_existing_manifest(activitywatch_event_index_manifest_path(root))
+        if previous and previous.get("transform_recipe") != recipe:
+            raise MaterializationError(
+                "activitywatch_event_index_materialize",
+                reason="transformation rules changed or were not recorded; an explicit full=True rebuild is required",
+            )
         paths = _string_dict(previous.get("product_paths"))
         row_counts = _int_dict(previous.get("row_counts"))
         requested_days = {item.isoformat() for item in window_dates}
@@ -163,6 +170,7 @@ def materialize_activitywatch_event_index(
     manifest = {
         "dataset": "lynchpin.activitywatch_event_index",
         "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+        "transform_recipe": recipe,
         "generation": generation,
         "canonical_row_count_verified": canonical_row_count_verified,
         "full_source_scan_completed": full_source_scan_completed,
