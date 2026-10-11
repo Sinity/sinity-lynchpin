@@ -209,11 +209,14 @@ def _materialize_window(
     paths, partition_counts = _existing_partitions(
         previous, root=root, repair_window=(start, end)
     )
-    migration = previous.get("schema_version") != ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
+    migration = not (
+        isinstance(previous.get("product_paths"), dict)
+        and isinstance(previous.get("partition_row_counts"), dict)
+    )
     if migration:
-        # The one-time v2-to-v3 conversion copies the small persisted derived
-        # products into immutable logical-day files. It does not re-run raw
-        # ActivityWatch history. Later tail refreshes never read these files.
+        # Only flat carriers need storage conversion. A temporal recipe change
+        # over already partitioned products must not reintroduce their obsolete
+        # flat predecessors or append rows into retained Path references.
         for kind in PRODUCT_KINDS:
             for row in _read_existing_rows(activitywatch_derived_path(kind, root)):
                 day = _row_logical_date(kind, row).isoformat()

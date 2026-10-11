@@ -576,3 +576,28 @@ def test_retired_logical_day_product_refuses_partial_reuse(monkeypatch, tmp_path
     with pytest.raises(MaterializationError, match="unbounded rebuild"):
         mod.materialize_activitywatch_derived(start=date(2026, 5, 1), end=date(2026, 5, 2), root=tmp_path)
     assert manifest.read_text() == original
+
+
+def test_partitioned_retired_schema_rebuild_ignores_flat_predecessor(monkeypatch, tmp_path):
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    from lynchpin.sources.activitywatch_models import AWDayActivity
+    day = date(2026, 5, 1)
+    monkeypatch.setattr(mod, "_default_window", lambda *args: (day, day + timedelta(days=1)))
+    monkeypatch.setattr(mod, "_clip_to_real_coverage", lambda start, end: (start, end))
+    monkeypatch.setattr(mod, "activitywatch_derived_input_files", lambda: ())
+    for name in ("focus_spans", "project_focus_days", "deep_work", "circadian", "loops", "fragmentation", "attention"):
+        monkeypatch.setattr(mod, name, lambda **kwargs: [])
+    monkeypatch.setattr(mod, "daily_activity", lambda **kwargs: [
+        AWDayActivity(day, 1.0, 0.0, 0.0, 0, "fixture", None, (0.0,) * 24)
+    ])
+    first = mod.materialize_activitywatch_derived(root=tmp_path)
+    manifest = mod.activitywatch_derived_manifest_path(tmp_path)
+    first["schema_version"] = 3
+    manifest.write_text(json.dumps(first))
+    flat = mod.activitywatch_derived_path("daily_activity", tmp_path)
+    flat.write_text(json.dumps({"date": str(day), "active_hours": 99.0}) + "\n")
+    original = flat.read_bytes()
+    second = mod.materialize_activitywatch_derived(root=tmp_path)
+    assert second["schema_version"] == mod.ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
+    assert second["row_counts"]["daily_activity"] == 1
+    assert flat.read_bytes() == original
