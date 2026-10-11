@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, ParamSpec, Tuple, TypeVar, cast
 
 from .config import get_config
+from .input_snapshot import pinned_version, read_input_path
 
 _cachew: Any
 try:
@@ -77,6 +78,9 @@ def _quiet_cache_logger(name: str) -> logging.Logger:
 
 def file_signature(path: Path) -> Tuple[str, int | None, int | None]:
     """Return a tuple that changes whenever the file path/mtime/size changes."""
+    pinned, version = pinned_version(path)
+    if pinned:
+        return (str(path), version[3], version[2]) if version is not None else (str(path), None, None)
     if not path.exists():
         return (str(path), None, None)
     stat = path.stat()
@@ -110,6 +114,9 @@ def manifest_versions_current(manifest: dict[str, Any], paths: Iterable[Path]) -
 
 
 def _file_version(path: Path) -> list[int] | None:
+    pinned, version = pinned_version(path)
+    if pinned:
+        return version
     try:
         stat_result = path.stat()
         if not stat.S_ISREG(stat_result.st_mode):
@@ -127,14 +134,16 @@ def _file_version(path: Path) -> list[int] | None:
 
 def file_digest(path: Path, *, chunk_size: int = 1024 * 1024) -> Tuple[str, int | None, int | None, str | None]:
     """Return (path, mtime_ns, size, digest) for content-based invalidation."""
-    if not path.exists():
+    read_path = read_input_path(path)
+    if not read_path.exists():
         return (str(path), None, None, None)
-    stat = path.stat()
+    version = _file_version(path)
+    assert version is not None
     hasher = hashlib.blake2b()
-    with path.open("rb") as handle:
+    with read_path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(chunk_size), b""):
             hasher.update(chunk)
-    return (str(path), stat.st_mtime_ns, stat.st_size, hasher.hexdigest())
+    return (str(path), version[3], version[2], hasher.hexdigest())
 
 
 def files_digest(paths: Iterable[Path]) -> Tuple[Tuple[str, int | None, int | None, str | None], ...]:

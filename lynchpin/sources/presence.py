@@ -50,10 +50,7 @@ import json
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from typing import Iterator
-
-KEYLOG_DIR = Path("/realm/activity/desktop/keyboard/logs")
 
 
 @dataclass(frozen=True)
@@ -113,7 +110,7 @@ def _classify(presses: int, window_events: int, nonafk_sec: float,
     return ("data_gap", "medium")
 
 
-def hourly_presence(start: date, end: date) -> Iterator[HourPresence]:
+def hourly_presence(start: date, end: date, *, ensure: bool = True) -> Iterator[HourPresence]:
     """Yield one HourPresence per UTC hour in the inclusive [start, end] range.
 
     Uses the indexed ActivityWatch raw reader and the relevant keylog files.
@@ -139,7 +136,7 @@ def hourly_presence(start: date, end: date) -> Iterator[HourPresence]:
     try:
         from .activitywatch_raw import afk_events, window_events
 
-        for event in afk_events(start=win_start, end=win_end):
+        for event in afk_events(start=win_start, end=win_end, **({"ensure": False} if not ensure else {})):
             s = event.start
             e = event.end
             aw_data_hours.add(_hr(s))
@@ -162,7 +159,7 @@ def hourly_presence(start: date, end: date) -> Iterator[HourPresence]:
                     nonafk[k] += dur
                 cur = chunk_end
 
-        for event in window_events(start=win_start, end=win_end):
+        for event in window_events(start=win_start, end=win_end, **({"ensure": False} if not ensure else {})):
             hour = _hr(event.start)
             aw_data_hours.add(hour)
             win_events[hour] += 1
@@ -170,7 +167,10 @@ def hourly_presence(start: date, end: date) -> Iterator[HourPresence]:
         pass
 
     # Keylog
-    for kl_file in sorted(KEYLOG_DIR.glob("*.jsonl")) if KEYLOG_DIR.exists() else []:
+    from .keylog import log_files
+    from ..core.input_snapshot import read_input_path
+
+    for kl_file in log_files(start=start, end=end, ensure=False):
         try:
             d = date.fromisoformat(kl_file.name[:10])
         except ValueError:
@@ -178,7 +178,7 @@ def hourly_presence(start: date, end: date) -> Iterator[HourPresence]:
         if d < start or d > end:
             continue
         kl_data_dates.add(d)
-        with kl_file.open() as fh:
+        with read_input_path(kl_file).open() as fh:
             for line in fh:
                 try:
                     p = json.loads(line)

@@ -12,6 +12,7 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 from ..core.cache import input_versions
+from ..core.input_snapshot import input_snapshot, read_input_path, snapshot_today
 from ..core.config import get_config
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
@@ -52,6 +53,34 @@ DEFAULT_CHUNK_DAYS = 1
 
 
 def materialize_activitywatch_derived(
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    root: Path | None = None,
+    chunk_days: int = DEFAULT_CHUNK_DAYS,
+) -> dict[str, Any]:
+    from ..sources import keylog
+    from ..sources.terminal import canonical_atuin_history_path
+
+    with input_snapshot() as snapshot:
+        # The upstream producer has finished before this handler runs. Keep
+        # its selected manifest and independent evidence fixed through every
+        # chunk and, for candidate operations, subsequent graph promotion.
+        snapshot.capture((activitywatch_event_index_manifest_path(),))
+        if read_input_path(activitywatch_event_index_manifest_path()).exists():
+            products = _load_json(activitywatch_event_index_manifest_path()).get("product_paths", {})
+            if not isinstance(products, dict):
+                raise MaterializationError("activitywatch_derived", reason="ActivityWatch index product_paths must be an object")
+            snapshot.capture(tuple(Path(path) for path in products.values() if isinstance(path, str)))
+        else:
+            snapshot.capture((canonical_activitywatch_events_path(),
+                              canonical_activitywatch_events_path().with_suffix(".manifest.json")))
+        snapshot.capture((get_config().sleep_jsonl, canonical_atuin_history_path()))
+        snapshot.capture_collection(keylog._logs_root(), tuple(keylog.log_files(ensure=False)))
+        return _materialize_activitywatch_derived(start=start, end=end, root=root, chunk_days=chunk_days)
+
+
+def _materialize_activitywatch_derived(
     *,
     start: date | None = None,
     end: date | None = None,
@@ -149,13 +178,13 @@ def _clip_to_real_coverage(start: date, end: date) -> tuple[date, date]:
     with no ActivityWatch coverage fabricates outages and other derived rows.
     """
     manifest = activitywatch_event_index_manifest_path()
-    if not manifest.exists():
+    if not read_input_path(manifest).exists():
         manifest = canonical_activitywatch_events_path().with_suffix(".manifest.json")
-    if not manifest.exists():
+    if not read_input_path(manifest).exists():
         # No materialized carrier to clip against. This is the normal test
         # state when source generators are monkeypatched directly.
         return start, end
-    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload = json.loads(read_input_path(manifest).read_text(encoding="utf-8"))
     first_raw = payload.get("first_date")
     last_raw = payload.get("last_date")
     if not first_raw or not last_raw:
@@ -166,6 +195,7 @@ def _clip_to_real_coverage(start: date, end: date) -> tuple[date, date]:
 
 
 def _load_json(path: Path) -> dict[str, Any]:
+    path = read_input_path(path)
     if not path.exists():
         return {}
     try:
@@ -332,7 +362,7 @@ def activitywatch_derived_input_files() -> tuple[Path, ...]:
     # the published index and its immutable partitions, including declared
     # paths that have gone missing (absence must invalidate the product).
     manifest = activitywatch_event_index_manifest_path()
-    if manifest.exists():
+    if read_input_path(manifest).exists():
         payload = _load_json(manifest)
         products = payload.get("product_paths", {})
         paths = (
@@ -340,7 +370,7 @@ def activitywatch_derived_input_files() -> tuple[Path, ...]:
             if isinstance(products, dict) else ()
         )
         return (manifest, *paths)
-    return tuple(path for path in (canonical_activitywatch_events_path(),) if path.exists())
+    return tuple(path for path in (canonical_activitywatch_events_path(),) if read_input_path(path).exists())
 
 
 def activitywatch_repair_input_versions(*, closed_only: bool = False) -> list[dict[str, Any]]:
@@ -355,7 +385,7 @@ def activitywatch_repair_input_versions(*, closed_only: bool = False) -> list[di
 
     keyboard = log_files(
             ensure=False,
-            end=datetime.now(UTC).date() - timedelta(days=1) if closed_only else None,
+            end=(snapshot_today() or datetime.now(UTC).date()) - timedelta(days=1) if closed_only else None,
         )
     result = []
     for source, paths in (("sleep", (get_config().sleep_jsonl,)),
@@ -390,13 +420,37 @@ def _repair_reuse_is_proven(previous: dict[str, Any], current: list[dict[str, An
         assert item is not None
         if item.get("source") == "keylog" and item.get("date"):
             day = date.fromisoformat(item["date"])
-            if day >= datetime.now(UTC).date():
+            if day >= (snapshot_today() or datetime.now(UTC).date()):
                 continue  # still-open inputs are observed, not stability gates
             if before != after and any(abs((retained - day).days) <= 1 for retained in outside):
                 return False
         elif before != after:
             return False
     return True
+
+
+def activitywatch_derived_refresh_window(window: tuple[date, date]) -> tuple[date, date]:
+    """Include retained suffixes affected by changed canonical partitions."""
+    previous = _load_json(activitywatch_derived_manifest_path())
+    current = input_versions(activitywatch_derived_input_files())
+    start, end = window
+    if _canonical_reuse_is_proven(previous, current, start, end):
+        return window
+    expected = previous.get("input_versions")
+    if not isinstance(expected, list):
+        return window  # The materializer must refuse unproven history.
+    pointer = str(activitywatch_event_index_manifest_path())
+    old = {item["path"]: item for item in expected if item["path"] != pointer}
+    new = {item["path"]: item for item in current if item["path"] != pointer}
+    try:
+        changed = [date.fromisoformat(Path(path).stem)
+                   for path in old.keys() | new.keys() if old.get(path) != new.get(path)]
+        retained = [date.fromisoformat(day) for day in previous.get("covered_dates", [])]
+    except ValueError:
+        return window  # Undated carriers require an explicit full rebuild.
+    if not changed or not retained:
+        return window
+    return min(start, min(changed) - timedelta(days=1)), max(end, max(retained) + timedelta(days=1))
 
 
 def _canonical_reuse_is_proven(previous: dict[str, Any], current: list[dict[str, Any]], start: date, end: date) -> bool:
@@ -427,14 +481,14 @@ def _default_window(start: date | None, end: date | None) -> tuple[date, date]:
     if start is not None and end is not None:
         return start, end
     manifest = activitywatch_event_index_manifest_path()
-    if not manifest.exists():
+    if not read_input_path(manifest).exists():
         manifest = canonical_activitywatch_events_path().with_suffix(".manifest.json")
-    if not manifest.exists():
+    if not read_input_path(manifest).exists():
         raise FileNotFoundError(
             "ActivityWatch index and recovery carrier manifests are missing; run "
             "python -m lynchpin.ingest.activitywatch_event_index_materialize --full first"
         )
-    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload = json.loads(read_input_path(manifest).read_text(encoding="utf-8"))
     first = start or date.fromisoformat(str(payload["first_date"]))
     last_inclusive = date.fromisoformat(str(payload["last_date"]))
     return first, end or (last_inclusive + timedelta(days=1))

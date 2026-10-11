@@ -551,6 +551,10 @@ def run_materialization_plan(
                 raise
             return StepResult(step.product, "failed", "handler raised", error=f"{type(exc).__name__}: {exc}")
         row_count = audit._int_or_none(value.get("row_count")) if isinstance(value, dict) else None
+        if step.product == "activitywatch_derived" and isinstance(value, dict):
+            first, last = value.get("window_start"), value.get("window_end")
+            if isinstance(first, str) and isinstance(last, str):
+                effective_window = date.fromisoformat(first), date.fromisoformat(last)
         audit._record_materialization_step(
             refresh_id,
             step.product,
@@ -561,9 +565,9 @@ def run_materialization_plan(
             finished_at=datetime.now(timezone.utc),
         )
         audit._PRODUCT_REFRESHED_AT[step.product] = audit.monotonic()
-        emit(step, "succeeded", elapsed_seconds=round((datetime.now(timezone.utc) - started).total_seconds(), 3), row_count=row_count)
+        emit(step, "succeeded", effective_window=audit._window_payload(effective_window), elapsed_seconds=round((datetime.now(timezone.utc) - started).total_seconds(), 3), row_count=row_count)
         with ran_lock:
-            ran.append(step)
+            ran.append(replace(step, effective_window=effective_window))
         return StepResult(step.product, "succeeded", "materialized", step.output)
 
     pending = {step.product: step for step in selected}

@@ -139,7 +139,12 @@ def log_files(
         _ensure_keylog_materialized(start=start, end=end)
     root = _logs_root()
     files = []
-    for d, path in _indexed_log_files(str(root), _log_dir_signature(root)):
+    from ..core.input_snapshot import pinned_collection
+
+    pinned = pinned_collection(root)
+    indexed = (_indexed_log_files(str(root), _log_dir_signature(root)) if pinned is None
+               else tuple((date.fromisoformat(path.stem), path) for path in pinned))
+    for d, path in indexed:
         if start and d < start:
             continue
         if end and d > end:
@@ -334,12 +339,14 @@ def keypress_timestamps(
     *, start: datetime, end: datetime, ensure: bool = True
 ) -> tuple[datetime, ...]:
     """Read bounded press times through the revision-keyed per-file cache."""
+    from ..core.input_snapshot import read_input_path
+
     start_local = as_local(start)
     end_local = as_local(end)
     timestamps: list[datetime] = []
     for path in _candidate_files(start_local, end_local, ensure=ensure):
         try:
-            stat = path.stat()
+            stat = read_input_path(path).stat()
         except OSError:
             continue
         points = _press_timestamps(str(path), stat.st_mtime_ns, stat.st_size)
@@ -474,15 +481,18 @@ def read_input_trace(
     while cursor <= last_day:
         path = root / f"{cursor.isoformat()}.jsonl"
         cursor += timedelta(days=1)
-        if not path.exists():
+        from ..core.input_snapshot import read_input_path
+
+        read_path = read_input_path(path)
+        if not read_path.exists():
             files.append(KeylogFileRead(str(path), "missing", 0, None, 0, 0, None, None))
             continue
-        stat = path.stat()
+        stat = read_path.stat()
         digest = hashlib.sha256()
         lines = invalid = 0
         first: datetime | None = None
         last: datetime | None = None
-        with path.open("rb") as handle:
+        with read_path.open("rb") as handle:
             remaining = stat.st_size
             while remaining:
                 raw = handle.readline(remaining)
@@ -536,7 +546,7 @@ def read_input_trace(
                     source_path=str(path),
                     source_line=lines,
                 ))
-        after = path.stat()
+        after = read_path.stat()
         changed = (stat.st_size, stat.st_mtime_ns, stat.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino)
         files.append(KeylogFileRead(
             str(path), "degraded" if invalid or changed or remaining else "read",

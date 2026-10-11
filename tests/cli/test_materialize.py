@@ -767,3 +767,19 @@ def test_incremental_candidate_identity_is_shared_by_sources_graph_and_publicati
     assert observed["typed"]["window_start"] == date(2026, 1, 1)
     assert observed["typed"]["window_end"] == date(2026, 1, 3)
     assert generation.expected_refresh_id == (expected if typed_status == "ok" else None)
+
+
+def test_incremental_promotion_uses_completed_rebuild_window(monkeypatch):
+    from lynchpin.cli import materialize, substrate_snapshot
+    from lynchpin.substrate import connection
+    observed = {}
+    monkeypatch.setattr(materialize, "_all_history_window", lambda: (date(2020, 5, 1), date(2020, 5, 10)))
+    monkeypatch.setattr(materialize, "plan_materializations", lambda **kwargs: [])
+    monkeypatch.setattr(materialize, "audit_materialization", lambda: [])
+    monkeypatch.setattr(materialize, "_record_incremental_phase", lambda *args, **kwargs: None)
+    monkeypatch.setattr(materialize, "run_materialization_plan", lambda *args, **kwargs: [SimpleNamespace(action="materialize", window=(date(2020, 5, 2), date(2020, 5, 10)))])
+    monkeypatch.setattr(connection, "candidate_generation", lambda **kwargs: nullcontext())
+    monkeypatch.setattr(substrate_snapshot, "main", lambda argv: observed.update(argv=argv) or 0)
+    assert materialize.main(["--all", "--promote", "--history", "incremental", "--progress", "quiet"]) == 0
+    argv = observed["argv"]
+    assert argv[argv.index("--incremental-tail-start") + 1] == "2020-05-02"

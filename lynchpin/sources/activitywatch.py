@@ -1434,7 +1434,7 @@ def daily_activity(*, start: date, end: date, ensure: bool = True) -> list[AWDay
             proj_by_day[d] = sess.project
 
     # Cross-source presence (keylog + AW, resilience against AW outages)
-    presence_map = _daily_presence_summary(start=start, end=end)
+    presence_map = _daily_presence_summary(start=start, end=end, ensure=ensure)
 
     # Outage/presence detectors report a "gap" for any day they're asked
     # about, even one before ActivityWatch ever ran on this machine — a day
@@ -1512,13 +1512,15 @@ def coverage_bounds() -> CoverageBounds | None:
 
 
 def _daily_presence_summary(
-    *, start: date, end: date
+    *, start: date, end: date, ensure: bool = True
 ) -> dict[date, dict[str, float]]:
     """Compute cross-source presence summary per day from hourly_presence()."""
     try:
         from .presence import hourly_presence
-        hours = list(hourly_presence(start, end))
+        hours = list(hourly_presence(start, end, ensure=ensure))
     except Exception:
+        if not ensure:
+            raise
         return {}
 
     by_day: dict[date, dict[str, float]] = defaultdict(

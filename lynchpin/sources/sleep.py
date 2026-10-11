@@ -389,7 +389,9 @@ def daily_activity(*, start: date, end: date) -> list[SleepDayActivity]:
 
 
 def coverage_bounds() -> CoverageBounds | None:
-    if not get_config().sleep_jsonl.exists():
+    from ..core.input_snapshot import read_input_path
+
+    if not read_input_path(get_config().sleep_jsonl).exists():
         return None
     dates = [e.date for e in entries()]
     if not dates:

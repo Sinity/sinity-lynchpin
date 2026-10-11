@@ -73,8 +73,10 @@ def file_readiness(path: Path) -> SourceReadiness:
     and borg drill runs. Counts non-blank lines as a proxy for row count;
     the caller can refine if hydration filters further.
     """
+    from .input_snapshot import read_input_path
+
     try:
-        with path.open(encoding="utf-8") as fh:
+        with read_input_path(path).open(encoding="utf-8") as fh:
             count = sum(1 for line in fh if line.strip())
     except FileNotFoundError:
         return SourceReadiness("missing", f"{path} does not exist", path, None)
@@ -114,9 +116,12 @@ def read_jsonl_with(
     ``source_name`` is included in the warning messages; defaults to
     the file basename.
     """
+    from .input_snapshot import read_input_path
+
+    name = source_name or path.name
+    path = read_input_path(path)
     if not path.exists():
         return
-    name = source_name or path.name
     with path.open(encoding="utf-8") as fh:
         for lineno, raw in enumerate(fh, start=1):
             raw = raw.strip()

@@ -133,7 +133,9 @@ def commands(
         from ..materialization import ensure_materialized
 
         ensure_materialized("atuin", window=_datetime_window(start, end))
-    path = canonical_atuin_history_path()
+    from ..core.input_snapshot import read_input_path
+
+    path = read_input_path(canonical_atuin_history_path())
     from ..ingest._manifest import product_lock
 
     start_cmp = as_local(start) if start else None
@@ -141,7 +143,7 @@ def commands(
     with product_lock(path, exclusive=False):
         if not path.exists():
             raise FileNotFoundError(
-                f"canonical Atuin materialization is missing: {path}. "
+                f"canonical Atuin materialization is missing: {canonical_atuin_history_path()}. "
                 "Run python -m lynchpin.ingest.terminal_materialize."
             )
         for command in _commands_from_ndjson(path):

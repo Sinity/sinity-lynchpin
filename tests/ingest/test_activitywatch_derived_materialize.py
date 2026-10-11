@@ -716,3 +716,75 @@ def test_partitioned_retired_schema_rebuild_ignores_flat_predecessor(monkeypatch
     assert second["schema_version"] == mod.ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
     assert second["row_counts"]["daily_activity"] == 1
     assert flat.read_bytes() == original
+
+
+def test_candidate_reads_one_input_snapshot_through_chunks_and_promotion(monkeypatch, tmp_path):
+    from lynchpin.core.cache import input_versions
+    from lynchpin.core.input_snapshot import input_snapshot, read_input_path
+    from lynchpin.core.source import read_jsonl_with
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    from lynchpin.sources import activitywatch_event_index as index, keylog, terminal
+
+    first = date(2026, 6, 6)
+    pointer = tmp_path / "index.json"
+    partition = tmp_path / "retained.ndjson"
+    partition.write_text(json.dumps({"bucket": "aw-window-test", "start": "2026-06-06T07:00:00Z", "end": "2026-06-06T08:00:00Z", "data": {"title": "old"}}) + "\n")
+    original = {"schema_version": 2, "transform_recipe": index.activitywatch_event_index_recipe(), "first_date": str(first), "last_date": "2026-06-07", "product_paths": {str(first): str(partition)}}
+    pointer.write_text(json.dumps(original))
+    shell = tmp_path / "shell.ndjson"
+    shell.write_text(json.dumps({"timestamp": "2026-06-06T07:00:00Z", "command": "old"}) + "\n")
+    sleep = tmp_path / "sleep.jsonl"
+    sleep.write_text('{"value":"old"}\n')
+    logs = tmp_path / "keyboard" / "logs"
+    logs.mkdir(parents=True)
+    keyboard = logs / "2026-06-06.jsonl"
+    keyboard.write_text('{"event":"press","ts":"2026-06-06T07:00:00Z"}\n')
+    monkeypatch.setattr(mod, "get_config", lambda: SimpleNamespace(sleep_jsonl=sleep))
+    monkeypatch.setattr(keylog, "get_config", lambda: SimpleNamespace(keylog_root=logs.parent))
+    monkeypatch.setattr(terminal, "canonical_atuin_history_path", lambda: shell)
+    monkeypatch.setattr(mod, "activitywatch_event_index_manifest_path", lambda: pointer)
+    monkeypatch.setattr(index, "activitywatch_event_index_manifest_path", lambda root=None: pointer)
+    expected = input_versions((pointer, partition))
+    seen = []
+
+    def chunk(*, start, **kwargs):
+        assert index._index_manifest() == original
+        events = list(index.iter_indexed_activitywatch_events(bucket_prefix="aw-window", start=datetime(2026, 6, 6, tzinfo=timezone.utc), end=datetime(2026, 6, 8, tzinfo=timezone.utc)))
+        assert events[0].data == {"title": "old"}
+        assert next(terminal.commands(ensure=False)).command == "old"
+        assert list(read_jsonl_with(sleep, lambda value: value)) == [{"value": "old"}]
+        assert keylog.log_files(ensure=False) == [keyboard]
+        seen.append(start)
+        if len(seen) == 1:
+            replacement = tmp_path / "replacement.json"
+            replacement.write_text(json.dumps({**original, "product_paths": {}}))
+            replacement.replace(pointer)
+            partition.unlink()
+            shell.write_text(json.dumps({"timestamp": "2026-06-06T07:00:00Z", "command": "new"}) + "\n")
+            sleep.unlink()
+            (logs / "2026-06-07.jsonl").write_text('{}\n')
+        return {"schema_version": mod.ACTIVITYWATCH_DERIVED_SCHEMA_VERSION, "covered_dates": [str(start)]}
+
+    monkeypatch.setattr(mod, "_materialize_window", chunk)
+    with input_snapshot():
+        result = mod.materialize_activitywatch_derived(start=first, end=date(2026, 6, 8), root=tmp_path / "products")
+        assert seen == [first, date(2026, 6, 7)]
+        assert result["input_versions"] == expected
+        assert next(terminal.commands(ensure=False)).command == "old"
+        assert read_input_path(partition).is_file()
+    assert not partition.exists()
+    assert next(terminal.commands(ensure=False)).command == "new"
+
+
+def test_transparent_refresh_expands_changed_canonical_suffix(monkeypatch):
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    pointer = Path("/synthetic/manifest.json")
+    old = {"path": "/synthetic/2020-01-03.ndjson", "stat": [1]}
+    previous = {"covered_dates": ["2020-01-01", "2020-01-03", "2020-01-06"], "input_versions": [old]}
+    monkeypatch.setattr(mod, "activitywatch_event_index_manifest_path", lambda: pointer)
+    monkeypatch.setattr(mod, "_load_json", lambda path: previous)
+    monkeypatch.setattr(mod, "activitywatch_derived_input_files", lambda: ())
+    monkeypatch.setattr(mod, "input_versions", lambda paths: [{**old, "stat": [2]}])
+    assert mod.activitywatch_derived_refresh_window((date(2020, 1, 4), date(2020, 1, 5))) == (date(2020, 1, 2), date(2020, 1, 7))
+    monkeypatch.setattr(mod, "input_versions", lambda paths: [old])
+    assert mod.activitywatch_derived_refresh_window((date(2020, 1, 4), date(2020, 1, 5))) == (date(2020, 1, 4), date(2020, 1, 5))

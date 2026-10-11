@@ -200,7 +200,9 @@ def main(argv: list[str] | None = None) -> int:
         generation_context = nullcontext()
 
     try:
-        with generation_context as generation:
+        from ..core.input_snapshot import input_snapshot
+
+        with generation_context as generation, input_snapshot():
             if isinstance(generation, CandidateGeneration) and args.history == "incremental":
                 from .substrate_snapshot import _snapshot_refresh_id
 
@@ -236,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.history == "incremental":
                     refreshed_windows = [
                         step.window
-                        for step in plan
+                        for step in completed_steps
                         if step.action == "materialize" and step.window is not None
                     ]
                     incremental_tail_start = min(

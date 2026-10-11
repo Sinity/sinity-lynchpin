@@ -78,7 +78,9 @@ def activitywatch_event_index_manifest_path(root: Path | None = None) -> Path:
 
 
 def _index_manifest(root: Path | None = None) -> dict[str, Any]:
-    manifest_path = activitywatch_event_index_manifest_path(root)
+    from ..core.input_snapshot import read_input_path
+
+    manifest_path = read_input_path(activitywatch_event_index_manifest_path(root))
     if not manifest_path.exists():
         return {}
     try:
@@ -154,8 +156,11 @@ def iter_indexed_activitywatch_events(
             path = activitywatch_event_index_path(date.fromisoformat(raw_day), root)
         if path is None:
             continue
-        if path.is_file():
-            rows.extend(_read_day(path, bucket_prefix=bucket_prefix, start=start, end=end))
+        from ..core.input_snapshot import read_input_path
+
+        read_path = read_input_path(path)
+        if read_path.is_file():
+            rows.extend(_read_day(read_path, bucket_prefix=bucket_prefix, start=start, end=end))
         else:
             raise SourceUnavailableError("activitywatch_event_index", path=str(path),
                                          reason=f"manifest names missing partition for logical day {raw_day}")

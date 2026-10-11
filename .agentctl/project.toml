@@ -58,7 +58,7 @@ cache = "tree+environment"
 
 [operations.verify_activitywatch_freshness]
 description = "Verify canonical ActivityWatch input identities and derived freshness"
-exec = ["pytest", "-q", "tests/ingest/test_activitywatch_derived_materialize.py", "tests/test_materialization.py", "tests/test_read_convergence.py", "tests/cli/test_materialize.py", "tests/analysis/test_substrate_promote_personal.py", "tests/analysis/test_operator_daily_logical_dates.py", "tests/analysis/test_operator_daily_machine_pressure.py", "tests/sources/test_source_activitywatch.py", "tests/sources/test_activitywatch_repair.py"]
+exec = ["pytest", "-q", "tests/core/test_input_snapshot.py", "tests/mcp/test_transparent_activity.py", "tests/ingest/test_activitywatch_derived_materialize.py", "tests/test_materialization.py", "tests/test_read_convergence.py", "tests/cli/test_materialize.py", "tests/analysis/test_substrate_promote_personal.py", "tests/analysis/test_operator_daily_logical_dates.py", "tests/analysis/test_operator_daily_machine_pressure.py", "tests/sources/test_source_activitywatch.py", "tests/sources/test_activitywatch_repair.py"]
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"

@@ -125,7 +125,10 @@ def save_text(path: str | PathLike[str], text: str) -> None:
 
 def latest_mtime_iso(paths: Iterable[Path]) -> str | None:
     """Return the latest existing path mtime as local ISO text."""
-    latest = max((path.stat().st_mtime for path in paths if path.exists()), default=None)
+    from .input_snapshot import read_input_path
+
+    frozen = tuple(read_input_path(path) for path in paths)
+    latest = max((path.stat().st_mtime for path in frozen if path.exists()), default=None)
     if latest is None:
         return None
     return datetime.fromtimestamp(latest, timezone.utc).astimezone().isoformat()
