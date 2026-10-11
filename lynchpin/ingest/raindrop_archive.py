@@ -397,7 +397,7 @@ def rename_by_content(out_dir: Path) -> dict[str, int]:
 
 
 def _default_raw_root() -> Path:
-    return get_config().accounts_root / "raindrop" / "raw"
+    return get_config().raindrop_dir
 
 
 def main(argv: list[str] | None = None) -> int:

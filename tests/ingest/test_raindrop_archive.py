@@ -6,6 +6,7 @@ import json
 import os
 import pytest
 from pathlib import Path
+from types import SimpleNamespace
 
 from lynchpin.ingest import raindrop_archive as mod
 
@@ -342,3 +343,13 @@ def test_false_api_result_is_failure(monkeypatch):
     monkeypatch.setattr(mod, "_request_bytes", lambda *args: b'{"result": false}')
     with pytest.raises(RuntimeError, match="rejected request"):
         mod._get_json("/collections", "fixture")
+
+
+def test_retained_snapshot_honors_configured_raindrop_root(tmp_path, monkeypatch):
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    snapshot = _complete_snapshot(configured, "2026-08-01-api-export")
+    monkeypatch.setattr(mod, "get_config", lambda: SimpleNamespace(
+        raindrop_dir=configured, accounts_root=tmp_path / "unused-accounts",
+    ))
+    assert mod.select_retained_snapshot() == snapshot
