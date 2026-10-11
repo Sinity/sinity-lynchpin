@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import json
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
@@ -43,6 +43,10 @@ class RaindropBookmark:
     cover: Optional[str]
     favorite: bool
     raw: dict[str, object]
+    updated: datetime | None = None
+    state: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
+    highlights: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -68,10 +72,11 @@ def raindrop_bookmarks_path() -> Path:
 def list_raindrop_exports(root: Optional[Path] = None) -> list[RaindropExport]:
     cfg = get_config()
     base = Path(root) if root else cfg.raindrop_dir
-    if not base.exists():
-        return []
+    paths = set(base.glob("*.csv"))
+    if root is None and cfg.raindrop_csv is not None:
+        paths.add(cfg.raindrop_csv)
     exports: list[RaindropExport] = []
-    for path in sorted(base.glob("*.csv"), key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True):
+    for path in sorted(paths, key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True):
         stat = path.stat()
         label = path.stem
         exports.append(
@@ -83,6 +88,22 @@ def list_raindrop_exports(root: Optional[Path] = None) -> list[RaindropExport]:
             )
         )
     return exports
+
+
+def raindrop_snapshot(root: Path | None = None) -> Path | None:
+    """Optional API authority; existing incomplete packages are unavailable."""
+    from ..ingest.raindrop_archive import select_retained_snapshot
+    base = root if root is not None else get_config().raindrop_dir
+    if not any(base.glob("*-api-export")):
+        return None
+    return select_retained_snapshot(base)
+
+
+def raindrop_input_files() -> tuple[Path, ...]:
+    snapshot = raindrop_snapshot()
+    return tuple(export.path for export in list_raindrop_exports()) + (
+        tuple(sorted(snapshot.iterdir())) if snapshot else ()
+    )
 
 
 def iter_raindrop_bookmarks(
@@ -112,7 +133,7 @@ def iter_raindrop_bookmarks(
         with target.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
-                tags = _parse_tags(row.get("tags"))
+                tags = json.loads(row["tags_json"]) if row.get("tags_json") else _parse_tags(row.get("tags"))
                 created = parse_datetime(row.get("created"))
                 if created is not None and (start is not None or end is not None):
                     d = logical_date(created)
@@ -137,6 +158,10 @@ def iter_raindrop_bookmarks(
                     cover=_strip(row.get("cover")),
                     favorite=favorite,
                     raw=row,
+                    updated=parse_datetime(row.get("updated")),
+                    state=row.get("state") or None,
+                    metadata=json.loads(row["metadata_json"]) if row.get("metadata_json") else {},
+                    highlights=tuple(json.loads(row["highlights_json"])) if row.get("highlights_json") else (),
                 )
 
     return generator()
@@ -164,9 +189,11 @@ def summarize_raindrop_bookmarks(
     csv_path: Optional[Path] = None,
 ) -> dict[str, int]:
     counts: dict[str, int] = defaultdict(int)
+    seen: set[int] = set()
     for bookmark in iter_raindrop_bookmarks(csv_path):
-        if bookmark.created is None:
+        if bookmark.id in seen or bookmark.created is None:
             continue
+        seen.add(bookmark.id)
         month = f"{bookmark.created.year:04d}-{bookmark.created.month:02d}"
         if start_month <= month <= end_month:
             counts[month] += 1
@@ -182,13 +209,15 @@ def daily_raindrop_activity(*, start: date, end: date, ensure: bool = True) -> l
         ensure_materialized("raindrop", window=(start, end))
 
     by_date: dict[date, tuple[int, set[str]]] = defaultdict(lambda: (0, set()))
+    seen: set[int] = set()
     for bookmark in iter_raindrop_bookmarks(start=start, end=end, ensure=False):
         if bookmark.created is None:
             continue
         d = logical_date(bookmark.created)
         count, tags = by_date[d]
         tags.update(bookmark.tags)
-        by_date[d] = (count + 1, tags)
+        by_date[d] = (count + (bookmark.id not in seen), tags)
+        seen.add(bookmark.id)
     return sorted(
         [RaindropDayActivity(date=d, bookmarks_added=count, unique_tags=len(tags)) for d, (count, tags) in by_date.items()],
         key=lambda x: x.date,

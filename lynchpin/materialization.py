@@ -30,7 +30,7 @@ from time import monotonic
 
 from .core.cache import file_signature, files_signature, input_versions, manifest_versions_current
 from .core.config import LynchpinConfig, get_config
-from .core.errors import MaterializationError
+from .core.errors import MaterializationError, SourceUnavailableError
 from .core.parse import iter_dates
 from .core.primitives import logical_date
 from .core.source_contracts import (
@@ -119,7 +119,7 @@ from .sources.title_metadata import title_metadata_manifest_path, title_metadata
 from .sources.google_takeout import discover_takeout_archives
 from .sources.gmail_takeout import gmail_events_path, gmail_manifest_path
 from .sources.polylogue import archive_readiness, iter_session_profiles
-from .sources.exports_raindrop import list_raindrop_exports
+from .sources.exports_raindrop import raindrop_input_files
 from .sources.bookmarks import bookmarks_manifest_path, bookmarks_path
 from .sources.communications import communication_events_path, communication_manifest_path
 from .sources.arbtt import arbtt_events_path, arbtt_manifest_path
@@ -1363,7 +1363,7 @@ def _reddit_input_files(cfg: LynchpinConfig) -> tuple[Path, ...]:
 
 
 def _raindrop_input_files() -> tuple[Path, ...]:
-    return tuple(export.path for export in list_raindrop_exports())
+    return raindrop_input_files()
 
 
 def _manifest_inputs_current(manifest: dict[str, Any], paths: Iterable[Path]) -> bool:
@@ -3100,15 +3100,24 @@ def _raindrop_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     path = raindrop_bookmarks_path()
     manifest = path.with_suffix(".manifest.json")
     meta = _load_json(manifest)
-    raw_files = _raindrop_input_files()
+    source_error = None
+    try:
+        raw_files = _raindrop_input_files()
+    except (SourceUnavailableError, OSError) as exc:
+        raw_files = ()
+        source_error = str(exc)
     product_ready = _product_with_manifest_exists(path, manifest)
     inputs_current = _manifest_inputs_current(meta, raw_files)
     schema_current = meta.get("schema_version") == RAINDROP_BOOKMARKS_SCHEMA_VERSION
-    if product_ready and not schema_current:
-        status: Status = "partial"
+    status: Status
+    if source_error:
+        status = "partial" if product_ready else "missing"
+        reason = source_error
+    elif product_ready and not schema_current:
+        status = "partial"
         reason = "canonical Raindrop bookmark schema is older than the current reader contract"
     elif product_ready and inputs_current:
-        status: Status = "ready"
+        status = "ready"
         reason = "canonical coalesced Raindrop bookmark CSV is present"
     elif product_ready:
         status = "partial"
@@ -3122,7 +3131,7 @@ def _raindrop_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     return MaterializedDataset(
         name="raindrop",
         status=status,
-        authority="Raindrop export CSVs",
+        authority="Raindrop CSV observations and completed API metadata bundles",
         query_surface="lynchpin.sources.exports",
         materialized_paths=(path, manifest),
         raw_roots=(cfg.raindrop_dir,),

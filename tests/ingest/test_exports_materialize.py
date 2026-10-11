@@ -59,6 +59,69 @@ def test_raindrop_older_export_cannot_replace_newer_observation(tmp_path, monkey
     assert all(row.raw["source_file"] == str(older) for row in rows if row.url != "https://example.org/current")
 
 
+def test_raindrop_creation_counts_preserve_identity_across_url_history(tmp_path, monkeypatch):
+    from lynchpin.sources import exports_raindrop as source
+    path = tmp_path / "bookmarks.csv"
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=("id", "url", "created", "tags"))
+        writer.writeheader()
+        writer.writerows([
+            {"id": 17, "url": "https://example.org/old", "created": "2026-08-01T12:00:00Z", "tags": "one"},
+            {"id": 17, "url": "https://example.org/new", "created": "2026-08-01T12:00:00Z", "tags": "two"},
+        ])
+    monkeypatch.setattr(source, "raindrop_bookmarks_path", lambda: path)
+    assert source.summarize_raindrop_bookmarks("2026-08", "2026-08", csv_path=path) == {"2026-08": 1}
+    rows = source.daily_raindrop_activity(start=date(2026, 8, 1), end=date(2026, 8, 2), ensure=False)
+    assert len(rows) == 1 and rows[0].bookmarks_added == 1 and rows[0].unique_tags == 2
+    assert len(list(source.iter_raindrop_bookmarks(csv_path=path))) == 2
+
+
+def test_raindrop_ordinary_reader_adopts_complete_api_bundle(tmp_path, monkeypatch):
+    from lynchpin.ingest import exports_materialize as mod
+    from lynchpin.sources import exports_raindrop as source
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    cfg = SimpleNamespace(accounts_root=tmp_path / "accounts", raindrop_dir=raw, raindrop_csv=None)
+    monkeypatch.setattr(mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(source, "get_config", lambda: cfg)
+    snapshot = raw / "2026-08-02-api-export"
+    snapshot.mkdir()
+    metadata = {"_id": 17, "link": "https://example.org/bookmark", "title": "retained", "created": "2026-01-01T12:00:00Z", "lastUpdate": "2026-08-01T12:00:00Z", "tags": ["one, two"], "custom": {"full": True}}
+    highlight = {"_id": "highlight-a", "raindropRef": 17, "text": "retained text"}
+    for name in ("collections-root.json", "collections-children.json", "tags.json"):
+        (snapshot / name).write_text('{}')
+    for name, rows in (("raindrops-all.jsonl", [metadata]), ("raindrops-trash.jsonl", []), ("highlights.jsonl", [highlight])):
+        (snapshot / name).write_text("".join(json.dumps(row) + "\n" for row in rows))
+    (snapshot / "EXPORT-MANIFEST.json").write_text(json.dumps({"active": 1, "trash": 0, "highlights": 1, "exported_at": "2026-08-02T00:00:00Z"}))
+    report = mod.materialize_raindrop()
+    rows = list(source.iter_raindrop_bookmarks(ensure=False))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.id == 17 and row.updated == datetime(2026, 8, 1, 12, tzinfo=timezone.utc)
+    assert row.state == "active" and row.tags == ["one, two"]
+    assert row.highlights == (highlight,)
+    assert all(row.metadata[key] == value for key, value in metadata.items())
+    assert set(report["input_files"]) == {str(path) for path in snapshot.iterdir()}
+    # Newer CSV details win, while native evidence remains dated separately.
+    csv_path = raw / "new.csv"
+    with csv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=("id", "url", "title", "created"))
+        writer.writeheader()
+        writer.writerow({"id": 17, "url": metadata["link"], "title": "new CSV", "created": metadata["created"]})
+    mod.materialize_raindrop()
+    row = list(source.iter_raindrop_bookmarks(ensure=False))[0]
+    assert row.title == "new CSV" and row.metadata["title"] == "retained"
+    assert row.raw["source_file"] == str(csv_path) and row.raw["api_source"] == str(snapshot)
+    assert row.highlights == (highlight,)
+    before = mod.raindrop_bookmarks_path().read_bytes()
+    (snapshot / "highlights.jsonl").write_text("{interrupted")
+    import pytest
+    from lynchpin.core.errors import SourceUnavailableError
+    with pytest.raises(SourceUnavailableError):
+        mod.materialize_raindrop()
+    assert mod.raindrop_bookmarks_path().read_bytes() == before
+
+
 def test_communications_materialize_includes_themotte(tmp_path, monkeypatch) -> None:
     from lynchpin.ingest import communications_materialize
     from lynchpin.sources.themotte import TheMotteMessage, TheMotteNotification

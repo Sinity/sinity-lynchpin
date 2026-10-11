@@ -94,8 +94,8 @@ class RetainedRaindrop:
     highlights: tuple[dict, ...]
 
 
-def iter_retained_bookmarks(*, raw_root=None) -> Iterator[RetainedRaindrop]:
-    snapshot = select_retained_snapshot(raw_root)
+def iter_retained_bookmarks(*, raw_root=None, snapshot=None) -> Iterator[RetainedRaindrop]:
+    snapshot = snapshot if snapshot is not None else select_retained_snapshot(raw_root)
     highlights_by_id: dict[int, list[dict]] = defaultdict(list)
     for highlight in iter_retained_highlights(snapshot=snapshot):
         item = highlight.get("item") or {}

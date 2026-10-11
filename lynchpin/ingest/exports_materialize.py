@@ -14,14 +14,14 @@ from typing import Any, Iterable
 from ..core.config import get_config
 from ..core.io import latest_mtime_iso
 from ..sources.exports_messenger import iter_fbmessenger_messages, iter_fbmessenger_threads
-from ..sources.exports_raindrop import iter_raindrop_bookmarks, list_raindrop_exports
+from ..sources.exports_raindrop import iter_raindrop_bookmarks, list_raindrop_exports, raindrop_snapshot
 from ..sources.spotify import iter_streams
 from ._manifest import atomic_write_ndjson, atomic_write_text, write_manifest
 
 
 SPOTIFY_STREAMS_SCHEMA_VERSION = 1
 REDDIT_CANONICAL_SCHEMA_VERSION = 2
-RAINDROP_BOOKMARKS_SCHEMA_VERSION = 2
+RAINDROP_BOOKMARKS_SCHEMA_VERSION = 3
 MESSENGER_CANONICAL_SCHEMA_VERSION = 2
 
 
@@ -138,11 +138,12 @@ def materialize_reddit() -> dict[str, Any]:
 
 
 def materialize_raindrop() -> dict[str, Any]:
-    """Union observed ID/URL pairs, taking details from the newest CSV."""
+    """Coalesce CSV observations and one complete native API bundle."""
     out = raindrop_bookmarks_path()
     out.parent.mkdir(parents=True, exist_ok=True)
     rows: dict[tuple[str, str], dict[str, str]] = {}
     exports = list_raindrop_exports()
+    snapshot = raindrop_snapshot(get_config().raindrop_dir)
     for export in exports:
         for bookmark in iter_raindrop_bookmarks(export.path, ensure=False):
             key = (str(bookmark.id), bookmark.url)
@@ -162,10 +163,49 @@ def materialize_raindrop() -> dict[str, Any]:
                 "cover": bookmark.cover or "",
                 "favorite": "true" if bookmark.favorite else "false",
                 "source_file": str(export.path),
+                "observed_at": export.mtime.isoformat(),
             }
+    if snapshot is not None:
+        from ..sources.raindrop_live import iter_retained_bookmarks
+        marker = json.loads((snapshot / "EXPORT-MANIFEST.json").read_text())
+        observed = datetime.fromisoformat(str(marker.get("exported_at") or f"{snapshot.name[:10]}T00:00:00Z").replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        for bookmark in iter_retained_bookmarks(snapshot=snapshot):
+            metadata = bookmark.metadata
+            key = (str(bookmark.id), str(metadata.get("link") or ""))
+            current = rows.get(key)
+            api_row = {
+                "id": str(bookmark.id), "url": key[1],
+                "title": str(metadata.get("title") or ""),
+                "note": str(metadata.get("note") or ""),
+                "excerpt": str(metadata.get("excerpt") or ""),
+                "folder": str(metadata.get("folder") or ""),
+                "tags": ",".join(metadata.get("tags") or []),
+                "tags_json": json.dumps(metadata.get("tags") or []),
+                "created": bookmark.created.isoformat() if bookmark.created else "",
+                "cover": str(metadata.get("cover") or ""),
+                "favorite": "true" if metadata.get("important") or metadata.get("favorite") else "false",
+                "source_file": str(snapshot), "observed_at": observed.isoformat(),
+            }
+            # Compare observation dates, not creation/modification dates.
+            # A historical API package cannot overwrite a newer CSV.
+            if current is None or observed >= datetime.fromisoformat(current["observed_at"]):
+                current = api_row
+                rows[key] = current
+            current.update({
+                "updated": bookmark.updated.isoformat() if bookmark.updated else "",
+                "state": bookmark.state,
+                "metadata_json": json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                "highlights_json": json.dumps(bookmark.highlights, ensure_ascii=False, sort_keys=True),
+                "api_source": str(snapshot), "api_observed_at": observed.isoformat(),
+            })
+    if not exports and snapshot is None:
+        from ..core.errors import SourceUnavailableError
+        raise SourceUnavailableError("raindrop", reason="no CSV observations or complete API snapshot")
     ordered = [rows[key] for key in sorted(rows)]
     _write_csv(out, ordered)
-    source_files = [export.path for export in exports]
+    source_files = [export.path for export in exports] + (sorted(snapshot.iterdir()) if snapshot else [])
     return _write_manifest(
         out.with_suffix(".manifest.json"),
         "raindrop.bookmarks",
