@@ -227,3 +227,24 @@ def test_keypress_timestamps_reuse_unchanged_files_and_refresh_appends(tmp_path,
         handle.write(json.dumps({'ts': '2026-03-15T10:01:00Z', 'event': 'press'}) + '\n')
     assert len(keylog.keypress_timestamps(start=start, end=end, ensure=False)) == 2
     assert reads == [path, path]
+
+
+def test_keylog_readers_filter_repeated_hour_by_instant(tmp_path, monkeypatch):
+    from zoneinfo import ZoneInfo
+    from lynchpin.core import parse
+
+    zone = ZoneInfo('Europe/Warsaw')
+    monkeypatch.setattr(parse, 'local_tz', lambda: zone)
+    logs = tmp_path / 'logs'
+    logs.mkdir()
+    records = [
+        {'ts': f'2025-10-26T0{hour}:15:00+00:00', 'event': kind, 'buffer': 'neutral' if kind == 'snapshot' else None}
+        for hour in [0, 1] for kind in ['press', 'snapshot']
+    ]
+    (logs / '2025-10-26.jsonl').write_text('\n'.join(json.dumps(r) for r in records) + '\n')
+    monkeypatch.setattr(keylog, 'get_config', lambda: SimpleNamespace(keylog_root=tmp_path))
+    start = datetime(2025, 10, 26, 2, 0, tzinfo=zone, fold=1)
+    end = datetime(2025, 10, 26, 2, 30, tzinfo=zone, fold=1)
+    assert len(list(keylog.events(start=start, end=end, kinds={'press'}, ensure=False))) == 1
+    assert len(keylog.keypress_timestamps(start=start, end=end, ensure=False)) == 1
+    assert len(list(keylog.text_snapshots(start=start, end=end, ensure=False))) == 1

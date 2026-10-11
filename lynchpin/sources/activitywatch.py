@@ -775,10 +775,11 @@ def _count_presses_in_intervals(
     if not intervals:
         return []
     counts: list[int] = []
+    points = sorted(_instant(ts) for ts in press_times)
     cursor = 0
     for left, right in intervals:
-        start_idx = bisect_left(press_times, left, cursor)
-        end_idx = bisect_left(press_times, right, start_idx)
+        start_idx = bisect_left(points, _instant(left), cursor)
+        end_idx = bisect_left(points, _instant(right), start_idx)
         counts.append(max(end_idx - start_idx, 0))
         cursor = start_idx
     return counts

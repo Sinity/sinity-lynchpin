@@ -7,6 +7,7 @@ separate APIs so callers can choose the product they actually need.
 from __future__ import annotations
 
 from functools import lru_cache
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from collections import Counter
@@ -18,7 +19,7 @@ from typing import Any, Iterator, Optional
 from ..core.config import get_config
 from ..core.coverage import CoverageBounds
 from ..core.parse import as_local, iter_dates, parse_datetime
-from ..core.primitives import date_to_dt_range
+from ..core.primitives import _instant, date_to_dt_range
 from ..core.primitives import logical_date
 from ..core.source import read_jsonl_with
 
@@ -173,7 +174,7 @@ def events(
         if ts is None:
             return None
         ts_local = as_local(ts)
-        if ts_local < start_local or ts_local >= end_local:
+        if _instant(ts_local) < _instant(start_local) or _instant(ts_local) >= _instant(end_local):
             return None
         return KeylogEvent(
             ts=ts_local,
@@ -209,7 +210,7 @@ def _analysis_records(
         if ts is None:
             return None
         ts_local = as_local(ts)
-        if ts_local < start_local or ts_local >= end_local:
+        if _instant(ts_local) < _instant(start_local) or _instant(ts_local) >= _instant(end_local):
             return None
         return _KeylogAnalysisRecord(
             ts=ts_local,
@@ -303,7 +304,7 @@ def text_snapshots(
         if ts is None:
             return None
         ts_local = as_local(ts)
-        if ts_local < start_local or ts_local >= end_local:
+        if _instant(ts_local) < _instant(start_local) or _instant(ts_local) >= _instant(end_local):
             return None
         return KeylogTextSnapshot(
             ts=ts_local,
@@ -341,10 +342,11 @@ def keypress_timestamps(
             stat = path.stat()
         except OSError:
             continue
-        for ts in _press_timestamps(str(path), stat.st_mtime_ns, stat.st_size):
-            if start_local <= ts < end_local:
-                timestamps.append(ts)
-    return tuple(sorted(timestamps))
+        points = _press_timestamps(str(path), stat.st_mtime_ns, stat.st_size)
+        left = bisect_left(points, _instant(start_local), key=_instant)
+        right = bisect_left(points, _instant(end_local), key=_instant)
+        timestamps.extend(points[left:right])
+    return tuple(sorted(timestamps, key=_instant))
 
 
 @lru_cache(maxsize=512)
@@ -357,7 +359,7 @@ def _press_timestamps(path: str, mtime_ns: int, size: int) -> tuple[datetime, ..
         ts = parse_datetime(rec.get("ts"))
         return as_local(ts) if ts is not None else None
 
-    return tuple(read_jsonl_with(Path(path), _press_ts, source_name="keylog"))
+    return tuple(sorted(read_jsonl_with(Path(path), _press_ts, source_name="keylog"), key=_instant))
 
 
 def has_coverage(*, start: datetime, end: datetime, ensure: bool = True) -> bool:
@@ -399,8 +401,8 @@ def daily_activity(
             keypress_count=keypress_counts[d],
             changed_keypress_count=changed_keypress_counts[d],
             session_count=len(sessions[d]),
-            first_ts=min(timestamps[d]) if timestamps[d] else None,
-            last_ts=max(timestamps[d]) if timestamps[d] else None,
+            first_ts=min(timestamps[d], key=_instant) if timestamps[d] else None,
+            last_ts=max(timestamps[d], key=_instant) if timestamps[d] else None,
         ))
     return result
 

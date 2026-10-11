@@ -571,7 +571,7 @@ def test_retired_logical_day_product_refuses_partial_reuse(monkeypatch, tmp_path
     from lynchpin.core.errors import MaterializationError
     manifest = mod.activitywatch_derived_manifest_path(tmp_path)
     manifest.parent.mkdir(parents=True)
-    original = json.dumps({"schema_version": 3, "first_date": "2026-05-01", "last_date": "2026-05-02"})
+    original = json.dumps({"schema_version": mod.ACTIVITYWATCH_DERIVED_SCHEMA_VERSION - 1, "first_date": "2026-05-01", "last_date": "2026-05-02"})
     manifest.write_text(original)
     with pytest.raises(MaterializationError, match="unbounded rebuild"):
         mod.materialize_activitywatch_derived(start=date(2026, 5, 1), end=date(2026, 5, 2), root=tmp_path)

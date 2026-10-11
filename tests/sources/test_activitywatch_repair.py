@@ -423,3 +423,79 @@ def test_stuck_window_below_threshold_not_flipped() -> None:
 
 def test_threshold_constant_anchored() -> None:
     assert KEYLOG_SILENT_THRESHOLD_S == 30 * 60
+
+
+def test_silence_gap_uses_elapsed_time_across_repeated_hour():
+    from zoneinfo import ZoneInfo
+    from lynchpin.sources.activitywatch_repair import _find_silent_windows
+
+    zone = ZoneInfo('Europe/Warsaw')
+    start = datetime(2025, 10, 26, 2, 10, tzinfo=zone, fold=0)
+    end = datetime(2025, 10, 26, 2, 20, tzinfo=zone, fold=1)
+    assert _find_silent_windows([], span_start=start, span_end=end, threshold_s=1800) == [(start, end)]
+
+
+def test_keypress_count_keeps_repeated_hours_distinct():
+    from zoneinfo import ZoneInfo
+    from lynchpin.sources.activitywatch import _count_presses_in_intervals
+
+    zone = ZoneInfo('Europe/Warsaw')
+    first = datetime(2025, 10, 26, 2, 15, tzinfo=zone, fold=0)
+    second = datetime(2025, 10, 26, 2, 15, tzinfo=zone, fold=1)
+    start = datetime(2025, 10, 26, 2, 0, tzinfo=zone, fold=1)
+    end = datetime(2025, 10, 26, 2, 30, tzinfo=zone, fold=1)
+    assert _count_presses_in_intervals([first, second], [(start, end)]) == [1]
+
+
+def test_silence_orders_press_points_by_elapsed_instant():
+    from zoneinfo import ZoneInfo
+    from lynchpin.sources.activitywatch_repair import _find_silent_windows
+
+    zone = ZoneInfo('Europe/Warsaw')
+    start = datetime(2025, 10, 26, 0, 0, tzinfo=UTC)
+    end = datetime(2025, 10, 26, 1, 10, tzinfo=UTC)
+    first = datetime(2025, 10, 26, 2, 10, tzinfo=zone, fold=0)
+    second = datetime(2025, 10, 26, 2, 0, tzinfo=zone, fold=1)
+    gaps = _find_silent_windows([first, second], span_start=start, span_end=end, threshold_s=1800)
+    assert [(s.timestamp(), e.timestamp()) for s, e in gaps] == [(first.timestamp(), second.timestamp())]
+
+
+def test_afk_labels_keep_equal_wall_clock_boundaries_distinct():
+    from zoneinfo import ZoneInfo
+    from lynchpin.sources.activitywatch_repair import _labelled_afk_segments
+
+    zone = ZoneInfo('Europe/Warsaw')
+    first = datetime(2025, 10, 26, 2, 10, tzinfo=zone, fold=0)
+    second = datetime(2025, 10, 26, 2, 10, tzinfo=zone, fold=1)
+    end = datetime(2025, 10, 26, 2, 20, tzinfo=zone, fold=1)
+    segments = _labelled_afk_segments([(first, second, 'sleep-overlap'), (second, end, 'keylog-silent')])
+    assert [(s.timestamp(), e.timestamp(), label) for s, e, label in segments] == [
+        (first.timestamp(), second.timestamp(), 'sleep-overlap'),
+        (second.timestamp(), end.timestamp(), 'keylog-silent'),
+    ]
+
+
+def test_short_afk_interval_does_not_scan_entire_press_day():
+    points = tuple(BASE + timedelta(seconds=i) for i in range(100_000))
+
+    class PressDay:
+        reads = 0
+
+        def __len__(self):
+            return len(points)
+
+        def __getitem__(self, index):
+            self.reads += 1
+            return points[index]
+
+    day = PressDay()
+    ctxs = _patch_signals()
+    _enter(ctxs)
+    try:
+        with patch('lynchpin.sources.activitywatch_repair._press_timestamps', return_value=day):
+            repaired = list(repair_afk_events([_aw('not-afk', 0, 120)]))
+    finally:
+        for context in reversed(ctxs):
+            context.__exit__(None, None, None)
+    assert len(repaired) == 1 and repaired[0].status == 'not-afk'
+    assert day.reads < 100

@@ -19,6 +19,7 @@ from typing import Iterable, Iterator
 
 from ..core.cache import file_signature
 from ..core.config import get_config
+from ..core.primitives import _instant, duration_s
 from .activitywatch_models import AWEvent
 from .activitywatch_raw import window_events
 from .keylog import _candidate_files, _press_timestamps, log_files
@@ -127,7 +128,7 @@ def _sleep_intervals_cached(
     for entry in entries():
         for seg in entry.segments:
             intervals.append((seg.start, seg.end))
-    intervals.sort()
+    intervals.sort(key=lambda pair: _instant(pair[0]))
     return tuple(intervals)
 
 
@@ -151,7 +152,7 @@ def _atuin_timestamps_cached(signature: object) -> tuple[datetime, ...]:
             start=datetime(2020, 1, 1, tzinfo=timezone.utc),
             end=datetime.now(timezone.utc) + timedelta(days=1),
         ))
-        return tuple(sorted(c.timestamp for c in cmds if c.timestamp is not None))
+        return tuple(sorted((c.timestamp for c in cmds if c.timestamp is not None), key=_instant))
     except Exception:
         return ()
 
@@ -171,15 +172,15 @@ def _overlapping_sleep(start: datetime, end: datetime) -> list[tuple[datetime, d
     if not all_sleep:
         return []
     # Binary-search lower bound
-    lo = bisect.bisect_left(all_sleep, (start - timedelta(days=1), start - timedelta(days=1)))
+    lo = bisect.bisect_left(all_sleep, _instant(start) - timedelta(days=1), key=lambda pair: _instant(pair[0]))
     overlaps: list[tuple[datetime, datetime]] = []
     for i in range(lo, len(all_sleep)):
         s, e = all_sleep[i]
-        if s >= end:
+        if _instant(s) >= _instant(end):
             break
-        if e <= start:
+        if _instant(e) <= _instant(start):
             continue
-        overlaps.append((max(s, start), min(e, end)))
+        overlaps.append((max(s, start, key=_instant), min(e, end, key=_instant)))
     return overlaps
 
 
@@ -188,8 +189,8 @@ def _atuin_in_window(start: datetime, end: datetime) -> bool:
     ts = _atuin_timestamps()
     if not ts:
         return False
-    lo = bisect.bisect_left(ts, start)
-    return lo < len(ts) and ts[lo] < end
+    lo = bisect.bisect_left(ts, _instant(start), key=_instant)
+    return lo < len(ts) and _instant(ts[lo]) < _instant(end)
 
 
 def _find_silent_windows(
@@ -201,13 +202,13 @@ def _find_silent_windows(
 ) -> list[tuple[datetime, datetime]]:
     """Gaps ≥ threshold_s in a sorted point-event sequence."""
     if not timestamps:
-        gap = (span_end - span_start).total_seconds()
+        gap = duration_s((span_start, span_end))
         return [(span_start, span_end)] if gap >= threshold_s else []
-    boundaries = [span_start, *sorted(timestamps), span_end]
+    boundaries = [span_start, *sorted(timestamps, key=_instant), span_end]
     return [
         (left, right)
         for left, right in zip(boundaries, boundaries[1:])
-        if (right - left).total_seconds() >= threshold_s
+        if duration_s((left, right)) >= threshold_s
     ]
 
 
@@ -234,14 +235,15 @@ def _labelled_afk_segments(
 ) -> list[tuple[datetime, datetime, str]]:
     """Partition overlapping inferences without lending one label to a union."""
     priority = {"sleep-overlap": 4, "empty-app": 3, "stuck-window": 2, "keylog-silent": 1}
-    boundaries = sorted({point for start, end, _ in intervals for point in (start, end)})
+    points = {_instant(point): point for start, end, _ in intervals for point in (start, end)}
+    boundaries = [points[key] for key in sorted(points)]
     labelled: list[tuple[datetime, datetime, str]] = []
     for start, end in zip(boundaries, boundaries[1:]):
-        sources = (source for left, right, source in intervals if left < end and right > start)
+        sources = (source for left, right, source in intervals if _instant(left) < _instant(end) and _instant(right) > _instant(start))
         source = max(sources, key=lambda item: priority.get(item, 0), default="")
         if not source:
             continue
-        if labelled and labelled[-1][1] == start and labelled[-1][2] == source:
+        if labelled and _instant(labelled[-1][1]) == _instant(start) and labelled[-1][2] == source:
             labelled[-1] = (labelled[-1][0], end, source)
         else:
             labelled.append((start, end, source))
@@ -294,7 +296,7 @@ def repair_afk_events(
         # the common case (most not-afk events are < 30 min).
         wnd_events = (
             list(window_events(start=event.start, end=event.end))
-            if (event.end - event.start).total_seconds() >= 60 * 60
+            if duration_s((event.start, event.end)) >= 60 * 60
             else []
         )
 
@@ -304,20 +306,20 @@ def repair_afk_events(
             app = str(data.get("app") or "").strip()
             if not app:
                 # Clip to event window
-                s_c = max(w.start, event.start)
-                e_c = min(w.end, event.end)
-                if e_c > s_c:
+                s_c = max(w.start, event.start, key=_instant)
+                e_c = min(w.end, event.end, key=_instant)
+                if _instant(e_c) > _instant(s_c):
                     forced_afk.append((s_c, e_c, "empty-app"))
 
         # Signal 3: stuck-window = single window event ≥ 6h with no
         # atuin commands during it (no shell activity → operator not there).
         for w in wnd_events:
-            dur_s = (w.end - w.start).total_seconds()
+            dur_s = duration_s((w.start, w.end))
             if dur_s < stuck_window_threshold_s:
                 continue
-            s_c = max(w.start, event.start)
-            e_c = min(w.end, event.end)
-            if e_c <= s_c:
+            s_c = max(w.start, event.start, key=_instant)
+            e_c = min(w.end, event.end, key=_instant)
+            if _instant(e_c) <= _instant(s_c):
                 continue
             # Positive-activity rescue: atuin command during this stretch
             # implies real activity even if no focus changes (e.g., long
@@ -335,12 +337,13 @@ def repair_afk_events(
                     stat = path.stat()
                 except OSError:
                     continue
-                for ts in _press_timestamps(str(path), stat.st_mtime_ns, stat.st_size):
-                    if event.start <= ts <= event.end:
-                        kp_times.append(ts)
+                points = _press_timestamps(str(path), stat.st_mtime_ns, stat.st_size)
+                left = bisect.bisect_left(points, _instant(event.start), key=_instant)
+                right = bisect.bisect_right(points, _instant(event.end), key=_instant)
+                kp_times.extend(points[left:right])
             for span_start, span_end in keylog_spans:
                 silent_windows = _find_silent_windows(
-                    [ts for ts in kp_times if span_start <= ts <= span_end],
+                    [ts for ts in kp_times if _instant(span_start) <= _instant(ts) <= _instant(span_end)],
                     span_start=span_start,
                     span_end=span_end,
                     threshold_s=keylog_silent_threshold_s,
@@ -370,7 +373,7 @@ def _is_covered_by_sleep(
 ) -> bool:
     """True if [start, end] is fully contained in any sleep overlap."""
     for s, e in sleep_overlaps:
-        if s <= start and e >= end:
+        if _instant(s) <= _instant(start) and _instant(e) >= _instant(end):
             return True
     return False
 
@@ -382,7 +385,7 @@ def _emit_split(
     """Emit alternating not-afk / AFK segments around the forced AFK windows."""
     cursor = event.start
     for s_start, s_end, src in forced_afk:
-        if s_start > cursor:
+        if _instant(s_start) > _instant(cursor):
             yield RepairedAFKEvent(
                 bucket=event.bucket, start=cursor, end=s_start,
                 status="not-afk", original_status="not-afk",
@@ -394,7 +397,7 @@ def _emit_split(
             repair_source=src,
         )
         cursor = s_end
-    if cursor < event.end:
+    if _instant(cursor) < _instant(event.end):
         yield RepairedAFKEvent(
             bucket=event.bucket, start=cursor, end=event.end,
             status="not-afk", original_status="not-afk",
