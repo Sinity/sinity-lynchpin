@@ -6,15 +6,15 @@ import argparse
 import json
 import shutil
 import sys
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
-from ..core.parse import local_tz
-from ..core.primitives import logical_date
+from ..core.parse import as_local
+from ..core.primitives import date_to_dt_range, logical_date
 from ..sources.activitywatch import (
     attention,
     circadian,
@@ -40,7 +40,7 @@ from .manifest_windows import merge_manifest_covered_dates
 from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
 
 
-ACTIVITYWATCH_DERIVED_SCHEMA_VERSION = 3
+ACTIVITYWATCH_DERIVED_SCHEMA_VERSION = 4
 
 # Bound on how many days of source events a single pass may hold in memory.
 # The heavy allocations are the AWEvent objects and span intermediates inside
@@ -57,6 +57,14 @@ def materialize_activitywatch_derived(
     root: Path | None = None,
     chunk_days: int = DEFAULT_CHUNK_DAYS,
 ) -> dict[str, Any]:
+    existing_path = activitywatch_derived_manifest_path(root)
+    previous = _load_json(existing_path)
+    if (previous and previous.get("schema_version") != ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
+            and (start is not None or end is not None)):
+        raise MaterializationError(
+            "activitywatch_derived_materialize",
+            reason="retired logical-day calculations require an unbounded rebuild; partial reuse is unavailable",
+        )
     start, end = _default_window(start, end)
     if end <= start:
         raise MaterializationError(
@@ -153,9 +161,9 @@ def _materialize_window(
     manifest_path = manifest_path or activitywatch_derived_manifest_path(root)
     output_dir = activitywatch_derived_dir(root)
     output_dir.mkdir(parents=True, exist_ok=True)
-    start_dt = datetime.combine(start, time.min, tzinfo=local_tz())
-    end_dt = datetime.combine(end, time.min, tzinfo=local_tz())
     end_inclusive = end - timedelta(days=1)
+    lower, upper = date_to_dt_range(start, end_inclusive)
+    start_dt, end_dt = as_local(lower), as_local(upper)
 
     window_rows = {
         "focus_spans": [

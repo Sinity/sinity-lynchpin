@@ -258,7 +258,7 @@ def test_materialize_activitywatch_derived_preserves_sparse_covered_dates(monkey
     manifest_path = tmp_path / "activitywatch/graph/manifest.json"
     manifest_path.parent.mkdir(parents=True)
     manifest_path.write_text(
-        '{"covered_dates": ["2026-06-05", "2026-06-07"], "first_date": "2026-06-05", "last_date": "2026-06-07"}\n',
+        json.dumps({"schema_version": mod.ACTIVITYWATCH_DERIVED_SCHEMA_VERSION, "covered_dates": ["2026-06-05", "2026-06-07"], "first_date": "2026-06-05", "last_date": "2026-06-07"}),
         encoding="utf-8",
     )
     canonical = tmp_path / "events.ndjson"
@@ -533,3 +533,46 @@ def test_failed_later_chunk_preserves_published_manifest(monkeypatch, tmp_path):
             start=date(2026, 8, 2), end=date(2026, 8, 4), root=tmp_path
         )
     assert manifest.read_bytes() == before
+
+
+def test_datetime_generators_cover_complete_logical_day(monkeypatch, tmp_path):
+    from zoneinfo import ZoneInfo
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    from lynchpin.sources.activitywatch_models import FocusSpan
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    zone = ZoneInfo("Europe/Warsaw")
+    start = date(2026, 5, 1)
+    end = start + timedelta(days=1)
+    tail = datetime(2026, 5, 2, 3, tzinfo=zone)
+    seen = {}
+    def focus(**kwargs):
+        seen["focus_spans"] = (kwargs["start"], kwargs["end"])
+        if kwargs["start"] <= tail < kwargs["end"]:
+            return [FocusSpan(tail, tail + timedelta(hours=1), "focused", "editor", "fixture", None, None)]
+        return []
+    monkeypatch.setattr(mod, "focus_spans", focus)
+    for name in ("project_focus_days", "deep_work", "loops"):
+        def capture(_name=name, **kwargs):
+            seen[_name] = (kwargs["start"], kwargs["end"])
+            return []
+        monkeypatch.setattr(mod, name, capture)
+    for name in ("daily_activity", "circadian", "fragmentation", "attention"):
+        monkeypatch.setattr(mod, name, lambda **kwargs: [])
+    monkeypatch.setattr(mod, "activitywatch_derived_input_files", lambda: ())
+    monkeypatch.setattr(mod, "_clip_to_real_coverage", lambda start, end: (start, end))
+    manifest = mod.materialize_activitywatch_derived(start=start, end=end, root=tmp_path)
+    assert manifest["row_counts"]["focus_spans"] == 1
+    assert all(lower.hour == upper.hour == 6 for lower, upper in seen.values())
+    assert all(lower.date() == start and upper.date() == end for lower, upper in seen.values())
+
+
+def test_retired_logical_day_product_refuses_partial_reuse(monkeypatch, tmp_path):
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    from lynchpin.core.errors import MaterializationError
+    manifest = mod.activitywatch_derived_manifest_path(tmp_path)
+    manifest.parent.mkdir(parents=True)
+    original = json.dumps({"schema_version": 3, "first_date": "2026-05-01", "last_date": "2026-05-02"})
+    manifest.write_text(original)
+    with pytest.raises(MaterializationError, match="unbounded rebuild"):
+        mod.materialize_activitywatch_derived(start=date(2026, 5, 1), end=date(2026, 5, 2), root=tmp_path)
+    assert manifest.read_text() == original

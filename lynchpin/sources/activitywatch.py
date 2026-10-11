@@ -28,6 +28,7 @@ from ..core.classify import classify
 from ..core.coverage import CoverageBounds
 from ..core.title_features import extract_title_features
 from ..core.primitives import (
+    DAY_BOUNDARY_HOUR,
     TopN,
     _instant,
     group_by_gap,
@@ -427,9 +428,11 @@ def _focus_spans_cached(
         add_boundary(max(w.start, start, key=_instant))
         add_boundary(min(w.end, end, key=_instant))
     # Day boundaries
-    cursor = datetime.combine(start.date(), time.min, tzinfo=start.tzinfo) + timedelta(
-        days=1
+    cursor = datetime.combine(
+        start.date(), time(hour=DAY_BOUNDARY_HOUR), tzinfo=start.tzinfo
     )
+    if _instant(cursor) <= _instant(start):
+        cursor += timedelta(days=1)
     while _instant(cursor) < _instant(end):
         add_boundary(cursor)
         cursor += timedelta(days=1)

@@ -711,3 +711,20 @@ def test_no_refresh_activitywatch_unavailable_index_is_explicit(monkeypatch, tmp
     monkeypatch.setattr(raw, "events_from_activitywatch_dbs", lambda *args, **kwargs: pytest.fail("unavailable index must not silently change sources"))
     with pytest.raises(SourceUnavailableError, match="missing selected partition"):
         list(raw.events("aw-watcher-window_", start=dt(9), end=dt(12), ensure=False))
+
+
+def test_focus_spans_split_at_logical_day_boundary(monkeypatch):
+    from zoneinfo import ZoneInfo
+    from lynchpin.sources import activitywatch as aw
+    from lynchpin.sources.activitywatch_models import _WindowSpan
+    zone = ZoneInfo("Europe/Warsaw")
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    start = datetime(2026, 5, 1, 5, tzinfo=zone)
+    end = datetime(2026, 5, 1, 7, tzinfo=zone)
+    monkeypatch.setattr(aw, "_repaired_afk_events_cached", lambda *args: ([(start, end)], []))
+    monkeypatch.setattr(aw, "_window_spans", lambda *args, **kwargs: [_WindowSpan(start, end, "editor", "fixture", None, None)])
+    monkeypatch.setattr(aw, "_attach_keypress_counts", lambda spans, **kwargs: spans)
+    aw._focus_spans_cached.cache_clear()
+    spans = aw._focus_spans_cached(start, end, 0.0, False, "logical-boundary")
+    assert [(s.start.hour, s.end.hour) for s in spans] == [(5, 6), (6, 7)]
+    assert [s.duration_s for s in spans] == [3600, 3600]
