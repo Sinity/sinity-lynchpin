@@ -143,10 +143,17 @@ def _load_invocations(
             conn,
             "work_observation",
             caller="workflow_mechanics",
+            start=start, end=end + timedelta(days=1) if end is not None else None,
+            projects=(project,) if project else None,
         )
-        if latest is not None:
-            clauses.append("refresh_id = ?")
-            params.append(latest)
+        if latest is None:
+            from lynchpin.core.errors import MaterializationError
+
+            raise MaterializationError(
+                "work_observation", reason="no materialized generation covers the requested scope",
+            )
+        clauses.append("refresh_id = ?")
+        params.append(latest)
     if start is not None:
         clauses.append("CAST(started_at AS DATE) >= ?")
         params.append(start)

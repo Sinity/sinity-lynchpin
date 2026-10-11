@@ -4,7 +4,8 @@ from datetime import date, datetime
 from typing import Any
 
 from lynchpin.analysis.machine.status import machine_status_payload
-from lynchpin.core.errors import SchemaVersionError
+from lynchpin.core.errors import MaterializationError, SchemaVersionError
+
 from lynchpin.mcp.tools._machine_helpers import (
     _analysis_artifact,
     _artifact_rows,
@@ -169,9 +170,9 @@ def machine_metrics_daily(
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = machine_module.best_materialized_refresh_id(conn, "machine_metric_sample", caller="machine_metrics_daily")
+            refresh_id = machine_module.best_materialized_refresh_id(conn, "machine_metric_sample", caller="machine_metrics_daily", start=start_d, end=materialization_end)
             if refresh_id is None:
-                return []
+                raise MaterializationError("machine_metrics_daily", reason="no materialized generation covers the requested scope")
 
         rows = load_machine_metric_daily(
             conn,
@@ -237,10 +238,10 @@ def machine_metrics_by_context(
             refresh_id = machine_module.best_materialized_refresh_id(
                 conn,
                 "machine_metric_sample",
-                caller="machine_metrics_by_context",
+                caller="machine_metrics_by_context", start=start_d, end=materialization_end,
             )
             if refresh_id is None:
-                return []
+                raise MaterializationError("machine_metrics_by_context", reason="no materialized generation covers the requested scope")
         generations_refresh_id = machine_module.best_materialized_refresh_id(
             conn,
             "sinnix_generation",
@@ -498,10 +499,10 @@ def machine_memory_breakdown(
             refresh_id = machine_module.best_materialized_refresh_id(
                 conn,
                 "machine_metric_sample",
-                caller="machine_memory_breakdown",
+                caller="machine_memory_breakdown", start=start_bound.date() if isinstance(start_bound, datetime) else start_bound, end=_exclusive_end(end_bound.date() if isinstance(end_bound, datetime) else end_bound),
             )
             if refresh_id is None:
-                return {"summary": {"row_count": 0}, "rows": []}
+                raise MaterializationError("machine_memory_breakdown", reason="no materialized generation covers the requested scope")
         rows = load_machine_memory_breakdown(
             conn,
             refresh_id=refresh_id,
@@ -589,10 +590,10 @@ def machine_pressure_explain(
             refresh_id = machine_module.best_materialized_refresh_id(
                 conn,
                 "machine_metric_sample",
-                caller="machine_pressure_explain",
+                caller="machine_pressure_explain", start=start_bound.date() if isinstance(start_bound, datetime) else start_bound, end=_exclusive_end(end_bound.date() if isinstance(end_bound, datetime) else end_bound),
             )
             if refresh_id is None:
-                return {"summary": {"row_count": 0}, "windows": []}
+                raise MaterializationError("machine_pressure_explain", reason="no materialized generation covers the requested scope")
         windows = load_machine_pressure_explainer(
             conn,
             refresh_id=refresh_id,
@@ -765,15 +766,10 @@ def machine_pressure_report(
             refresh_id = machine_module.best_materialized_refresh_id(
                 conn,
                 "machine_metric_sample",
-                caller="machine_pressure_report",
+                caller="machine_pressure_report", start=start_bound.date() if isinstance(start_bound, datetime) else start_bound, end=_exclusive_end(end_bound.date() if isinstance(end_bound, datetime) else end_bound),
             )
             if refresh_id is None:
-                return {
-                    "summary": {"row_count": 0, "status": "empty"},
-                    "memory": [],
-                    "worst_windows": {},
-                    "top_processes_by_pss": [],
-                }
+                raise MaterializationError("machine_pressure_report", reason="no materialized generation covers the requested scope")
         memory = load_machine_memory_breakdown(
             conn,
             refresh_id=refresh_id,
@@ -1012,10 +1008,10 @@ def machine_service_state_summary(
             refresh_id = machine_module.best_materialized_refresh_id(
                 conn,
                 "machine_service_state",
-                caller="machine_service_state_summary",
+                caller="machine_service_state_summary", start=start_d, end=materialization_end,
             )
             if refresh_id is None:
-                return []
+                raise MaterializationError("machine_service_state_summary", reason="no materialized generation covers the requested scope")
 
         rows = load_machine_service_state_summary(
             conn,
@@ -1173,10 +1169,10 @@ def machine_bufferbloat_summary(
             refresh_id = machine_module.best_materialized_refresh_id(
                 conn,
                 "machine_network_sample",
-                caller="machine_bufferbloat_summary",
+                caller="machine_bufferbloat_summary", start=start_d, end=materialization_end,
             )
             if refresh_id is None:
-                rows = []
+                raise MaterializationError("machine_bufferbloat_summary", reason="no materialized generation covers the requested scope")
             else:
                 rows = load_bufferbloat_daily(
                     conn,

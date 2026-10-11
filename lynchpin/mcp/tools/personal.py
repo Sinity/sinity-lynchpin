@@ -71,6 +71,8 @@ def spotify_daily(
                 "spotify_daily",
                 caller="spotify_daily",
                 tool="spotify_daily",
+                start=start_d,
+                end=materialization_end,
             )
 
         rows = load_spotify_daily_rows(
@@ -1012,6 +1014,8 @@ def personal_daily_signals(
                 "personal_daily_signal",
                 caller="personal_daily_signals",
                 tool="personal_daily_signals",
+                start=start_d,
+                end=materialization_end,
             )
         read = read_personal_daily_signals(
             conn,
@@ -1443,7 +1447,11 @@ def operator_rhythm(
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_materialized_refresh_id(conn, "commit_fact", caller="operator_rhythm")
+            refresh_id = best_materialized_refresh_id(conn, "commit_fact", caller="operator_rhythm", start=start_date, end=materialization_end, projects=(project,) if project else None)
+            if refresh_id is None:
+                from lynchpin.core.errors import MaterializationError
+
+                raise MaterializationError("operator_rhythm", reason="no materialized generation covers the requested scope")
         if refresh_id is not None:
             try:
                 commit_ts = load_commit_timestamps_in_range(

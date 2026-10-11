@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable, Iterable, Mapping
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from lynchpin.substrate._filters import add_date_filter, add_in_filter, build_where
@@ -111,7 +111,8 @@ def read_commit_facts(
 
     if refresh_id is None:
         refresh_id = best_materialized_refresh_id(
-            conn, "commit_fact", caller="read_commit_facts"
+            conn, "commit_fact", caller="read_commit_facts",
+            start=start, end=end + timedelta(days=1) if end is not None else None, projects=projects
         )
         if refresh_id is None:
             return {

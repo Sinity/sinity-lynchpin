@@ -518,21 +518,43 @@ def load_best_coverage_refresh_id(
     conn: "duckdb.DuckDBPyConnection",
     *,
     project: str,
+    start: date | None = None,
+    end: date | None = None,
 ) -> str | None:
-    """Choose refresh_id with best combined commit_fact + file_change_fact coverage."""
+    """Choose joint coverage; supplied bounds are half-open readiness limits."""
+    readiness_filter = ""
+    params: list[Any] = [project]
+    if start is not None or end is not None:
+        from lynchpin.substrate.snapshots import _table_exists
+
+        if not _table_exists(conn, "substrate_source_status"):
+            return None
+        for source in ("commits", "file_changes"):
+            clauses = ["status.refresh_id = cf.refresh_id", "status.source = ?", "status.status = 'ok'"]
+            params.append(source)
+            if start is not None:
+                clauses.append("status.window_start <= ?")
+                params.append(start)
+            if end is not None:
+                clauses.append("status.window_end >= ?")
+                params.append(end)
+            readiness_filter += (
+                " AND EXISTS (SELECT 1 FROM substrate_source_status status WHERE "
+                + " AND ".join(clauses) + ")"
+            )
     rows = conn.execute(
-        """
+        f"""
         SELECT cf.refresh_id, COUNT(DISTINCT cf.sha) AS commits,
                COUNT(fcf.path) AS file_changes
         FROM commit_fact cf
         LEFT JOIN file_change_fact fcf
-          ON fcf.refresh_id = cf.refresh_id AND fcf.sha = cf.sha
-        WHERE cf.project = ?
+          ON fcf.refresh_id = cf.refresh_id AND fcf.sha = cf.sha AND fcf.project = cf.project
+        WHERE cf.project = ?{readiness_filter}
         GROUP BY cf.refresh_id
         HAVING commits > 0 AND file_changes > 0
         ORDER BY file_changes DESC, commits DESC
         """,
-        [project],
+        params,
     ).fetchall()
     return rows[0][0] if rows else None
 

@@ -199,7 +199,7 @@ def best_materialized_refresh_id(
     # sparse days with no events). Select the newest ready build whose declared
     # window covers the request before considering any legacy table fallback.
     if source_name == "evidence_graph" and _table_exists(conn, "evidence_graph_build"):
-        clauses = ["readiness.source = 'evidence_graph'", "readiness.status = 'ok'"]
+        clauses = ["readiness.source = 'evidence_graph'", "readiness.status IN ('ok', 'empty')"]
         params: list[Any] = []
         if start is not None:
             clauses.append("graph.start_date <= ?")
@@ -222,6 +222,29 @@ def best_materialized_refresh_id(
             params,
         ).fetchall()
         if rows:
+            if table == "analysis_claim" and start is None and end is None and not projects:
+                from lynchpin.substrate.graph import _graph_lineage, _logical_graph_relation
+
+                # Unbounded claim browsing keeps its coverage-first policy,
+                # using the resolved graph rather than tail row counts.
+                ranked: list[tuple[int, Any, str]] = []
+                superseded = {
+                    partition_id
+                    for row in rows
+                    for partition_id, _ in _graph_lineage(conn, refresh_id=str(row[0]))[1:]
+                }
+                for row in rows:
+                    if str(row[0]) in superseded:
+                        continue
+                    relation, relation_params = _logical_graph_relation(
+                        conn, refresh_id=str(row[0]), table=table,
+                        columns=("claim_id",), key_columns=("claim_id",),
+                    )
+                    count = conn.execute(
+                        f"SELECT COUNT(*) FROM {relation}", relation_params,
+                    ).fetchone()[0]
+                    ranked.append((int(count), row[3], str(row[0])))
+                return max(ranked)[2]
             return str(rows[0][0])
         return None
 
@@ -314,12 +337,22 @@ def best_materialized_refresh_id(
                     ids,
                 ).fetchall()
                 counts = {str(row[0]): int(row[1]) for row in row_counts}
-                # An explicit empty status is a valid publication even though
-                # no physical fact rows exist for its refresh.
-                eligible = [
-                    item for item in eligible
-                    if counts.get(item[0], 0) > 0 or item[1] == "empty"
-                ]
+                # A committed lineage delta may inherit rows or only remove
+                # keys. Its physical cardinality is not product availability.
+                product_lineage = LINEAGE_PARTITION_TABLES.get(table, "")
+                product = product_lineage.removeprefix("substrate_product_lineage:")
+                valid: list[tuple[str, str, Any]] = []
+                for item in eligible:
+                    if counts.get(item[0], 0) > 0 or item[1] == "empty":
+                        valid.append(item)
+                    elif product_lineage.startswith("substrate_product_lineage:"):
+                        from lynchpin.substrate.personal import _lineage
+
+                        # The native resolver rejects missing predecessors and
+                        # cycles without counting or loading the inherited rows.
+                        _lineage(conn, product=product, refresh_id=item[0])
+                        valid.append(item)
+                eligible = valid
                 if eligible:
                     # A lineage partition's physical rows are only what it
                     # replaced; its resolved product includes every
@@ -369,6 +402,9 @@ def require_best_materialized_refresh_id(
     caller: str,
     tool: str,
     ledger_path: Path | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    projects: tuple[str, ...] | None = None,
 ) -> str:
     """Return the best materialized refresh id or raise when no data exists."""
 
@@ -377,6 +413,9 @@ def require_best_materialized_refresh_id(
         table,
         caller=caller,
         ledger_path=ledger_path,
+        start=start,
+        end=end,
+        projects=projects,
     )
     if refresh_id is None:
         raise RuntimeError(

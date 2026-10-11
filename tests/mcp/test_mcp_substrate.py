@@ -667,6 +667,26 @@ def test_analysis_claims_includes_end_date(tmp_path: Path, monkeypatch: pytest.M
     assert [row["summary"] for row in rows] == ["on-end"]
 
 
+
+def _promote_claim_graphs(conn) -> None:
+    """Give synthetic claims their production graph producer metadata."""
+    from lynchpin.core.evidence_graph import EvidenceGraph
+    from lynchpin.substrate.graph import promote_evidence_graph
+
+    rows = conn.execute(
+        "SELECT refresh_id, window_start, window_end, recorded_at "
+        "FROM substrate_source_status WHERE source = 'evidence_graph'"
+    ).fetchall()
+    for refresh_id, start, end, generated_at in rows:
+        promote_evidence_graph(
+            conn, refresh_id=refresh_id,
+            graph=EvidenceGraph(
+                start=start or date(2026, 5, 1),
+                end=end or date(2026, 6, 1),
+                generated_at=generated_at,
+            ),
+        )
+
 def test_analysis_claims_page_reports_and_continues_beyond_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -695,15 +715,12 @@ def test_analysis_claims_page_reports_and_continues_beyond_limit(
     ]
     with connect(substrate_path()) as conn:
         promote_analysis_claims(conn, refresh_id="rid-claims-old", claims=claims)
+        conn.execute("INSERT INTO substrate_source_status (refresh_id, source, kind, status, row_count, recorded_at) VALUES ('rid-claims-old', 'evidence_graph', 'source', 'ok', 3, TIMESTAMPTZ '2026-05-10 00:00:00+00')")
+        _promote_claim_graphs(conn)
 
-    selected = {"refresh_id": "rid-claims-old"}
     monkeypatch.setattr(
         "lynchpin.mcp.tools.substrate.ensure_substrate_materialized_for_read",
         lambda **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        "lynchpin.mcp.tools._utils.require_best_materialized_refresh_id",
-        lambda *_args, **_kwargs: selected["refresh_id"],
     )
 
     empty = analysis_claims_page(project="not-present")
@@ -736,7 +753,10 @@ def test_analysis_claims_page_reports_and_continues_beyond_limit(
                 payload={},
             )],
         )
-    selected["refresh_id"] = "rid-claims-new"
+        conn.execute("INSERT INTO substrate_source_status (refresh_id, source, kind, status, row_count, recorded_at) VALUES ('rid-claims-new', 'evidence_graph', 'source', 'ok', 4, TIMESTAMPTZ '2026-05-20 00:00:00+00')")
+        _promote_claim_graphs(conn)
+        conn.execute("UPDATE evidence_graph_build SET predecessor_refresh_id = 'rid-claims-old', predecessor_tail_start = DATE '2026-05-02' WHERE refresh_id = 'rid-claims-new'")
+    assert analysis_claims_page(limit=2)["refresh_id"] == "rid-claims-new"
 
     second = analysis_claims_page(
         refresh_id=first["refresh_id"],
@@ -851,9 +871,9 @@ def test_public_claim_routes_share_coverage_generation_and_pin_continuations(
                 refresh_id, source, kind, status, reason, row_count,
                 window_start, window_end, recorded_at
             ) VALUES
-              ('broad', 'analysis_claim', 'source', 'ok', NULL, 2,
+              ('broad', 'evidence_graph', 'source', 'ok', NULL, 2,
                DATE '2026-05-01', DATE '2026-05-31', TIMESTAMPTZ '2026-05-10 00:00:00+00'),
-              ('narrow', 'analysis_claim', 'source', 'ok', NULL, 1,
+              ('narrow', 'evidence_graph', 'source', 'ok', NULL, 1,
                DATE '2026-05-01', DATE '2026-05-01', TIMESTAMPTZ '2026-05-20 00:00:00+00')
             """
         )
@@ -862,6 +882,9 @@ def test_public_claim_routes_share_coverage_generation_and_pin_continuations(
             "INSERT OR REPLACE INTO substrate_meta VALUES "
             "('publication_at', '2026-05-21T00:00:00+00:00')"
         )
+
+    with connect(substrate_path()) as conn:
+        _promote_claim_graphs(conn)
 
     first = lynchpin_evidence(action="claims", limit=1)
     assert first["ok"] is True
@@ -896,7 +919,7 @@ def test_public_claim_routes_share_coverage_generation_and_pin_continuations(
         conn.execute(
             "INSERT INTO substrate_source_status "
             "(refresh_id, source, kind, status, row_count, recorded_at) VALUES "
-            "('newest', 'analysis_claim', 'source', 'ok', 1, "
+            "('newest', 'evidence_graph', 'source', 'ok', 1, "
             "TIMESTAMPTZ '2026-05-22 00:00:00+00')"
         )
         conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_id', 'pub-newest')")
@@ -955,9 +978,12 @@ def test_public_claim_routes_distinguish_unavailable_from_available_empty(
         conn.execute(
             "INSERT INTO substrate_source_status "
             "(refresh_id, source, kind, status, row_count, recorded_at) VALUES "
-            "('available', 'analysis_claim', 'source', 'ok', 1, "
+            "('available', 'evidence_graph', 'source', 'ok', 1, "
             "TIMESTAMPTZ '2026-05-22 00:00:00+00')"
         )
+
+    with connect(substrate_path()) as conn:
+        _promote_claim_graphs(conn)
 
     empty = lynchpin_evidence(action="claims", project="absent-project")
     assert empty["ok"] is True
@@ -1010,12 +1036,13 @@ def test_claim_evidence_default_snapshot_prefers_broad_claim_materialization(
                 refresh_id, source, kind, status, reason, row_count,
                 window_start, window_end, recorded_at
             ) VALUES
-              ('broad', 'analysis_claim', 'source', 'ok', NULL, 10,
+              ('broad', 'evidence_graph', 'source', 'ok', NULL, 10,
                DATE '2026-05-01', DATE '2026-05-31', TIMESTAMPTZ '2026-05-10 00:00:00+00'),
-              ('narrow', 'analysis_claim', 'source', 'ok', NULL, 1,
+              ('narrow', 'evidence_graph', 'source', 'ok', NULL, 1,
                DATE '2026-05-02', DATE '2026-05-02', TIMESTAMPTZ '2026-05-20 00:00:00+00')
             """
         )
+        _promote_claim_graphs(conn)
         evidence = load_claim_evidence(conn, claim_id="claim:shared")
 
     assert evidence is not None

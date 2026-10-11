@@ -429,3 +429,31 @@ def test_engineering_throughput_granularity_index_is_none_when_zero_clean_lines(
     # Verify clean lines are zero
     assert period["lines_added_clean"] == 0
     assert period["commit_count"] == 1
+
+
+def test_engineering_throughput_uses_joint_requested_coverage(monkeypatch, tmp_path) -> None:
+    import duckdb
+
+    db_path, older = _make_substrate(tmp_path)
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE substrate_source_status (refresh_id VARCHAR, source VARCHAR, status VARCHAR, window_start DATE, window_end DATE, recorded_at TIMESTAMPTZ)")
+        for table in ("commit_fact", "file_change_fact", "symbol_change"):
+            conn.execute(f"INSERT INTO {table} SELECT * REPLACE ('requested' AS refresh_id) FROM {table} WHERE refresh_id = ? LIMIT 1", [older])
+        for refresh_id, end in ((older, date(2026, 5, 10)), ("requested", date(2026, 6, 1))):
+            for source in ("commits", "file_changes"):
+                conn.execute("INSERT INTO substrate_source_status VALUES (?, ?, 'ok', DATE '2026-05-01', ?, TIMESTAMPTZ '2026-06-02 00:00:00+00')", [refresh_id, source, end])
+
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: db_path)
+    monkeypatch.setattr("lynchpin.mcp.tools.velocity.ensure_substrate_materialized_for_read", lambda **_kwargs: {"status": "ready"})
+    automatic = engineering_throughput(project="lp", start="2026-05-01", end="2026-05-31")
+    explicit = engineering_throughput(project="lp", start="2026-05-01", end="2026-05-31", refresh_id="requested")
+    assert automatic["refresh_id"] == "requested"
+    assert automatic["periods"] == explicit["periods"]
+
+    from lynchpin.substrate.readers_velocity import load_best_coverage_refresh_id
+    with duckdb.connect(str(db_path)) as conn:
+        # Unbounded browsing retains its combined-coverage policy.
+        assert load_best_coverage_refresh_id(conn, project="lp") == older
+        # Commit readiness alone cannot establish file-change coverage.
+        conn.execute("UPDATE substrate_source_status SET window_end = DATE '2026-05-10' WHERE refresh_id = 'requested' AND source = 'file_changes'")
+        assert load_best_coverage_refresh_id(conn, project="lp", start=date(2026, 5, 1), end=date(2026, 6, 1)) is None

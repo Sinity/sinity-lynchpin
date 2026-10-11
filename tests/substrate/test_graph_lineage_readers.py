@@ -236,3 +236,43 @@ def test_claim_evidence_reads_historical_nodes_and_shadows_claim_and_edge(
         == "new"
     )
     assert len(claim["evidence_edges"]) == 1
+
+
+def test_graph_lineage_rejects_cycles_and_missing_predecessors(tmp_path) -> None:
+    import pytest
+
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.graph import _graph_lineage
+
+    with connect(tmp_path / "invalid.duckdb") as conn:
+        apply_schema(conn)
+        conn.execute("INSERT INTO evidence_graph_build (refresh_id, start_date, end_date, mode, generated_at, predecessor_refresh_id, predecessor_tail_start) VALUES ('a', DATE '2026-05-01', DATE '2026-06-01', 'materialized', CURRENT_TIMESTAMP, 'b', DATE '2026-05-02'), ('b', DATE '2026-05-01', DATE '2026-06-01', 'materialized', CURRENT_TIMESTAMP, 'a', DATE '2026-05-02')")
+        with pytest.raises(ValueError, match="cycle in graph"):
+            _graph_lineage(conn, refresh_id="a")
+        conn.execute("UPDATE evidence_graph_build SET predecessor_refresh_id = 'missing' WHERE refresh_id = 'b'")
+        with pytest.raises(ValueError, match="missing graph predecessor"):
+            _graph_lineage(conn, refresh_id="a")
+        conn.execute("UPDATE evidence_graph_build SET predecessor_tail_start = NULL WHERE refresh_id = 'b'")
+        with pytest.raises(ValueError, match="incomplete graph predecessor"):
+            _graph_lineage(conn, refresh_id="a")
+
+
+def test_empty_graph_head_remains_available(tmp_path) -> None:
+    from datetime import date, datetime, timezone
+
+    from lynchpin.core.evidence_graph import EvidenceGraph
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.graph import promote_evidence_graph
+    from lynchpin.substrate.snapshots import best_materialized_refresh_id
+
+    with connect(tmp_path / "empty.duckdb") as conn:
+        apply_schema(conn)
+        promote_evidence_graph(conn, refresh_id="empty", graph=EvidenceGraph(
+            start=date(2026, 5, 1), end=date(2026, 6, 1),
+            generated_at=datetime(2026, 6, 2, tzinfo=timezone.utc),
+        ))
+        conn.execute("INSERT INTO substrate_source_status (refresh_id, source, kind, status, row_count, window_start, window_end, recorded_at) VALUES ('empty', 'evidence_graph', 'source', 'empty', 0, DATE '2026-05-01', DATE '2026-06-01', CURRENT_TIMESTAMP)")
+        for table in ("evidence_node", "analysis_claim"):
+            assert best_materialized_refresh_id(conn, table, caller="test", start=date(2026, 5, 1), end=date(2026, 6, 1)) == "empty"
+        conn.execute("UPDATE substrate_source_status SET status = 'error'")
+        assert best_materialized_refresh_id(conn, "evidence_node", caller="test") is None

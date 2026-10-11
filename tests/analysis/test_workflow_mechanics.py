@@ -158,3 +158,18 @@ def _invocation(
         process_count_max=None,
         resource_sample_count=None,
     )
+
+
+def test_workflow_mechanics_distinguishes_unavailable_from_empty(tmp_path) -> None:
+    import pytest
+
+    from lynchpin.core.errors import MaterializationError
+
+    db = tmp_path / "empty.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+    with pytest.raises(MaterializationError, match="no materialized generation"):
+        analyze_workflow_mechanics(path=str(db))
+    with connect(db) as conn:
+        conn.execute("INSERT INTO substrate_source_status (refresh_id, source, kind, status, row_count, recorded_at) VALUES ('empty', 'work_observations', 'source', 'empty', 0, CURRENT_TIMESTAMP)")
+    assert analyze_workflow_mechanics(path=str(db)).invocation_count == 0

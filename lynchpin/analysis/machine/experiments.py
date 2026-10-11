@@ -162,6 +162,7 @@ def analyze_machine_experiment_claims(
                 conn,
                 "machine_experiment_run",
                 caller="machine_experiment_claims",
+                start=start, end=end + timedelta(days=1) if end is not None else None,
             )
         runs = _runs(conn, start=start, end=end, refresh_id=refresh_id)
         episodes = _episodes_for_runs(runs, path=path) if include_episodes else []

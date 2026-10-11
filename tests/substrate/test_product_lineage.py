@@ -264,3 +264,48 @@ def test_failed_title_promotion_records_an_error_for_candidate_rejection(
     assert status == ("error", 0)
     assert run_status == "error"
     assert lineage == 0
+
+
+@pytest.mark.parametrize("remove", [False, True])
+def test_default_title_selection_matches_zero_row_lineage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, remove: bool,
+) -> None:
+    from lynchpin.substrate.snapshots import best_materialized_refresh_id
+
+    titles = tmp_path / "titles.ndjson"
+    titles.write_text("\n".join(json.dumps(_title(key)) for key in ("keep", "remove")) + "\n")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"revision": 1}))
+    with connect(tmp_path / "sub.duckdb") as conn:
+        apply_schema(conn)
+        _run_title_promotion(monkeypatch, conn, tmp_path, "old")
+        if remove:
+            titles.write_text(json.dumps(_title("keep")) + "\n")
+            manifest.write_text(json.dumps({"revision": 2}))
+        _run_title_promotion(monkeypatch, conn, tmp_path, "new")
+        assert conn.execute("SELECT count(*) FROM title_classification WHERE refresh_id='new'").fetchone() == (0,)
+        selected = best_materialized_refresh_id(conn, "title_classification", caller="test")
+        assert selected == "new"
+        columns = ("title_hash",)
+        explicit = _resolved_rows(conn, product="title_metadata", refresh_id="new", table="title_classification", columns=columns, key=lambda row: row[0])
+        default = _resolved_rows(conn, product="title_metadata", refresh_id=selected, table="title_classification", columns=columns, key=lambda row: row[0])
+        assert default == explicit == ([("keep",)] if remove else [("keep",), ("remove",)])
+
+
+@pytest.mark.parametrize("broken", ["missing", "cycle", "failed"])
+def test_zero_row_lineage_rejects_unreadable_or_failed_head(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, broken: str,
+) -> None:
+    from lynchpin.substrate.snapshots import best_materialized_refresh_id
+    (tmp_path / "titles.ndjson").write_text(json.dumps(_title("keep")) + "\n")
+    (tmp_path / "manifest.json").write_text(json.dumps({"revision": 1}))
+    with connect(tmp_path / "sub.duckdb") as conn:
+        apply_schema(conn)
+        _run_title_promotion(monkeypatch, conn, tmp_path, "old")
+        _run_title_promotion(monkeypatch, conn, tmp_path, "new")
+        if broken == "failed":
+            conn.execute("UPDATE substrate_source_status SET status='error' WHERE refresh_id='new'")
+            assert best_materialized_refresh_id(conn, "title_classification", caller="test") == "old"
+        else:
+            conn.execute("UPDATE substrate_product_lineage SET predecessor_refresh_id=? WHERE refresh_id='new'", ["missing" if broken == "missing" else "new"])
+            assert best_materialized_refresh_id(conn, "title_classification", caller="test") is None

@@ -475,10 +475,16 @@ def _graph_lineage(
             build_row if build_row is not None else (None, None)
         )
     lineage: list[tuple[str, date | None]] = [(refresh_id, None)]
+    seen = {refresh_id}
     current_refresh_id = predecessor_refresh_id
     current_tail_start = predecessor_tail_start
     effective_cutoff: date | None = None
+    if (current_refresh_id is None) != (current_tail_start is None):
+        raise ValueError(f"incomplete graph predecessor for refresh {refresh_id}")
     while current_refresh_id is not None and current_tail_start is not None:
+        if str(current_refresh_id) in seen:
+            raise ValueError(f"cycle in graph substrate lineage at {current_refresh_id}")
+        seen.add(str(current_refresh_id))
         effective_cutoff = (
             current_tail_start
             if effective_cutoff is None
@@ -490,9 +496,11 @@ def _graph_lineage(
             "FROM evidence_graph_build WHERE refresh_id = ?",
             [current_refresh_id],
         ).fetchone()
-        current_refresh_id, current_tail_start = (
-            parent if parent is not None else (None, None)
-        )
+        if parent is None:
+            raise ValueError(f"missing graph predecessor {current_refresh_id!r}")
+        current_refresh_id, current_tail_start = parent
+        if (current_refresh_id is None) != (current_tail_start is None):
+            raise ValueError(f"incomplete graph predecessor for refresh {lineage[-1][0]}")
     return lineage
 
 

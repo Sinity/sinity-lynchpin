@@ -8,7 +8,7 @@ canonical writer or merged generations fails here.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -80,7 +80,7 @@ def _seed(path: Path, generations: dict[str, list[str]]) -> None:
                     refresh_id,
                     len(shas),
                     START,
-                    END,
+                    END + timedelta(days=1),
                     datetime(2026, 6, 1 + offset, tzinfo=UTC),
                 ],
             )

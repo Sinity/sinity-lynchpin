@@ -265,3 +265,10 @@ exec = ["just", "verify-polylogue-contract"]
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"
+
+[operations.verify_generation_selection]
+description = "Verify logical generation selection and scoped native readers"
+exec = ["just", "verify-generation-selection"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"

@@ -847,7 +847,7 @@ def _read_analysis_claims(
     expected_publication_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     """Persisted analysis claims with confidence, caveats, and evidence IDs."""
-    from datetime import date as _date
+    from datetime import date as _date, timedelta
 
     from lynchpin.mcp.tools._utils import best_materialized_refresh_id
     from lynchpin.substrate.claims import load_analysis_claims
@@ -873,6 +873,8 @@ def _read_analysis_claims(
                 conn,
                 "analysis_claim",
                 caller="analysis_claims",
+                start=start_d, end=end_d + timedelta(days=1) if end_d is not None else None,
+                projects=(project,) if project else None,
             )
         if refresh_id is None:
             raise RuntimeError(

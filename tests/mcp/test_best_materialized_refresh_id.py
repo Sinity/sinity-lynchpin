@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+import pytest
+
 from lynchpin.substrate.snapshots import (
     best_materialized_refresh_id,
     latest_promotion_snapshot,
@@ -845,3 +847,48 @@ def test_fallback_prefers_high_coverage_over_recent_when_no_status(
         f"expected the 5-row materialization to win over the 1-row recent materialization "
         f"in the no-status fallback, got {result!r}"
     )
+
+
+def test_activity_content_selector_uses_producer_source_name() -> None:
+    import duckdb
+    from lynchpin.analysis.active.substrate_promote_status import SOURCE_ACTIVITY_CONTENT
+
+    with duckdb.connect() as conn:
+        conn.execute("CREATE TABLE activity_content_day (refresh_id VARCHAR, date DATE)")
+        conn.execute("CREATE TABLE substrate_source_status (refresh_id VARCHAR, source VARCHAR, status VARCHAR, recorded_at TIMESTAMPTZ, window_start DATE, window_end DATE)")
+        conn.execute("INSERT INTO activity_content_day VALUES ('old', '2026-01-01'), ('old', '2026-01-02'), ('new', '2026-01-20')")
+        for rid, day, stamp in [("old", 1, 1), ("new", 20, 2)]:
+            conn.execute("INSERT INTO substrate_source_status VALUES (?, ?, 'ok', ?, ?, ?)", [rid, SOURCE_ACTIVITY_CONTENT, datetime(2026, 2, stamp, tzinfo=timezone.utc), date(2026, 1, day), date(2026, 1, day + (2 if rid == 'old' else 1))])
+        assert best_materialized_refresh_id(conn, "activity_content_day", caller="test", start=date(2026, 1, 20), end=date(2026, 1, 21)) == "new"
+
+
+@pytest.mark.parametrize("name,source", [
+    ("machine_metrics_daily", "machine"),
+    ("machine_metrics_by_context", "machine"),
+    ("machine_memory_breakdown", "machine"),
+    ("machine_pressure_explain", "machine"),
+    ("machine_pressure_report", "machine"),
+    ("machine_service_state_summary", "machine_service_state"),
+    ("machine_bufferbloat_summary", "machine_network_sample"),
+])
+def test_machine_readers_distinguish_missing_generation_from_empty(name, source, tmp_path, monkeypatch) -> None:
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.mcp.tools import machine_status
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    db = tmp_path / "missing.duckdb"
+    empty_db = tmp_path / "empty.duckdb"
+    # Construct both non-serving fixture databases before selecting a canonical path.
+    with connect(db) as conn:
+        apply_schema(conn)
+    with connect(empty_db) as conn:
+        apply_schema(conn)
+        conn.execute("INSERT INTO substrate_source_status (refresh_id, source, kind, status, row_count, window_start, window_end, recorded_at) VALUES ('empty', ?, 'source', 'empty', 0, DATE '2026-05-01', DATE '2026-06-01', CURRENT_TIMESTAMP)", [source])
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: db)
+    monkeypatch.setattr("lynchpin.mcp.tools._utils.ensure_substrate_materialized_for_read", lambda **_kwargs: {"status": "ready"})
+    read = getattr(machine_status, name)
+    with pytest.raises(MaterializationError, match="no materialized generation"):
+        read(start="2026-05-01", end="2026-05-31")
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: empty_db)
+    # A successful empty source remains a normal empty response.
+    read(start="2026-05-01", end="2026-05-31")

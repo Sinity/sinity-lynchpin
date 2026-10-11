@@ -62,3 +62,9 @@ tool-inventory:
     @echo ""
     @echo "=== Dev ==="
     @echo "  just test | just lint | just typecheck | just check"
+
+[positional-arguments]
+verify-generation-selection *args:
+    just lint
+    just typecheck
+    pytest -q tests/substrate/test_product_lineage.py tests/substrate/test_read_snapshot.py tests/substrate/test_graph_lineage_readers.py tests/mcp/test_best_materialized_refresh_id.py tests/mcp/test_mcp_personal.py tests/analysis/test_substrate_promote_personal.py tests/mcp/test_mcp_substrate.py tests/mcp/test_mcp_public.py tests/analysis/test_analysis_machine_experiments.py tests/analysis/test_commit_fact_default_readers.py tests/analysis/test_workflow_mechanics.py tests/mcp/test_engineering_throughput.py tests/mcp/test_mcp_velocity.py "$@"

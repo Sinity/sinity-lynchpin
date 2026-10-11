@@ -1565,3 +1565,24 @@ def test_public_bookmark_daily_includes_selected_end_day(monkeypatch: pytest.Mon
     assert [row["date"] for row in rows] == ["2026-05-02"]
     assert rows[0]["bookmark_count"] == 1
     assert bounds == [(date(2026, 5, 2), date(2026, 5, 3))]
+
+
+def test_spotify_bounded_default_matches_explicit_retained_generation(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+    from lynchpin.analysis.active.substrate_promote_status import record_source_status
+    from lynchpin.mcp.tools import personal
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.personal import promote_spotify_daily_rows
+
+    path = tmp_path / "substrate.duckdb"
+    with connect(path) as conn:
+        apply_schema(conn)
+        for rid, days in [("old", [1, 2]), ("new", [20])]:
+            promote_spotify_daily_rows(conn, refresh_id=rid, rows=[SimpleNamespace(date=date(2026, 1, day), track_count=1, minutes_played=5.0, unique_artists=1, unique_tracks=1, top_artists=[], top_tracks=[]) for day in days])
+            record_source_status(conn, refresh_id=rid, source="spotify_daily", status="ok", reason=None, row_count=len(days), window_start=date(2026, 1, days[0]), window_end=date(2026, 1, days[-1] + 1))
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: path)
+    monkeypatch.setattr(personal, "_ensure_source_materialized_for_read", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(personal, "ensure_substrate_materialized_for_read", lambda **_kwargs: None)
+    expected = personal.spotify_daily(start="2026-01-20", end="2026-01-20", refresh_id="new")
+    assert len(expected) == 1
+    assert personal.spotify_daily(start="2026-01-20", end="2026-01-20") == expected

@@ -6,6 +6,7 @@ from lynchpin.mcp.tools._machine_helpers import (
     _artifact_rows,
     _best_refresh_or_none,
     _ensure_work_observation_substrate_for_read,
+    _exclusive_end,
     _float_or_zero,
     _json_safe,
     _median,
@@ -409,7 +410,8 @@ def machine_work_observation_daily(
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = machine_module.best_materialized_refresh_id(
-                conn, "work_observation", caller="machine_work_observation_daily"
+                conn, "work_observation", caller="machine_work_observation_daily",
+                start=start_d, end=_exclusive_end(end_d), projects=(project,) if project else None
             )
             if refresh_id is None:
                 return {"summary": {"status": "missing"}, "rows": []}

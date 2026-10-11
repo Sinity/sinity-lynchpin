@@ -563,6 +563,7 @@ def engineering_throughput(
         }
     """
     from datetime import date as _d
+    from datetime import timedelta
 
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_velocity import (
@@ -622,9 +623,15 @@ def engineering_throughput(
             # refresh's file_change_fact has narrow project scope (e.g.
             # current-state:2024-09-01 only covers intercept-bounce +
             # knowledgebase, not sinex/sinnix/sinity-lynchpin).
-            refresh_id = load_best_coverage_refresh_id(conn, project=project)
+            selection_end = end_d + timedelta(days=1) if end_d is not None else None
+            refresh_id = load_best_coverage_refresh_id(
+                conn, project=project, start=start_d, end=selection_end,
+            )
             if refresh_id is None:
-                refresh_id = best_materialized_refresh_id(conn, "commit_fact", caller="project_file_change_profile")
+                refresh_id = best_materialized_refresh_id(
+                    conn, "commit_fact", caller="engineering_throughput",
+                    start=start_d, end=selection_end, projects=(project,),
+                )
 
         if refresh_id is None:
             return {
