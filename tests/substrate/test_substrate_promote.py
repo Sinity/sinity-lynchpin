@@ -23,6 +23,51 @@ from types import SimpleNamespace
 UTC = timezone.utc
 
 
+@pytest.mark.parametrize("source", ["commits", "file_changes"])
+def test_malformed_fact_artifact_cannot_publish_as_empty(tmp_path, monkeypatch, source):
+    from lynchpin.analysis.active.substrate_promote import run_substrate_promote
+    from lynchpin.substrate.connection import CandidateGenerationRejected, substrate_path
+
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+    _reload_config(monkeypatch)
+    serving = substrate_path()
+    before = serving.read_bytes()
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text('{"incomplete":')
+    with pytest.raises(CandidateGenerationRejected, match="error result"):
+        run_substrate_promote(
+            commit_facts_file=str(malformed), file_changes_file=str(malformed),
+            symbol_changes_file=str(tmp_path / "absent.json"), sources={source},
+            write_evidence_graph=False, refresh_id="fixture:malformed",
+        )
+    assert serving.read_bytes() == before
+    with duckdb.connect(str(serving), read_only=True) as conn:
+        assert conn.execute("SELECT count(*) FROM substrate_promotion_run WHERE refresh_id = 'fixture:malformed'").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("source_status", ["partial", "degraded"])
+def test_incomplete_source_keeps_native_promotion_degraded(tmp_path, monkeypatch, source_status):
+    from lynchpin.analysis.active import substrate_promote
+    from lynchpin.analysis.active.substrate_promote_status import record_source_status
+    from lynchpin.substrate.connection import substrate_path
+
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+    _reload_config(monkeypatch)
+
+    def incomplete(conn, **kwargs):
+        record_source_status(conn, refresh_id=kwargs["refresh_id"], source="work_observations", status=source_status, reason="fixture missing coverage", row_count=0)
+
+    monkeypatch.setattr(substrate_promote, "promote_work_sources", incomplete)
+    result = substrate_promote.run_substrate_promote(
+        commit_facts_file="unused", file_changes_file="unused", symbol_changes_file="unused",
+        sources={"work_observations"}, write_evidence_graph=False, refresh_id="fixture:incomplete",
+    )
+    assert result.status == "degraded"
+    assert "fixture missing coverage" in result.reason
+    with duckdb.connect(str(substrate_path()), read_only=True) as conn:
+        assert conn.execute("SELECT status FROM substrate_promotion_run WHERE refresh_id = 'fixture:incomplete'").fetchone()[0] == "degraded"
+
+
 @pytest.fixture(autouse=True)
 def _isolate_live_polylogue(monkeypatch: pytest.MonkeyPatch) -> None:
     """Substrate-promotion unit tests must not ingest live personal archives."""

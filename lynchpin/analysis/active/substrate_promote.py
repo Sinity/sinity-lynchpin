@@ -441,13 +441,13 @@ def _source_statuses(conn: object, refresh_id: str) -> tuple[PromotionSourceStat
 def _run_status(statuses: tuple[PromotionSourceStatus, ...]) -> str:
     if any(row.status == "error" for row in statuses):
         return "error"
-    if any(row.status == "unavailable" for row in statuses):
+    if any(row.status in {"unavailable", "partial", "degraded"} for row in statuses):
         return "degraded"
     return "ok"
 
 
 def _run_reason(statuses: tuple[PromotionSourceStatus, ...]) -> str | None:
-    bad = [row for row in statuses if row.status in {"error", "unavailable"}]
+    bad = [row for row in statuses if row.status in {"error", "unavailable", "partial", "degraded"}]
     if not bad:
         return None
     return "; ".join(f"{row.source}: {row.reason or row.status}" for row in bad[:6])

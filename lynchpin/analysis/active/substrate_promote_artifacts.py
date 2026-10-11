@@ -44,10 +44,12 @@ def promote_artifact_sources(
 
     # ── commits: read JSON, hydrate to GitCommitFact, promote ────────────
     if selection.includes(SOURCE_COMMITS):
+        hydration_failed = False
         try:
             commit_facts, commit_annotations = _load_commit_facts(commit_facts_file)
             _merge_ai_attribution(commit_annotations, ai_attribution_file)
         except Exception as exc:
+            hydration_failed = True
             log.warning("substrate_promote: commit facts hydration failed: %s", exc)
             record_source_status(
                 conn,
@@ -86,7 +88,7 @@ def promote_artifact_sources(
                     reason=str(exc),
                     row_count=0,
                 )
-        else:
+        elif not hydration_failed:
             log.debug("substrate_promote: no commit facts to promote")
             if not Path(commit_facts_file).exists():
                 record_source_status(
@@ -111,9 +113,11 @@ def promote_artifact_sources(
 
     # ── file_changes: same pattern ────────────────────────────────────────
     if selection.includes(SOURCE_FILE_CHANGES):
+        hydration_failed = False
         try:
             fc_facts, fc_annotations = _load_file_change_facts(file_changes_file)
         except Exception as exc:
+            hydration_failed = True
             log.warning("substrate_promote: file change hydration failed: %s", exc)
             record_source_status(
                 conn,
@@ -152,7 +156,7 @@ def promote_artifact_sources(
                     reason=str(exc),
                     row_count=0,
                 )
-        else:
+        elif not hydration_failed:
             log.debug("substrate_promote: no file change facts to promote")
             if not Path(file_changes_file).exists():
                 record_source_status(
