@@ -1976,11 +1976,16 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
         day for day, path in paths_by_day.items() if not path.is_file()
     ]
     covered_day_keys = {day.isoformat() for day in covered_dates}
+    bounds = meta.get("max_end_ns_by_day")
+    bounds_valid = (isinstance(bounds, dict) and set(bounds) == set(paths_by_day)
+                    and all(isinstance(value, int) and not isinstance(value, bool)
+                            for value in bounds.values()))
     products_ready = (
         _manifest_valid(manifest)
         and bool(covered_dates)
         and len(product_paths) == len(covered_dates)
         and (not schema_current or set(paths_by_day) == covered_day_keys)
+        and (not schema_current or bounds_valid)
         and not missing_days
     )
     inputs_current = _manifest_inputs_current(meta, input_files)
@@ -1995,6 +2000,9 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
             "ActivityWatch event index manifest names missing partitions: "
             + ", ".join(missing_days[:8])
         )
+    elif schema_current and not bounds_valid:
+        status = "partial"
+        reason = "ActivityWatch event index partition interval bounds are missing or invalid; full rebuild required"
     elif products_ready and not schema_current:
         status: Status = "partial"
         reason = "ActivityWatch event index schema is older than the current reader contract"

@@ -194,6 +194,8 @@ def test_materialize_activitywatch_event_index_replaces_only_requested_window(mo
         json.dumps(
             {
                 "transform_recipe": activitywatch_event_index_recipe(),
+                "schema_version": 3,
+                "max_end_ns_by_day": {"2026-06-05": 1, "2026-06-06": 1, "2026-06-07": 1},
                 "product_paths": {
                     "2026-06-05": str(day_before),
                     "2026-06-06": str(day_window),
@@ -254,9 +256,10 @@ def test_event_index_repairs_missing_member_only_inside_requested_window(
         manifest_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 2,
+                    "schema_version": 3,
                 "transform_recipe": activitywatch_event_index_recipe(),
                     "product_paths": {missing_day.isoformat(): str(missing)},
+                    "max_end_ns_by_day": {missing_day.isoformat(): 1},
                     "row_counts": {missing_day.isoformat(): 1},
                     "covered_dates": [missing_day.isoformat()],
                 }
@@ -348,9 +351,10 @@ def test_failed_index_generation_does_not_replace_serving_manifest(monkeypatch, 
     serving.write_text('{"data":{"app":"serving"}}\n', encoding="utf-8")
     manifest_path = tmp_path / "activitywatch/events_by_day/manifest.json"
     previous = {
-        "schema_version": 2,
+        "schema_version": 3,
                 "transform_recipe": activitywatch_event_index_recipe(),
         "product_paths": {"2026-06-06": str(serving)},
+        "max_end_ns_by_day": {"2026-06-06": 1},
         "row_counts": {"2026-06-06": 1},
         "covered_dates": ["2026-06-06"],
     }
@@ -537,3 +541,59 @@ def test_missing_recipe_refuses_partial_relabelling(monkeypatch, tmp_path):
     with pytest.raises(MaterializationError, match="not recorded"):
         mod.materialize_activitywatch_event_index(root=tmp_path, start=date(2026, 6, 6), end=date(2026, 6, 7))
     assert path.read_bytes() == before
+
+
+def test_index_keeps_long_event_overlap_beyond_previous_logical_day(monkeypatch, tmp_path):
+    from zoneinfo import ZoneInfo
+    from lynchpin.ingest import activitywatch_event_index_materialize as mod
+    from lynchpin.sources.activitywatch_event_index import iter_indexed_activitywatch_events
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    zone = ZoneInfo("Europe/Warsaw")
+    source = tmp_path / "source.sqlite"
+    source.write_bytes(b"fixture")
+    monkeypatch.setattr(mod, "activitywatch_input_files", lambda cfg: (source,))
+    long_start = datetime(2026, 5, 1, 5, tzinfo=zone)
+    long_end = datetime(2026, 5, 2, 7, tzinfo=zone)
+    payload = {"bucket": "aw-watcher-afk_fixture", "start": long_start.isoformat(), "end": long_end.isoformat(), "data": {"status": "not-afk"}}
+    monkeypatch.setattr(mod, "_iter_live_rows", lambda **kwargs: iter([payload]))
+    mod.materialize_activitywatch_event_index(root=tmp_path, full=True)
+    rows = list(iter_indexed_activitywatch_events(bucket_prefix="aw-watcher-afk_", start=datetime(2026, 5, 2, 6, tzinfo=zone), end=datetime(2026, 5, 2, 8, tzinfo=zone), root=tmp_path))
+    assert len(rows) == 1
+    assert rows[0].start.timestamp() == long_start.timestamp()
+    assert rows[0].end.timestamp() == long_end.timestamp()
+    assert rows[0].data == payload["data"]
+
+
+@pytest.mark.parametrize("bounds", [None, {}, {"2026-06-06": True}])
+def test_current_index_rejects_missing_or_invalid_overlap_bounds(tmp_path, bounds):
+    from lynchpin.core.errors import SourceUnavailableError
+    from lynchpin.sources.activitywatch_event_index import (
+        activitywatch_event_index_manifest_path, iter_indexed_activitywatch_events,
+    )
+    manifest = activitywatch_event_index_manifest_path(tmp_path)
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({
+        "schema_version": 3, "transform_recipe": activitywatch_event_index_recipe(),
+        "product_paths": {"2026-06-06": str(tmp_path / "unused.ndjson")},
+        "max_end_ns_by_day": bounds,
+    }))
+    with pytest.raises(SourceUnavailableError, match="interval bounds"):
+        list(iter_indexed_activitywatch_events(bucket_prefix="aw-watcher-afk_",
+            start=datetime(2026, 6, 6, 8, tzinfo=timezone.utc),
+            end=datetime(2026, 6, 6, 9, tzinfo=timezone.utc), root=tmp_path))
+
+
+def test_index_does_not_open_partitions_ending_before_query(tmp_path):
+    from lynchpin.sources.activitywatch_event_index import (
+        activitywatch_event_index_manifest_path, iter_indexed_activitywatch_events,
+    )
+    manifest = activitywatch_event_index_manifest_path(tmp_path)
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({
+        "schema_version": 3, "transform_recipe": activitywatch_event_index_recipe(),
+        "product_paths": {"2026-06-05": str(tmp_path / "unavailable-old.ndjson")},
+        "max_end_ns_by_day": {"2026-06-05": 1},
+    }))
+    assert list(iter_indexed_activitywatch_events(bucket_prefix="aw-watcher-afk_",
+        start=datetime(2026, 6, 6, 8, tzinfo=timezone.utc),
+        end=datetime(2026, 6, 6, 9, tzinfo=timezone.utc), root=tmp_path)) == []

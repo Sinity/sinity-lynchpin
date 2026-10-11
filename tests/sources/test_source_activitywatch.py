@@ -675,7 +675,7 @@ def test_afk_cache_distinguishes_repeated_hour_requests(monkeypatch, api, status
 def test_no_refresh_activitywatch_read_uses_retained_index(monkeypatch, tmp_path):
     from lynchpin.sources import activitywatch_raw as raw
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"schema_version": 2, "first_date": "2026-03-14", "last_date": "2026-03-16"}))
+    manifest.write_text(json.dumps({"schema_version": 3, "first_date": "2026-03-14", "last_date": "2026-03-16"}))
     monkeypatch.setattr(raw, "activitywatch_event_index_manifest_path", lambda: manifest)
     row = raw.AWEvent("aw-watcher-window_fixture", dt(10), dt(11), {"app": "editor"})
     monkeypatch.setattr(raw, "iter_indexed_activitywatch_events", lambda **kwargs: iter([row]))
@@ -690,7 +690,7 @@ def test_no_refresh_activitywatch_read_uses_retained_index(monkeypatch, tmp_path
 def test_no_refresh_activitywatch_unindexed_tail_and_explicit_db_stay_native(monkeypatch, tmp_path, explicit):
     from lynchpin.sources import activitywatch_raw as raw
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"schema_version": 2, "first_date": "2026-03-13", "last_date": "2026-03-14"}))
+    manifest.write_text(json.dumps({"schema_version": 3, "first_date": "2026-03-13", "last_date": "2026-03-14"}))
     monkeypatch.setattr(raw, "activitywatch_event_index_manifest_path", lambda: manifest)
     row = raw.AWEvent("aw-watcher-window_fixture", dt(10), dt(11), {})
     monkeypatch.setattr(raw, "events_from_activitywatch_dbs", lambda *args, **kwargs: iter([row]))
@@ -703,7 +703,7 @@ def test_no_refresh_activitywatch_unavailable_index_is_explicit(monkeypatch, tmp
     from lynchpin.sources import activitywatch_raw as raw
     from lynchpin.core.errors import SourceUnavailableError
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"schema_version": 2, "first_date": "2026-03-14", "last_date": "2026-03-16"}))
+    manifest.write_text(json.dumps({"schema_version": 3, "first_date": "2026-03-14", "last_date": "2026-03-16"}))
     monkeypatch.setattr(raw, "activitywatch_event_index_manifest_path", lambda: manifest)
     def unavailable(**kwargs):
         raise SourceUnavailableError("activitywatch_event_index", reason="missing selected partition")

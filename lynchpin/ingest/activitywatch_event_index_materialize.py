@@ -74,16 +74,20 @@ def materialize_activitywatch_event_index(
     if window_dates is None:
         paths: dict[str, str] = {}
         row_counts: dict[str, int] = {}
+        max_end_ns: dict[str, int] = {}
         rows = _iter_live_rows(databases=databases)
     else:
         previous = _read_existing_manifest(activitywatch_event_index_manifest_path(root))
-        if previous and previous.get("transform_recipe") != recipe:
+        if previous and (previous.get("schema_version") != ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION or previous.get("transform_recipe") != recipe):
             raise MaterializationError(
                 "activitywatch_event_index_materialize",
                 reason="transformation rules changed or were not recorded; an explicit full=True rebuild is required",
             )
         paths = _string_dict(previous.get("product_paths"))
         row_counts = _int_dict(previous.get("row_counts"))
+        max_end_ns = _int_dict(previous.get("max_end_ns_by_day"))
+        if set(max_end_ns) != set(paths):
+            raise MaterializationError("activitywatch_event_index_materialize", reason="partition interval bounds missing; an explicit full=True rebuild is required")
         requested_days = {item.isoformat() for item in window_dates}
         missing_outside_window = [
             day
@@ -104,6 +108,7 @@ def materialize_activitywatch_event_index(
             raw_day = day.isoformat()
             paths.pop(raw_day, None)
             row_counts.pop(raw_day, None)
+            max_end_ns.pop(raw_day, None)
         rows = _iter_tail_rows(start=start, end=end, databases=databases)
 
     # A refresh writes only its affected day files into a new immutable
@@ -117,6 +122,7 @@ def materialize_activitywatch_event_index(
     generation_paths: dict[str, Path] = {}
     temporary_handles: dict[str, Any] = {}
     observed_counts: dict[str, int] = {}
+    observed_max_end_ns: dict[str, int] = {}
     try:
         for payload in rows:
             if not isinstance(payload, dict) or not payload.get("bucket"):
@@ -125,6 +131,10 @@ def materialize_activitywatch_event_index(
                 event_start = datetime.fromisoformat(str(payload["start"]).replace("Z", "+00:00"))
             except (KeyError, TypeError, ValueError):
                 continue
+            try:
+                event_end = datetime.fromisoformat(str(payload["end"]).replace("Z", "+00:00"))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise MaterializationError("activitywatch_event_index_materialize", reason="event end cannot define partition overlap bounds") from exc
             day = logical_date(event_start)
             raw_day = day.isoformat()
             if window_dates is not None and day not in window_dates:
@@ -137,6 +147,8 @@ def materialize_activitywatch_event_index(
                 temporary_handles[raw_day] = output
             output.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
             observed_counts[raw_day] = observed_counts.get(raw_day, 0) + 1
+            end_ns = int(event_end.timestamp() * 1_000_000_000)
+            observed_max_end_ns[raw_day] = max(observed_max_end_ns.get(raw_day, end_ns), end_ns)
     finally:
         for output in temporary_handles.values():
             output.close()
@@ -150,6 +162,7 @@ def materialize_activitywatch_event_index(
         path = generation_dir / staging_path.name
         paths[raw_day] = str(path)
         row_counts[raw_day] = observed_counts[raw_day]
+        max_end_ns[raw_day] = observed_max_end_ns[raw_day]
 
     if window_dates is not None:
         for day in window_dates:
@@ -157,6 +170,7 @@ def materialize_activitywatch_event_index(
             if raw_day not in generation_paths:
                 paths.pop(raw_day, None)
                 row_counts.pop(raw_day, None)
+                max_end_ns.pop(raw_day, None)
 
     covered_dates = tuple(sorted(row_counts))
     canonical_row_count_verified = bool(previous.get("canonical_row_count_verified"))
@@ -178,6 +192,7 @@ def materialize_activitywatch_event_index(
         "partition": "logical_date(event.start)",
         "product_paths": paths,
         "row_counts": row_counts,
+        "max_end_ns_by_day": max_end_ns,
         "row_count": sum(row_counts.values()),
         "covered_dates": list(covered_dates),
         "covered_date_count": len(covered_dates),
@@ -262,7 +277,7 @@ def _int_dict(value: Any) -> dict[str, int]:
         return {}
     rows: dict[str, int] = {}
     for key, val in value.items():
-        if isinstance(val, int):
+        if isinstance(val, int) and not isinstance(val, bool):
             rows[str(key)] = val
     return rows
 

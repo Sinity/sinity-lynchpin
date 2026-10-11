@@ -2307,6 +2307,7 @@ def test_activitywatch_event_index_audit_rejects_missing_manifest_member(
         json.dumps(
             {
                 "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+                "max_end_ns_by_day": {"2026-06-06": 1},
                 "transform_recipe": activitywatch_event_index_recipe(),
                 "row_count": 1,
                 "covered_dates": ["2026-06-06"],
@@ -2371,6 +2372,7 @@ def test_activitywatch_event_index_audit_reads_precise_covered_dates(monkeypatch
                     canonical_manifest.stat().st_mtime, timezone.utc
                 ).astimezone().isoformat(),
                 "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+                "max_end_ns_by_day": {"2026-06-05": 1},
                 "transform_recipe": activitywatch_event_index_recipe(),
                 "canonical_row_count_verified": False,
                 "full_source_scan_completed": True,
@@ -2402,6 +2404,11 @@ def test_activitywatch_event_index_audit_reads_precise_covered_dates(monkeypatch
     assert stale.repair_required is True
     assert stale.tail_stale is False
     assert "transformation rules" in stale.reason
+    payload.pop("max_end_ns_by_day")
+    manifest.write_text(json.dumps(payload))
+    invalid = materialization._activitywatch_event_index_dataset(SimpleNamespace(data_root=tmp_path))
+    assert invalid.status == "partial"
+    assert "interval bounds" in invalid.reason
 
 
 def test_activitywatch_event_index_does_not_compare_legacy_monolith_counts(monkeypatch, tmp_path) -> None:
@@ -2429,6 +2436,7 @@ def test_activitywatch_event_index_does_not_compare_legacy_monolith_counts(monke
                     canonical_manifest.stat().st_mtime, timezone.utc
                 ).astimezone().isoformat(),
                 "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+                "max_end_ns_by_day": {"2026-06-05": 1},
                 "transform_recipe": activitywatch_event_index_recipe(),
                 "canonical_row_count_verified": True,
             }

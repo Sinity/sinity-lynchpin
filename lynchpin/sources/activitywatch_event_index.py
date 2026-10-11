@@ -16,7 +16,7 @@ from ..core.parse import local_tz
 from ..core.primitives import DAY_BOUNDARY_HOUR, logical_date
 from .activitywatch_models import AWEvent
 
-ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION = 2
+ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION = 3
 
 __all__ = [
     "ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION",
@@ -117,42 +117,49 @@ def iter_indexed_activitywatch_events(
 ) -> Iterator[AWEvent]:
     """Yield indexed canonical events overlapping ``[start, end)``.
 
-    Files are partitioned by ``logical_date(event.start)``. Read one logical day
-    before the requested start to preserve long-duration events that overlap the
-    left edge of the window.
+    Files are partitioned by ``logical_date(event.start)``. Per-partition end
+    bounds retain arbitrarily long overlaps without scanning unrelated history.
+    Each read resolves one manifest and leaves original event fields intact.
     """
 
-    first = logical_date(start) - timedelta(days=1)
-    last = logical_date(end - timedelta(microseconds=1)) if end > start else logical_date(start)
+    if end.timestamp() <= start.timestamp():
+        return
+    last = logical_date(end - timedelta(microseconds=1))
     manifest = _index_manifest(root)
     product_paths = _product_paths(manifest)
-    generation_manifest = manifest.get("schema_version") == ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
+    generation_manifest = manifest.get("schema_version") in {2, ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION}
     if generation_manifest and manifest.get("transform_recipe") != activitywatch_event_index_recipe():
         raise SourceUnavailableError("activitywatch_event_index", reason="transformation rules changed or were not recorded; an explicit full rebuild is required")
+    if manifest.get("schema_version") == ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION:
+        bounds = manifest.get("max_end_ns_by_day")
+        if (not isinstance(bounds, dict) or set(bounds) != set(product_paths)
+                or any(not isinstance(value, int) or isinstance(value, bool) for value in bounds.values())):
+            raise SourceUnavailableError("activitywatch_event_index", reason="partition interval bounds missing or invalid; an explicit full rebuild is required")
+        since_ns = int(start.timestamp() * 1_000_000_000)
+        selected_days = sorted(day for day, maximum in bounds.items()
+                               if date.fromisoformat(day) <= last and maximum >= since_ns)
+    elif product_paths:
+        # Retained older packages have no interval bounds. Read all preceding
+        # partitions conservatively rather than silently losing long overlaps.
+        selected_days = sorted(day for day in product_paths if date.fromisoformat(day) <= last)
+    elif generation_manifest:
+        selected_days = []
+    else:
+        selected_days = sorted(path.stem for path in activitywatch_event_index_dir(root).glob("*.ndjson")
+                               if date.fromisoformat(path.stem) <= last)
     rows: list[AWEvent] = []
-    cursor = first
-    while cursor <= last:
-        raw_day = cursor.isoformat()
+    for raw_day in selected_days:
         path = product_paths.get(raw_day)
-        # Legacy schema-v1 indexes had no generation paths in their manifest.
-        # Preserve read access to them until an explicit v2 materialization
-        # publishes the first immutable generation. A v2 manifest deliberately
-        # omits empty days, which must not fall through to stale legacy data.
         if path is None and not generation_manifest:
-            path = activitywatch_event_index_path(cursor, root)
+            path = activitywatch_event_index_path(date.fromisoformat(raw_day), root)
         if path is None:
-            cursor += timedelta(days=1)
             continue
         if path.is_file():
             rows.extend(_read_day(path, bucket_prefix=bucket_prefix, start=start, end=end))
-        elif generation_manifest and raw_day in product_paths:
-            raise SourceUnavailableError(
-                "activitywatch_event_index",
-                path=str(path),
-                reason=f"manifest names missing partition for logical day {raw_day}",
-            )
-        cursor += timedelta(days=1)
-    rows.sort(key=lambda event: event.start)
+        else:
+            raise SourceUnavailableError("activitywatch_event_index", path=str(path),
+                                         reason=f"manifest names missing partition for logical day {raw_day}")
+    rows.sort(key=lambda event: event.start.timestamp())
     yield from rows
 
 
