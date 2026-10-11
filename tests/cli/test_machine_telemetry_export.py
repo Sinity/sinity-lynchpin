@@ -3,6 +3,8 @@ import shutil
 import sqlite3
 from datetime import date, datetime, timezone
 
+import pytest
+
 
 def _seed_source_db(path, rows_by_day):
     """rows_by_day: dict[str day] -> row count for gpu_sample, plus a same-day service_state row."""
@@ -261,3 +263,22 @@ def test_export_raises_on_verification_mismatch(tmp_path):
             target_days=["2026-08-15"],
             out_dir=out_dir,
         )
+
+
+@pytest.mark.parametrize("quoted_source,quoted_lake", [(True, False), (False, True), (True, True)])
+def test_export_accepts_apostrophes_in_configured_paths(tmp_path, quoted_source, quoted_lake):
+    from lynchpin.cli.machine_telemetry_export import run_export
+
+    db = tmp_path / ("source's.sqlite" if quoted_source else "source.sqlite")
+    lake = tmp_path / ("lake's" if quoted_lake else "lake")
+    _seed_source_db(db, {"2026-08-15": 2})
+    now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+    first = run_export(sqlite_path=db, lake_root=lake, tables=("gpu_sample",), now=now)
+    assert first[0].rows_exported == 2
+    assert first[0].verified_days == 1
+    assert (lake / "source_status" / "metadata.parquet").is_file()
+    second = run_export(sqlite_path=db, lake_root=lake, tables=("gpu_sample",), now=now)
+    assert second[0].days_exported == ()
+    full = run_export(sqlite_path=db, lake_root=lake, tables=("gpu_sample",), now=now, full=True)
+    assert full[0].rows_exported == 2
+    assert json.loads((lake / "manifest.json").read_text())["source_database"] == str(db)

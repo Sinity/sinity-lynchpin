@@ -61,6 +61,11 @@ class LakeVerificationError(RuntimeError):
     """A parquet partition's row count or key checksum disagreed with SQLite."""
 
 
+def _sql_literal(value: str | Path) -> str:
+    """Quote values for DuckDB statements that do not accept bound paths."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def _existing_lake_days(lake_root: Path, table: str) -> set[str]:
     table_dir = lake_root / table
     if not table_dir.is_dir():
@@ -95,7 +100,7 @@ def verify_exported_days(
     """
     if not target_days:
         return {}
-    day_list_sql = ", ".join(f"'{d}'" for d in target_days)
+    day_list_sql = ", ".join(_sql_literal(d) for d in target_days)
     src_rows = {
         r[0]: (r[1], r[2])
         for r in conn.execute(
@@ -173,7 +178,7 @@ def export_table(
             bytes_written=0,
         )
 
-    day_list_sql = ", ".join(f"'{d}'" for d in target_days)
+    day_list_sql = ", ".join(_sql_literal(d) for d in target_days)
     staging_root = Path(tempfile.mkdtemp(prefix=".staging-", dir=out_dir))
     try:
         conn.execute(
@@ -182,7 +187,7 @@ def export_table(
                 SELECT *, substr({time_col}, 1, 10) AS dt
                 FROM src.{table}
                 WHERE substr({time_col}, 1, 10) IN ({day_list_sql})
-            ) TO '{staging_root}' (
+            ) TO {_sql_literal(staging_root)} (
                 FORMAT PARQUET, COMPRESSION ZSTD, PARTITION_BY (dt),
                 FILENAME_PATTERN 'part', OVERWRITE_OR_IGNORE 1
             )
@@ -249,7 +254,7 @@ def _export_metadata_table(conn: Any, *, table: str, lake_root: Path) -> int:
     final_file = out_dir / "metadata.parquet"
     try:
         conn.execute(
-            f"COPY (SELECT * FROM src.{table}) TO '{staged_file}' "
+            f"COPY (SELECT * FROM src.{table}) TO {_sql_literal(staged_file)} "
             "(FORMAT PARQUET, COMPRESSION ZSTD)"
         )
         source_count, source_checksum = conn.execute(
@@ -326,7 +331,7 @@ def run_export(
     lake_root.mkdir(parents=True, exist_ok=True)
     conn = duckdb.connect()
     conn.execute("INSTALL sqlite; LOAD sqlite;")
-    conn.execute(f"ATTACH '{sqlite_path}' AS src (TYPE SQLITE, READ_ONLY)")
+    conn.execute(f"ATTACH {_sql_literal(sqlite_path)} AS src (TYPE SQLITE, READ_ONLY)")
 
     results = []
     for table, time_col in _TABLES:
