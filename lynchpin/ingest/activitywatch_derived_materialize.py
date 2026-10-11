@@ -76,7 +76,10 @@ def materialize_activitywatch_derived(
             snapshot.capture((canonical_activitywatch_events_path(),
                               canonical_activitywatch_events_path().with_suffix(".manifest.json")))
         snapshot.capture((get_config().sleep_jsonl, canonical_atuin_history_path()))
-        snapshot.capture_collection(keylog._logs_root(), tuple(keylog.log_files(ensure=False)))
+        keyboard = tuple(keylog.log_files(ensure=False))
+        open_dates = {snapshot.observed_at.date().isoformat(), datetime.now(UTC).date().isoformat()}
+        open_keyboard = tuple(path for path in keyboard if path.stem in open_dates)
+        snapshot.capture_collection(keylog._logs_root(), keyboard, append_only=open_keyboard)
         return _materialize_activitywatch_derived(start=start, end=end, root=root, chunk_days=chunk_days)
 
 

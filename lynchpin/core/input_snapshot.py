@@ -43,6 +43,39 @@ def _copy_file(source: Path, target: Path) -> None:
         shutil.copyfile(source, target)
 
 
+def _copy_prefix(source: Path, target: Path, length: int) -> None:
+    # An open capture has an append-only byte boundary, not a stable EOF.
+    # Avoid cloning its growing inode or following new bytes indefinitely.
+    with source.open("rb") as incoming, target.open("wb") as outgoing:
+        remaining = length
+        while remaining:
+            block = incoming.read(min(remaining, 1024 * 1024))
+            if not block:
+                raise RuntimeError(f"materialization input truncated during capture: {source}")
+            outgoing.write(block)
+            remaining -= len(block)
+
+
+def _validate_prefix(source: Path, target: Path, before: tuple[int, ...]) -> None:
+    def compatible(current: tuple[int, ...] | None) -> bool:
+        return (current is not None and current[:2] == before[:2]
+                and current[2] >= before[2]
+                and (current[2] > before[2] or current == before))
+
+    if not compatible(_version(source)):
+        raise RuntimeError(f"materialization input changed during capture: {source}")
+    with source.open("rb") as incoming, target.open("rb") as captured:
+        remaining = before[2]
+        while remaining:
+            length = min(remaining, 1024 * 1024)
+            block = incoming.read(length)
+            if len(block) != length or block != captured.read(length):
+                raise RuntimeError(f"materialization input prefix changed during capture: {source}")
+            remaining -= length
+    if not compatible(_version(source)):
+        raise RuntimeError(f"materialization input changed during capture: {source}")
+
+
 class InputSnapshot:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -51,34 +84,40 @@ class InputSnapshot:
         self.collections: dict[Path, tuple[Path, ...]] = {}
         self.lock = RLock()
 
-    def capture(self, paths: tuple[Path, ...]) -> None:
+    def capture(self, paths: tuple[Path, ...], *, append_only: tuple[Path, ...] = ()) -> None:
         # Commit the entire captured set together. A failed copy cannot leave
         # readers with a mixture of frozen and live inputs.
         with self.lock:
             pending: dict[Path, PinnedFile] = {}
+            append_paths = set(append_only)
             for original in dict.fromkeys(paths):
                 if original in self.files:
                     continue
                 target = self.root / str(len(self.files) + len(pending))
                 before = _version(original)
                 if before is not None:
-                    _copy_file(original, target)
+                    if original in append_paths:
+                        _copy_prefix(original, target, before[2])
+                    else:
+                        _copy_file(original, target)
                     target.chmod(0o600)
                     os.utime(target, ns=(before[3], before[3]))
-                    if _version(original) != before:
+                    if original not in append_paths and _version(original) != before:
                         raise RuntimeError(f"materialization input changed during capture: {original}")
                 elif original.exists():
                     raise RuntimeError(f"materialization input appeared during capture: {original}")
                 pending[original] = PinnedFile(target, before, _version(target))
             for original, item in pending.items():
-                if _version(original) != item.source_version:
+                if original in append_paths and item.source_version is not None:
+                    _validate_prefix(original, item.path, item.source_version)
+                elif _version(original) != item.source_version:
                     raise RuntimeError(f"materialization input changed during capture: {original}")
             self.files.update(pending)
 
-    def capture_collection(self, root: Path, paths: tuple[Path, ...]) -> None:
+    def capture_collection(self, root: Path, paths: tuple[Path, ...], *, append_only: tuple[Path, ...] = ()) -> None:
         with self.lock:
             if root not in self.collections:
-                self.capture(paths)
+                self.capture(paths, append_only=append_only)
                 self.collections[root] = paths
 
     def lookup(self, original: Path) -> PinnedFile | None:

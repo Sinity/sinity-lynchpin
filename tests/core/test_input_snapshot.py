@@ -79,3 +79,42 @@ def test_new_collection_member_remains_missing_for_direct_reads(tmp_path):
         assert not read_input_path(added).exists()
         assert pinned_version(added) == (True, None)
     assert read_input_path(added).read_text() == "new"
+
+
+def test_open_capture_pins_prefix_while_append_continues(tmp_path, monkeypatch):
+    from lynchpin.core import input_snapshot as module
+    source = tmp_path / "open.jsonl"
+    source.write_bytes(b"old\n")
+    before = source.stat()
+    copy = module._copy_prefix
+    def append(source, target, length):
+        copy(source, target, length)
+        with source.open("ab") as stream:
+            stream.write(b"new\n")
+    monkeypatch.setattr(module, "_copy_prefix", append)
+    with input_snapshot() as snapshot:
+        snapshot.capture_collection(tmp_path, (source,), append_only=(source,))
+        assert read_input_path(source).read_bytes() == b"old\n"
+        assert pinned_version(source)[1][2:] == [before.st_size, before.st_mtime_ns, before.st_ctime_ns]
+    assert source.read_bytes() == b"old\nnew\n"
+
+
+@pytest.mark.parametrize("mutation", ["rewrite", "truncate", "replace"])
+def test_open_capture_refuses_non_append_changes(tmp_path, monkeypatch, mutation):
+    from lynchpin.core import input_snapshot as module
+    source = tmp_path / "open.jsonl"
+    source.write_bytes(b"old\n")
+    copy = module._copy_prefix
+    def change(source, target, length):
+        copy(source, target, length)
+        if mutation == "replace":
+            replacement = tmp_path / "replacement"
+            replacement.write_bytes(b"old\nnew\n")
+            replacement.replace(source)
+        else:
+            source.write_bytes(b"new\nmore\n" if mutation == "rewrite" else b"")
+    monkeypatch.setattr(module, "_copy_prefix", change)
+    with input_snapshot() as snapshot:
+        with pytest.raises(RuntimeError, match="changed during capture"):
+            snapshot.capture((source,), append_only=(source,))
+        assert snapshot.files == {}

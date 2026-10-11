@@ -788,3 +788,37 @@ def test_transparent_refresh_expands_changed_canonical_suffix(monkeypatch):
     assert mod.activitywatch_derived_refresh_window((date(2020, 1, 4), date(2020, 1, 5))) == (date(2020, 1, 2), date(2020, 1, 7))
     monkeypatch.setattr(mod, "input_versions", lambda paths: [old])
     assert mod.activitywatch_derived_refresh_window((date(2020, 1, 4), date(2020, 1, 5))) == (date(2020, 1, 4), date(2020, 1, 5))
+
+
+def test_keyboard_capture_handles_rollover_after_operation_start(monkeypatch, tmp_path):
+    from lynchpin.core import input_snapshot as module
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    from lynchpin.sources import keylog, terminal
+    logs = tmp_path / "keyboard" / "logs"
+    logs.mkdir(parents=True)
+    paths = (logs / "2020-01-01.jsonl", logs / "2020-01-02.jsonl")
+    for path in paths:
+        path.write_bytes(b"{}\n")
+    monkeypatch.setattr(mod, "get_config", lambda: SimpleNamespace(sleep_jsonl=tmp_path / "sleep"))
+    monkeypatch.setattr(keylog, "get_config", lambda: SimpleNamespace(keylog_root=logs.parent))
+    monkeypatch.setattr(terminal, "canonical_atuin_history_path", lambda: tmp_path / "shell")
+    monkeypatch.setattr(mod, "activitywatch_event_index_manifest_path", lambda: tmp_path / "index")
+    monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: tmp_path / "events")
+    monkeypatch.setattr(mod, "datetime", SimpleNamespace(now=lambda tz: datetime(2020, 1, 2, tzinfo=timezone.utc)))
+    copy, prefix = module._copy_file, module._copy_prefix
+    def append(source):
+        with source.open("ab") as stream:
+            stream.write(b"{}\n")
+    def growing_copy(source, target):
+        copy(source, target)
+        append(source)
+    def growing_prefix(source, target, length):
+        prefix(source, target, length)
+        append(source)
+    monkeypatch.setattr(module, "_copy_file", growing_copy)
+    monkeypatch.setattr(module, "_copy_prefix", growing_prefix)
+    monkeypatch.setattr(mod, "_materialize_activitywatch_derived", lambda **kwargs: {path.name: module.read_input_path(path).read_bytes() for path in paths})
+    with module.input_snapshot() as snapshot:
+        snapshot.observed_at = datetime(2020, 1, 1, 23, 59, tzinfo=timezone.utc)
+        assert mod.materialize_activitywatch_derived() == {path.name: b"{}\n" for path in paths}
+    assert all(path.read_bytes() == b"{}\n{}\n" for path in paths)
