@@ -590,3 +590,83 @@ def test_focus_boundaries_distinguish_repeated_local_clock_times(monkeypatch):
     assert [s.duration_s for s in spans] == [3582, 18]
     assert sum(s.duration_s for s in spans) == 3600
     assert spans[-1].end.fold == 1
+
+
+def test_fold_interval_clipping_preserves_elapsed_overlap(monkeypatch):
+    from zoneinfo import ZoneInfo
+    from lynchpin.sources import activitywatch as aw, activitywatch_repair as repair
+    from lynchpin.sources.activitywatch_models import _WindowSpan
+    zone = ZoneInfo("Europe/Warsaw")
+    first = datetime(2025, 10, 26, 2, 45, tzinfo=zone, fold=0)
+    second = datetime(2025, 10, 26, 2, 15, tzinfo=zone, fold=1)
+    window = _WindowSpan(first, second, "editor", "fixture", None, None)
+    clipped = aw._intersect_window_spans([window], first, second)
+    assert len(clipped) == 1
+    assert clipped[0].start.timestamp() == first.timestamp()
+    assert clipped[0].end.timestamp() == second.timestamp()
+    monkeypatch.setattr(aw, "afk_events", lambda **kwargs: [])
+    monkeypatch.setattr(repair, "repair_afk_events", lambda rows: [
+        SimpleNamespace(start=first, end=second, status="not-afk")
+    ])
+    aw._repaired_afk_events_cached.cache_clear()
+    active, afk = aw._repaired_afk_events_cached(first, second, False, "fold-clip")
+    assert len(active) == 1 and not afk
+    assert active[0][0].timestamp() == first.timestamp()
+    assert active[0][1].timestamp() == second.timestamp()
+
+
+def test_fold_coverage_gaps_exclude_later_repeated_hour_events(monkeypatch):
+    from zoneinfo import ZoneInfo
+    from lynchpin.sources import activitywatch as aw
+    zone = ZoneInfo("Europe/Warsaw")
+    def local(hour, minute, fold=0):
+        return datetime(2025, 10, 26, hour, minute, tzinfo=zone, fold=fold)
+    monkeypatch.setattr(aw, "afk_events", lambda **kwargs: [
+        SimpleNamespace(start=local(2, 40), end=local(2, 50)),
+        SimpleNamespace(start=local(2, 10, 1), end=local(2, 20, 1)),
+    ])
+    gaps = aw._coverage_gaps(local(2, 0), local(3, 0))
+    assert [right.timestamp() - left.timestamp() for left, right in gaps] == [2400, 1200, 2400]
+
+
+def test_focus_cache_distinguishes_both_occurrences_of_repeated_hour(monkeypatch):
+    from zoneinfo import ZoneInfo
+    from lynchpin.sources import activitywatch as aw
+    from lynchpin.sources.activitywatch_models import _WindowSpan
+    zone = ZoneInfo("Europe/Warsaw")
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    monkeypatch.setattr(aw, "_activitywatch_cache_revision", lambda: "fold-cache")
+    monkeypatch.setattr(aw, "_repaired_afk_events_cached", lambda start, end, *args: ([(start, end)], []))
+    monkeypatch.setattr(aw, "_window_spans", lambda start, end, **kwargs: [
+        _WindowSpan(start, end, str(start.fold), "fixture", None, None)
+    ])
+    monkeypatch.setattr(aw, "_attach_keypress_counts", lambda spans, **kwargs: spans)
+    aw._focus_spans_cached.cache_clear()
+    for fold in (0, 1):
+        start = datetime(2025, 10, 26, 2, 10, tzinfo=zone, fold=fold)
+        end = datetime(2025, 10, 26, 2, 20, tzinfo=zone, fold=fold)
+        spans = aw.focus_spans(start=start, end=end, enrich_polylogue=False, ensure=False)
+        assert len(spans) == 1
+        assert spans[0].start.timestamp() == start.timestamp()
+        assert spans[0].app == str(fold)
+
+
+@pytest.mark.parametrize("api,status", [("active_intervals", "not-afk"), ("afk_intervals", "afk")])
+def test_afk_cache_distinguishes_repeated_hour_requests(monkeypatch, api, status):
+    from zoneinfo import ZoneInfo
+    from lynchpin.sources import activitywatch as aw, activitywatch_repair as repair
+    zone = ZoneInfo("Europe/Warsaw")
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    monkeypatch.setattr(aw, "_activitywatch_cache_revision", lambda: "afk-fold-cache")
+    monkeypatch.setattr(aw, "afk_events", lambda start, end, **kwargs: [
+        SimpleNamespace(start=start, end=end, status=status)
+    ])
+    monkeypatch.setattr(repair, "repair_afk_events", lambda rows: rows)
+    aw._repaired_afk_events_cached.cache_clear()
+    for fold in (0, 1):
+        start = datetime(2025, 10, 26, 2, 10, tzinfo=zone, fold=fold)
+        end = datetime(2025, 10, 26, 2, 20, tzinfo=zone, fold=fold)
+        intervals = getattr(aw, api)(start, end, ensure=False)
+        assert len(intervals) == 1
+        assert intervals[0][0].timestamp() == start.timestamp()
+        assert intervals[0][1].timestamp() == end.timestamp()

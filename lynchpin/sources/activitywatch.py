@@ -131,7 +131,7 @@ def _repaired_afk_events(
     start: datetime, end: datetime, *, ensure: bool = True
 ) -> tuple[list[Interval], list[Interval]]:
     active, afk = _repaired_afk_events_cached(
-        start, end, ensure, _activitywatch_cache_revision()
+        _instant(start), _instant(end), ensure, _activitywatch_cache_revision()
     )
     return list(active), list(afk)
 
@@ -153,6 +153,7 @@ def _repaired_afk_events_cached(
     magnitude.
     """
     del revision
+    start, end = as_local(start), as_local(end)
     from .activitywatch_repair import repair_afk_events
 
     raw = list(
@@ -163,9 +164,9 @@ def _repaired_afk_events_cached(
     for repaired in repair_afk_events(raw):
         s, e = as_local(repaired.start), as_local(repaired.end)
         # Clip to requested window AND skip segments outside it
-        if e <= start or s >= end:
+        if _instant(e) <= _instant(start) or _instant(s) >= _instant(end):
             continue
-        clipped = (max(start, s), min(end, e))
+        clipped = (max(start, s, key=_instant), min(end, e, key=_instant))
         if repaired.status == "not-afk":
             active_segs.append(clipped)
         elif repaired.status == "afk":
@@ -246,7 +247,7 @@ def focus_spans(
     upper = end_of_day_local(end)
     spans = list(
         _focus_spans_cached(
-            lower, upper, min_duration_s, ensure, _activitywatch_cache_revision()
+            _instant(lower), _instant(upper), min_duration_s, ensure, _activitywatch_cache_revision()
         )
     )
     if not enrich_polylogue:
@@ -400,8 +401,10 @@ def project_focus_days(*, start: datetime, end: datetime, ensure: bool = True) -
 def _focus_spans_cached(
     start: datetime, end: datetime, min_dur: float, ensure: bool, revision: object
 ) -> tuple[FocusSpan, ...]:
+    # Cache keys use instants; calculations and output retain local boundaries.
+    start, end = as_local(start), as_local(end)
     active, afk = _repaired_afk_events_cached(
-        start, end, ensure, revision
+        _instant(start), _instant(end), ensure, revision
     )
     windows = _window_spans(start, end, active=active, min_duration_s=0.0, ensure=ensure)
 
@@ -720,14 +723,14 @@ def _coverage_gaps(start: datetime, end: datetime) -> list[Interval]:
     gaps: list[Interval] = []
     cursor = start
     for left, right in merged:
-        if left > cursor:
-            gaps.append((cursor, min(left, end)))
-        cursor = max(cursor, right)
-        if cursor >= end:
+        if _instant(left) > _instant(cursor):
+            gaps.append((cursor, min(left, end, key=_instant)))
+        cursor = max(cursor, right, key=_instant)
+        if _instant(cursor) >= _instant(end):
             break
-    if cursor < end:
+    if _instant(cursor) < _instant(end):
         gaps.append((cursor, end))
-    return [(left, right) for left, right in gaps if right > left]
+    return [(left, right) for left, right in gaps if _instant(right) > _instant(left)]
 
 
 def _intersect_window_spans(
@@ -735,13 +738,13 @@ def _intersect_window_spans(
 ) -> list[_WindowSpan]:
     result: list[_WindowSpan] = []
     for span in spans:
-        if span.end <= start:
+        if _instant(span.end) <= _instant(start):
             continue
-        if span.start >= end:
+        if _instant(span.start) >= _instant(end):
             break
-        ov_start = max(span.start, start)
-        ov_end = min(span.end, end)
-        if ov_end > ov_start:
+        ov_start = max(span.start, start, key=_instant)
+        ov_end = min(span.end, end, key=_instant)
+        if _instant(ov_end) > _instant(ov_start):
             result.append(replace(span, start=ov_start, end=ov_end))
     return _linearize_windows(result)
 
