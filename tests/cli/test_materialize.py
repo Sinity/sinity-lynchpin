@@ -730,9 +730,11 @@ def test_incremental_graph_tail_covers_publication_gap_without_accepting_failed_
         ) == date(2026, 1, 5)
 
 
-def test_incremental_candidate_identity_is_shared_by_sources_graph_and_publication(monkeypatch, tmp_path):
+@pytest.mark.parametrize("typed_status", ["ok", "error"])
+def test_incremental_candidate_identity_is_shared_by_sources_graph_and_publication(monkeypatch, tmp_path, typed_status):
     from lynchpin.cli import materialize, substrate_snapshot
     from lynchpin.substrate import connection
+    from lynchpin.analysis.active import substrate_promote
 
     generation = connection.CandidateGeneration(
         candidate=tmp_path / "candidate.duckdb", canonical=tmp_path / "serving.duckdb",
@@ -750,10 +752,18 @@ def test_incremental_candidate_identity_is_shared_by_sources_graph_and_publicati
     monkeypatch.setattr(connection, "connect", lambda *args, **kwargs: nullcontext(None))
     monkeypatch.setattr(connection, "generation_refresh_id", lambda *args: observed["source"])
     monkeypatch.setattr(substrate_snapshot, "main", lambda argv: observed.update(argv=argv) or 0)
-    assert materialize.main(["--all", "--promote", "--history", "incremental", "--progress", "quiet"]) == 0
+    monkeypatch.setattr(
+        substrate_promote, "run_substrate_promote",
+        lambda **kwargs: observed.update(typed=kwargs) or SimpleNamespace(status=typed_status, reason="fixture failure"),
+    )
+    assert materialize.main(["--all", "--promote", "--history", "incremental", "--progress", "quiet"]) == (0 if typed_status == "ok" else 1)
     argv = observed["argv"]
     assert argv[argv.index("--graph-generation")+1] == generation.refresh_id
     expected = substrate_snapshot._snapshot_refresh_id(
         start=date(2026, 1, 1), end=date(2026, 1, 3), projects=(), generation=generation.refresh_id,
     )
-    assert observed["source"] == generation.receipt_refresh_id == generation.expected_refresh_id == expected
+    assert observed["source"] == generation.receipt_refresh_id == observed["typed"]["refresh_id"] == expected
+    assert observed["typed"]["write_evidence_graph"] is False
+    assert observed["typed"]["window_start"] == date(2026, 1, 1)
+    assert observed["typed"]["window_end"] == date(2026, 1, 3)
+    assert generation.expected_refresh_id == (expected if typed_status == "ok" else None)

@@ -186,9 +186,10 @@ NDJSON offline copy. `python -m lynchpin.ingest.machine_materialize` can refresh
 that copy explicitly.
 The nightly `lynchpin converge` operation uses the same candidate-based
 incremental route as `promote_incremental`. It clones the previous serving
-generation, refreshes selected source tails, and atomically publishes the graph
-and personal-product overlays after verification. It does not run the separate
-complete substrate import over all history. Products requiring an explicit
+generation, refreshes selected source tails, and promotes the typed source facts
+under the graph's refresh identity before atomic publication. A typed promotion
+error rejects the candidate; unavailable sources remain explicitly degraded.
+Products requiring an explicit
 schema migration or lacking verified historical input identities remain
 check-only, with their unavailable coverage recorded in the new generation.
 Explicit plans read their selected upstream products during temporal and
@@ -196,6 +197,11 @@ ActivityContent computation, rather than starting recursive refreshes. The
 nightly source window ends at the current logical day boundary. ActivityContent
 keeps title-use fact replacements in one SQLite transaction and can migrate a
 damaged compatibility export from its retained facts.
+Explicit recovery uses `repair_activitywatch_index` for the owner-database day
+index and `recompute_activity_products` for dependent historical products.
+`repair_git_facts -- <start> <end>` rebuilds commit and file-change artifacts
+from Git before their projection is promoted. Recovery retains the previous
+serving substrate and does not derive rich typed facts from graph nodes.
 The explicit `repair_webhistory_base` operation calls the existing merge with
 `--merge-only --output <candidate>`: it reads every retained canonical segment,
 records their current identities, and skips raw browser extraction. Verify that

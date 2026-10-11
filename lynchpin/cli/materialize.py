@@ -299,6 +299,23 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 if isinstance(generation, CandidateGeneration):
                     from .substrate_snapshot import _snapshot_refresh_id
+                    from ..analysis.active.substrate_promote import run_substrate_promote
+                    from ..core.io import resolve_analysis_path
+
+                    # A graph refresh alone does not restore its typed inputs.
+                    # Promote both in this candidate under the same identity.
+                    typed = run_substrate_promote(
+                        commit_facts_file=resolve_analysis_path("active_commit_facts.json"),
+                        file_changes_file=resolve_analysis_path("active_file_change_facts.json"),
+                        symbol_changes_file=resolve_analysis_path("active_symbol_changes.json"),
+                        ai_attribution_file=resolve_analysis_path("active_ai_attribution.json"),
+                        refresh_id=publication_refresh_id,
+                        window_start=date.fromisoformat(args.start),
+                        window_end=date.fromisoformat(args.end),
+                        write_evidence_graph=False,
+                    )
+                    if typed.status == "error":
+                        raise _CandidateRejected(1, f"typed source promotion failed: {typed.reason}")
 
                     bind_candidate_publication(
                         generation,

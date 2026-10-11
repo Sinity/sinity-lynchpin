@@ -166,6 +166,30 @@ result = "json"
 cache = "none"
 timeout_seconds = 7200
 
+[operations.repair_git_facts]
+description = "Recompute commit and file-change artifacts from owner Git histories for explicit start/end dates"
+exec = ["python", "-c", "import sys; from datetime import date; from lynchpin.analysis.active.git_facts import run_active_git_facts; run_active_git_facts('active_commit_facts.json', 'active_file_change_facts.json', start=date.fromisoformat(sys.argv[1]), end=date.fromisoformat(sys.argv[2]))"]
+arguments = "required"
+pool = "bulk"
+result = "exit"
+cache = "none"
+timeout_seconds = 7200
+
+[operations.recompute_activity_products]
+description = "Recompute affected ActivityWatch-derived history and publish typed facts with its graph"
+exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--promote", "--history", "all", "--full", "--only", "activity_content", "personal_daily_signals", "temporal_signals", "sleep_productivity", "--progress", "plain"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+timeout_seconds = 14400
+
+[operations.verify_projection_repair]
+description = "Verify native typed-fact promotion and the embedded Polylogue source contract"
+exec = ["pytest", "-q", "tests/sources/test_source_polylogue.py", "tests/sources/test_polylogue_owner_contract.py", "tests/substrate/test_substrate_promote.py", "tests/analysis/test_substrate_promote_work.py", "tests/cli/test_agentctl_plan.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
 [operations.promote_node]
 description = "Atomically publish one complete substrate generation"
 exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "promote"]
