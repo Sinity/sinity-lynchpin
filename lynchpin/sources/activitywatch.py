@@ -1509,7 +1509,7 @@ def coverage_bounds() -> CoverageBounds | None:
         if not db_path.exists():
             continue
         try:
-            conn = sqlite3.connect(str(db_path))
+            conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
             row = conn.execute(
                 "SELECT MIN(starttime), MAX(starttime) FROM events"
             ).fetchone()

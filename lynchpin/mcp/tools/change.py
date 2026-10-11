@@ -5,6 +5,7 @@ FastMCP inspects annotations at decoration time and cannot handle postponed
 string annotations for tool parameters.
 """
 
+from pathlib import Path
 from typing import Any
 
 from lynchpin.mcp.tools._utils import (
@@ -194,7 +195,7 @@ def ai_tool_usage(
         }
 
     try:
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(f"{Path(db_path).resolve().as_uri()}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
 
         # Build SQL query with optional date range and project filter

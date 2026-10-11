@@ -4056,7 +4056,7 @@ def _csv_count(path: Path) -> int | None:
 
 def _sqlite_count(path: Path, table: str) -> int | None:
     try:
-        with sqlite3.connect(path) as conn:
+        with sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True) as conn:
             row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
     except sqlite3.Error:
         return None

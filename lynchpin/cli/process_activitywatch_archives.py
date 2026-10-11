@@ -153,7 +153,7 @@ def audit_activitywatch_archive_dbs(root: Path | None = None) -> dict[str, objec
 
 def _sqlite_schema_status(path: Path) -> dict[str, object]:
     try:
-        with sqlite3.connect(path) as conn:
+        with sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True) as conn:
             tables = {
                 str(row[0])
                 for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()

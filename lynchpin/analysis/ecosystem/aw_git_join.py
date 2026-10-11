@@ -4,6 +4,7 @@ import json
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 
 from ..core.commit_stats import collect_commit_stats, parse_iso_datetime
 from lynchpin.core.io import save_json
@@ -224,7 +225,7 @@ def run_aw_git_join(spec_path, out_file, aw_db_path):
     min_ns = _to_ns(min(commit_dates))
     max_ns = _to_ns(max(commit_dates))
 
-    conn = sqlite3.connect(aw_db_path)
+    conn = sqlite3.connect(f"{Path(aw_db_path).resolve().as_uri()}?mode=ro", uri=True)
     try:
         active_intervals = _load_active_intervals(conn, min_ns, max_ns)
         window_events = _load_window_events(conn, min_ns, max_ns)
