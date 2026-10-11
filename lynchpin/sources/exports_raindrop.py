@@ -46,7 +46,7 @@ class RaindropBookmark:
     updated: datetime | None = None
     state: str | None = None
     metadata: dict[str, object] = field(default_factory=dict)
-    highlights: tuple[dict, ...] = ()
+    highlights: tuple[dict[str, object], ...] = ()
     observed_at: datetime | None = None
     api_observed_at: datetime | None = None
 

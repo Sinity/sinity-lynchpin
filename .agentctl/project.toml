@@ -58,7 +58,7 @@ cache = "tree+environment"
 
 [operations.verify_webhistory_base]
 description = "Verify retained-segment candidate merge and input identity contracts"
-exec = ["pytest", "-q", "tests/ingest/test_webhistory.py", "tests/test_materialization.py", "-k", "webhistory"]
+exec = ["pytest", "-q", "tests/ingest/test_webhistory.py", "tests/test_materialization.py", "tests/sources/test_google_takeout.py", "tests/sources/test_activitywatch_derived.py::test_missing_manifest_partitions_are_named_gaps_not_empty_days", "-k", "webhistory or chrome or missing_manifest_partitions"]
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"

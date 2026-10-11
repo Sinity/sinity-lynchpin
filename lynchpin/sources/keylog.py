@@ -336,7 +336,7 @@ def keypress_timestamps(
     """Read bounded press times through the revision-keyed per-file cache."""
     start_local = as_local(start)
     end_local = as_local(end)
-    timestamps = []
+    timestamps: list[datetime] = []
     for path in _candidate_files(start_local, end_local, ensure=ensure):
         try:
             stat = path.stat()

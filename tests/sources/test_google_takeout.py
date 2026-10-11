@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import tarfile
 import zipfile
@@ -90,3 +92,49 @@ def test_iter_member_bytes_filters_product_and_suffix(tmp_path):
     assert len(rows) == 1
     assert rows[0][0].path == "Takeout/Tasks/Tasks.json"
     assert rows[0][1] == b"{}"
+
+
+def test_chrome_tar_reads_forward_and_preserves_sorted_duplicate_members(tmp_path, monkeypatch):
+    archive = tmp_path / "takeout.tgz"
+    names = [
+        "Takeout/Chrome/History.json",
+        "Takeout/Drive/unrelated.bin",
+        "Takeout/Chrome/BrowserHistory.json",
+        "Takeout/Chrome/History.json",
+    ]
+    with tarfile.open(archive, "w:gz") as tf:
+        for index, name in enumerate(names):
+            payload = (b"x" * 100_000 if "Drive" in name else json.dumps({
+                "Browser History": [{
+                    "time_usec": "1773717025000000",
+                    "url": f"https://example.com/{index}",
+                    "title": f"Visit {index}",
+                }],
+            }).encode())
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+
+    def reject_getmembers(self):
+        raise AssertionError("Chrome history must not preload the archive index")
+
+    monkeypatch.setattr(tarfile.TarFile, "getmembers", reject_getmembers)
+    batches = list(iter_chrome_history_batches(tmp_path))
+    assert [batch.member for batch in batches] == [names[2], names[0], names[3]]
+    assert [batch.visits[0].url for batch in batches] == [
+        "https://example.com/2", "https://example.com/0", "https://example.com/3",
+    ]
+
+
+def test_chrome_tar_invalid_tail_does_not_publish_partial_batches(tmp_path):
+    content = io.BytesIO()
+    with tarfile.open(fileobj=content, mode="w") as tf:
+        payload = b'{"Browser History": []}'
+        info = tarfile.TarInfo("Takeout/Chrome/History.json")
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+    archive = tmp_path / "takeout.tgz"
+    truncated = tarfile.TarInfo("Takeout/Drive/truncated.bin")
+    truncated.size = 2048
+    archive.write_bytes(gzip.compress(content.getvalue()[:1024] + truncated.tobuf()))
+    assert list(iter_chrome_history_batches(tmp_path)) == []

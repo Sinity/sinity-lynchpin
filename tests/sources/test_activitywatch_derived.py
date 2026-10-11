@@ -138,6 +138,9 @@ def test_missing_manifest_partitions_are_named_gaps_not_empty_days(
                 "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
                 "transform_recipe": activitywatch_event_index_recipe(),
                 "product_paths": {day: str(missing_index)},
+                "max_end_ns_by_day": {
+                    day: int(datetime(2026, 6, 7, tzinfo=timezone.utc).timestamp() * 1_000_000_000)
+                },
             }
         ),
         encoding="utf-8",

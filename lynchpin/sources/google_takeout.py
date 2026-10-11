@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import tarfile
 import tempfile
 import zipfile
@@ -243,21 +244,27 @@ def _zip_chrome_history_batches(path: Path) -> Iterator[TakeoutChromeHistoryBatc
 
 def _tar_chrome_history_batches(path: Path) -> Iterator[TakeoutChromeHistoryBatch]:
     try:
-        with tarfile.open(path, mode="r:*") as tf:
-            for member in sorted(tf.getmembers(), key=lambda item: item.name):
-                member_name = _normalize_member(member.name)
-                if not member.isfile() or not is_chrome_history_member(member_name):
-                    continue
-                handle = tf.extractfile(member)
-                if handle is None:
-                    continue
-                with tempfile.NamedTemporaryFile("wb", suffix=".json") as tmp:
-                    tmp.write(handle.read())
-                    tmp.flush()
-                    visits = tuple(iter_takeout_chrome_visits(
-                        Path(tmp.name),
-                        source_label=f"takeout_chrome:{path.name}:{member_name}",
-                    ))
+        # Spool only selected members in one forward pass. Yield after the scan
+        # to preserve sorted output and reject archives with invalid tails.
+        with tempfile.TemporaryDirectory(prefix="takeout-chrome-") as directory:
+            selected: list[tuple[str, str, Path]] = []
+            with tarfile.open(path, mode="r|*", stream=True) as tf:
+                for member in tf:
+                    member_name = _normalize_member(member.name)
+                    if not member.isfile() or not is_chrome_history_member(member_name):
+                        continue
+                    handle = tf.extractfile(member)
+                    if handle is None:
+                        continue
+                    temporary = Path(directory) / f"{len(selected)}.json"
+                    with handle, temporary.open("wb") as output:
+                        shutil.copyfileobj(handle, output)
+                    selected.append((member.name, member_name, temporary))
+            for _, member_name, temporary in sorted(selected, key=lambda item: item[0]):
+                visits = tuple(iter_takeout_chrome_visits(
+                    temporary,
+                    source_label=f"takeout_chrome:{path.name}:{member_name}",
+                ))
                 yield TakeoutChromeHistoryBatch(path, member_name, visits)
     except (OSError, tarfile.TarError):
         return
