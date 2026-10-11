@@ -2,11 +2,30 @@ from __future__ import annotations
 
 import threading
 import time
+import pytest
 from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
 from lynchpin import materialization
+
+
+@pytest.mark.parametrize("end, expected", [(date(2026, 8, 2), "ready"), (date(2026, 8, 3), "failed")])
+def test_activity_content_cooldown_requires_requested_coverage(monkeypatch, tmp_path, end, expected):
+    from dataclasses import replace
+    from lynchpin.materializers import production
+
+    row = replace(
+        _row("activity_content", last=date(2026, 8, 1)),
+        materialized_paths=(tmp_path / "daily.ndjson",),
+        covered_dates=(date(2026, 8, 1),),
+    )
+    monkeypatch.setattr(materialization, "_audit_one", lambda *_args, **_kwargs: row)
+    monkeypatch.setattr(materialization, "_product_recently_refreshed", lambda _name: True)
+    monkeypatch.setattr(production, "run_materialization_plan", lambda *_args, **_kwargs: pytest.fail("cooldown must not start a rebuild"))
+    result = production.ensure_materialized("activity_content", window=(date(2026, 8, 1), end))
+    assert result.status == expected
+    assert result.changed is False
 
 
 def _graph_fixture_connection(

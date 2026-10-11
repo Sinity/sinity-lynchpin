@@ -148,7 +148,10 @@ def ensure_materialized(
         and audit._product_recently_refreshed(name)
         and not force
     ):
-        status = "ready" if before.status == "ready" else "failed"
+        sufficient = before.status == "ready" and audit._materialized_enough_for_window(
+            before, window, recently_refreshed=True
+        )
+        status = "ready" if sufficient else "failed"
         return audit._materialization_result(
             before,
             status=status,
@@ -156,6 +159,9 @@ def ensure_materialized(
             reason=(
                 "activity-content materialization is within the freshness interval; "
                 f"retaining current {before.status} product: {before.reason}"
+                if sufficient else
+                "activity-content materialization is within the freshness interval, "
+                "but the product is not ready for the requested coverage"
             ),
             started=started,
             window=window,
