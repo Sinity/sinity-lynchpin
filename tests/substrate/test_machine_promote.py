@@ -1368,3 +1368,40 @@ def test_failed_slow_table_does_not_publish_partial_refresh(
 
     assert rows == [("old-host", datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc))]
     assert status == ("error", "RuntimeError: source iterator interrupted")
+
+
+def test_incremental_lake_watermark_uses_utc_day(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    import duckdb
+    from lynchpin.analysis.active import substrate_promote_machine as module
+
+    conn = duckdb.connect()
+    conn.execute("SET TimeZone='Europe/Warsaw'")
+    conn.execute("CREATE TABLE samples(observed_at TIMESTAMPTZ, refresh_id VARCHAR)")
+    previous = datetime(2026, 10, 10, 23, 59, tzinfo=timezone.utc)
+    live = datetime(2026, 10, 11, 1, tzinfo=timezone.utc)
+    conn.execute("INSERT INTO samples VALUES (?, 'test')", [previous])
+    watermark = conn.execute("SELECT MAX(observed_at) FROM samples").fetchone()[0]
+    assert watermark.date() == date(2026, 10, 11)
+    requested = []
+
+    def reader(*, start, end, path):
+        requested.append(start)
+        return [previous, live]
+
+    def promoter(connection, *, refresh_id, samples, delete_existing):
+        assert delete_existing is False
+        connection.executemany("INSERT INTO samples VALUES (?, ?)",
+                               [(sample, refresh_id) for sample in samples])
+
+    monkeypatch.setattr(module, "_incremental_reader_and_promoter",
+                        lambda _: (reader, promoter, "samples"))
+    count = module._promote_machine_table_incremental(
+        conn, src_table="gpu_sample", dst_table="samples", refresh_id="test",
+        sqlite_path=tmp_path / "source.sqlite", window_start=date(2026, 10, 10),
+        window_end=date(2026, 10, 11), watermark=watermark,
+    )
+    assert requested == [date(2026, 10, 10)]
+    assert count == 2
+    assert conn.execute("SELECT observed_at FROM samples ORDER BY observed_at").fetchall() == [(previous,), (live,)]
+    conn.close()

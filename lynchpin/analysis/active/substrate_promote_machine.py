@@ -647,8 +647,8 @@ def _promote_machine_fast(
                     f"AND observed_at < CAST(? AS TIMESTAMPTZ)",
                     [
                         refresh_id,
-                        window_start.isoformat(),
-                        (window_end + timedelta(days=1)).isoformat(),
+                        _utc_midnight(window_start),
+                        _utc_midnight(window_end + timedelta(days=1)),
                     ],
                 ).fetchone()[0]
             if watermark is not None:
@@ -766,6 +766,11 @@ def _promote_machine_fast(
     log.info("substrate_promote: machine tables done in %.1fs", total_elapsed)
 
 
+def _utc_midnight(day: date) -> str:
+    """Collector partitions and source date windows use UTC calendar days."""
+    return datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc).isoformat()
+
+
 def _promote_machine_table_incremental(
     conn: Any,
     *,
@@ -790,17 +795,17 @@ def _promote_machine_table_incremental(
     on every run and the full path would otherwise have dropped them.
     """
     reader, promoter, sample_kwarg = _incremental_reader_and_promoter(src_table)
-    tail_start = max(watermark.date(), window_start)
+    tail_start = max(watermark.astimezone(timezone.utc).date(), window_start)
 
     conn.execute(
         f"DELETE FROM {dst_table} WHERE refresh_id = ? "
         f"AND observed_at >= CAST(? AS TIMESTAMPTZ)",
-        [refresh_id, tail_start.isoformat()],
+        [refresh_id, _utc_midnight(tail_start)],
     )
     conn.execute(
         f"DELETE FROM {dst_table} WHERE refresh_id = ? "
         f"AND observed_at < CAST(? AS TIMESTAMPTZ)",
-        [refresh_id, window_start.isoformat()],
+        [refresh_id, _utc_midnight(window_start)],
     )
     kwargs = {sample_kwarg: reader(start=tail_start, end=window_end, path=sqlite_path)}
     promoter(conn, refresh_id=refresh_id, delete_existing=False, **kwargs)
