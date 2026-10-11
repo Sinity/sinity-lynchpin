@@ -1,10 +1,51 @@
 """Tests for sources/keylog.py."""
 
 import json
+import weakref
+from collections import deque
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 from lynchpin.sources import keylog
+
+
+def test_daily_activity_does_not_retain_each_event_timestamp(monkeypatch):
+    class TrackedDatetime(datetime):
+        pass
+
+    recent = deque(maxlen=8)
+    peak_retained = 0
+
+    def stream(*, start, end, ensure):
+        nonlocal peak_retained
+        for i in range(100):
+            ts = TrackedDatetime.fromtimestamp(start.timestamp() + i, tz=start.tzinfo)
+            recent.append(weakref.ref(ts))
+            peak_retained = max(peak_retained, sum(ref() is not None for ref in recent))
+            yield keylog.KeylogEvent(
+                ts=ts, event="press", session="fixture", window=None,
+                keycode="KEY_A", changed=True,
+            )
+
+    monkeypatch.setattr(keylog, "events", stream)
+    rows = keylog.daily_activity(start=date(2026, 4, 22), end=date(2026, 4, 23))
+    assert peak_retained <= 4
+    assert rows[0].event_count == rows[0].keypress_count == rows[0].changed_keypress_count == 100
+    assert rows[0].session_count == 1
+    assert (keylog._instant(rows[0].last_ts) - keylog._instant(rows[0].first_ts)).total_seconds() == 99
+    assert rows[1].event_count == 0 and rows[1].first_ts is None and rows[1].last_ts is None
+
+
+def test_daily_activity_preserves_first_equal_instant_endpoint(monkeypatch):
+    start, _ = keylog.date_to_dt_range(date(2026, 4, 22), date(2026, 4, 22))
+    values = [40, 0, 40, 20]
+    records = [keylog.KeylogEvent(
+        ts=datetime.fromtimestamp(start.timestamp() + value, tz=start.tzinfo),
+        event="press", session=None, window=None, keycode=None, changed=False,
+    ) for value in values]
+    monkeypatch.setattr(keylog, "events", lambda **_kw: iter(records))
+    row = keylog.daily_activity(start=date(2026, 4, 22), end=date(2026, 4, 22))[0]
+    assert row.first_ts is records[1].ts and row.last_ts is records[0].ts
 
 
 def test_keylog_log_files_materializes_requested_window(tmp_path, monkeypatch):

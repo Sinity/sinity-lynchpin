@@ -384,7 +384,9 @@ def daily_activity(
     keypress_counts = {d: 0 for d in days}
     changed_keypress_counts = {d: 0 for d in days}
     sessions: dict[date, set[str]] = {d: set() for d in days}
-    timestamps: dict[date, list[datetime]] = {d: [] for d in days}
+    # Summaries need two endpoints, not every timestamp in the capture.
+    first_ts: dict[date, datetime | None] = {d: None for d in days}
+    last_ts: dict[date, datetime | None] = {d: None for d in days}
     start_dt, end_dt = date_to_dt_range(start, end)
 
     for ev in events(start=start_dt, end=end_dt, ensure=ensure):
@@ -392,7 +394,13 @@ def daily_activity(
         if d not in event_counts:
             continue
         event_counts[d] += 1
-        timestamps[d].append(ev.ts)
+        instant = _instant(ev.ts)
+        first = first_ts[d]
+        last = last_ts[d]
+        if first is None or instant < _instant(first):
+            first_ts[d] = ev.ts
+        if last is None or instant > _instant(last):
+            last_ts[d] = ev.ts
         if ev.session:
             sessions[d].add(ev.session)
         if ev.event == "press":
@@ -408,8 +416,8 @@ def daily_activity(
             keypress_count=keypress_counts[d],
             changed_keypress_count=changed_keypress_counts[d],
             session_count=len(sessions[d]),
-            first_ts=min(timestamps[d], key=_instant) if timestamps[d] else None,
-            last_ts=max(timestamps[d], key=_instant) if timestamps[d] else None,
+            first_ts=first_ts[d],
+            last_ts=last_ts[d],
         ))
     return result
 
