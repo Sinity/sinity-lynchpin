@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -58,9 +59,14 @@ def materialize_activitywatch_derived(
 ) -> dict[str, Any]:
     start, end = _default_window(start, end)
     if end <= start:
-        raise MaterializationError("activitywatch_derived_materialize", reason="ActivityWatch derived materialization end must be after start")
+        raise MaterializationError(
+            "activitywatch_derived_materialize",
+            reason="ActivityWatch derived materialization end must be after start",
+        )
     if chunk_days < 1:
-        raise MaterializationError("activitywatch_derived_materialize", reason="chunk_days must be at least 1")
+        raise MaterializationError(
+            "activitywatch_derived_materialize", reason="chunk_days must be at least 1"
+        )
     clipped_start, clipped_end = _clip_to_real_coverage(start, end)
     if clipped_end <= clipped_start:
         # The requested window has no overlap with the canonical AW events
@@ -76,13 +82,28 @@ def materialize_activitywatch_derived(
             "activitywatch_derived_materialize",
             reason=f"requested window {start}..{end} has no overlap with canonical ActivityWatch coverage",
         )
+    published_manifest = activitywatch_derived_manifest_path(root)
+    published_manifest.parent.mkdir(parents=True, exist_ok=True)
+    staged_manifest = published_manifest.with_name(
+        f".manifest-{uuid4().hex}.staging.json"
+    )
+    if published_manifest.exists():
+        shutil.copyfile(published_manifest, staged_manifest)
     manifest: dict[str, Any] | None = None
     chunk_start = clipped_start
     while chunk_start < clipped_end:
         chunk_end = min(chunk_start + timedelta(days=chunk_days), clipped_end)
-        manifest = _materialize_window(start=chunk_start, end=chunk_end, root=root)
+        manifest = _materialize_window(
+            start=chunk_start, end=chunk_end, root=root, manifest_path=staged_manifest
+        )
         chunk_start = chunk_end
     assert manifest is not None  # loop runs at least once (clipped_end > clipped_start)
+    manifest["window_start"] = clipped_start.isoformat()
+    manifest["window_end"] = clipped_end.isoformat()
+    write_manifest(staged_manifest, manifest)
+    # Each chunk stays memory-bounded; the one pointer is published only when
+    # every chunk succeeded. Failed candidates remain recoverable and unselected.
+    staged_manifest.replace(published_manifest)
     return manifest
 
 
@@ -127,7 +148,9 @@ def _materialize_window(
     start: date,
     end: date,
     root: Path | None,
+    manifest_path: Path | None = None,
 ) -> dict[str, Any]:
+    manifest_path = manifest_path or activitywatch_derived_manifest_path(root)
     output_dir = activitywatch_derived_dir(root)
     output_dir.mkdir(parents=True, exist_ok=True)
     start_dt = datetime.combine(start, time.min, tzinfo=local_tz())
@@ -137,18 +160,44 @@ def _materialize_window(
     window_rows = {
         "focus_spans": [
             _focus_span_row(span)
-            for span in focus_spans(start=start_dt, end=end_dt, min_duration_s=60.0, enrich_polylogue=True, ensure=False)
+            for span in focus_spans(
+                start=start_dt,
+                end=end_dt,
+                min_duration_s=60.0,
+                enrich_polylogue=True,
+                ensure=False,
+            )
         ],
-        "project_focus_days": [_project_focus_day_row(row) for row in project_focus_days(start=start_dt, end=end_dt, ensure=False)],
-        "daily_activity": [_daily_activity_row(row) for row in daily_activity(start=start, end=end_inclusive, ensure=False)],
-        "deep_work": [_deep_work_row(row) for row in deep_work(start=start_dt, end=end_dt, ensure=False)],
-        "circadian": [_circadian_row(row) for row in circadian(start=start, end=end_inclusive, ensure=False)],
-        "loops": [_loop_row(row) for row in loops(start=start_dt, end=end_dt, ensure=False)],
-        "fragmentation": [_fragmentation_row(row) for row in fragmentation(start=start, end=end_inclusive, ensure=False)],
-        "attention": [_attention_row(row) for row in attention(start=start, end=end_inclusive, ensure=False)],
+        "project_focus_days": [
+            _project_focus_day_row(row)
+            for row in project_focus_days(start=start_dt, end=end_dt, ensure=False)
+        ],
+        "daily_activity": [
+            _daily_activity_row(row)
+            for row in daily_activity(start=start, end=end_inclusive, ensure=False)
+        ],
+        "deep_work": [
+            _deep_work_row(row)
+            for row in deep_work(start=start_dt, end=end_dt, ensure=False)
+        ],
+        "circadian": [
+            _circadian_row(row)
+            for row in circadian(start=start, end=end_inclusive, ensure=False)
+        ],
+        "loops": [
+            _loop_row(row) for row in loops(start=start_dt, end=end_dt, ensure=False)
+        ],
+        "fragmentation": [
+            _fragmentation_row(row)
+            for row in fragmentation(start=start, end=end_inclusive, ensure=False)
+        ],
+        "attention": [
+            _attention_row(row)
+            for row in attention(start=start, end=end_inclusive, ensure=False)
+        ],
     }
 
-    previous = _load_json(activitywatch_derived_manifest_path(root))
+    previous = _load_json(manifest_path)
     paths, partition_counts = _existing_partitions(
         previous, root=root, repair_window=(start, end)
     )
@@ -168,7 +217,9 @@ def _materialize_window(
     staging_dir = generation_dir.with_name(f".{generation}.staging")
     staging_dir.mkdir(parents=True)
     next_paths: dict[str, dict[str, str]] = {
-        kind: {day: str(path) for day, path in path_map.items() if isinstance(path, Path)}
+        kind: {
+            day: str(path) for day, path in path_map.items() if isinstance(path, Path)
+        }
         for kind, path_map in paths.items()
     }
     next_counts: dict[str, dict[str, int]] = {
@@ -181,7 +232,9 @@ def _materialize_window(
             for day, legacy_rows in paths[kind].items():
                 assert isinstance(legacy_rows, list)
                 rows_by_day[day] = [
-                    row for row in legacy_rows if not (start <= _row_logical_date(kind, row) < end)
+                    row
+                    for row in legacy_rows
+                    if not (start <= _row_logical_date(kind, row) < end)
                 ]
         for row in window_rows[kind]:
             day = _row_logical_date(kind, row).isoformat()
@@ -196,7 +249,9 @@ def _materialize_window(
                 continue
             target = staging_dir / kind / f"{day}.ndjson"
             target.parent.mkdir(parents=True, exist_ok=True)
-            _write_ndjson(target, sorted(rows, key=lambda row: _row_sort_key(kind, row)))
+            _write_ndjson(
+                target, sorted(rows, key=lambda row: _row_sort_key(kind, row))
+            )
             next_paths[kind][day] = str(generation_dir / kind / target.name)
             next_counts[kind][day] = len(rows)
 
@@ -210,7 +265,9 @@ def _materialize_window(
     )
 
     input_files = activitywatch_derived_input_files()
-    covered_dates = _merge_covered_dates(root=root, start=start, end=end)
+    covered_dates = _merge_covered_dates(
+        root=root, start=start, end=end, manifest_path=manifest_path
+    )
     manifest = {
         "dataset": "lynchpin.activitywatch_derived",
         "schema_version": ACTIVITYWATCH_DERIVED_SCHEMA_VERSION,
@@ -231,7 +288,7 @@ def _materialize_window(
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
     }
-    write_manifest(activitywatch_derived_manifest_path(root), manifest)
+    write_manifest(manifest_path, manifest)
     return manifest
 
 
@@ -245,11 +302,13 @@ def activitywatch_derived_input_files() -> tuple[Path, ...]:
 def _default_window(start: date | None, end: date | None) -> tuple[date, date]:
     if start is not None and end is not None:
         return start, end
-    manifest = canonical_activitywatch_events_path().with_suffix(".manifest.json")
+    manifest = activitywatch_event_index_manifest_path()
+    if not manifest.exists():
+        manifest = canonical_activitywatch_events_path().with_suffix(".manifest.json")
     if not manifest.exists():
         raise FileNotFoundError(
-            "canonical ActivityWatch events manifest is missing; run "
-            "python -m lynchpin.ingest.activitywatch_materialize first"
+            "ActivityWatch index and recovery carrier manifests are missing; run "
+            "python -m lynchpin.ingest.activitywatch_event_index_materialize --full first"
         )
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     first = start or date.fromisoformat(str(payload["first_date"]))
@@ -298,9 +357,10 @@ def _merge_covered_dates(
     start: date,
     end: date,
     verified_bounds: tuple[date, date] | None = None,
+    manifest_path: Path | None = None,
 ) -> tuple[date, ...]:
     return merge_manifest_covered_dates(
-        manifest=activitywatch_derived_manifest_path(root),
+        manifest=manifest_path or activitywatch_derived_manifest_path(root),
         start=start,
         end=end,
         verified_bounds=verified_bounds,

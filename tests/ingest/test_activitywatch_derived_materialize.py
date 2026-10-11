@@ -354,7 +354,7 @@ def test_materialize_activitywatch_derived_chunked_matches_single_pass(monkeypat
 
     for key in ("row_counts", "row_count", "covered_dates", "first_date", "last_date"):
         assert chunked[key] == single[key]
-    assert chunked["window_start"] == "2026-06-07"  # last chunk's window
+    assert chunked["window_start"] == "2026-06-01"
     assert single["window_start"] == "2026-06-01"
 
 
@@ -476,3 +476,60 @@ def test_materialize_activitywatch_derived_noop_when_window_entirely_before_cove
         )
 
     assert not called
+
+
+def test_default_window_uses_current_index_instead_of_stale_carrier(
+    monkeypatch, tmp_path
+):
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+
+    carrier = tmp_path / "events.ndjson"
+    carrier.with_suffix(".manifest.json").write_text(
+        json.dumps({"first_date": "2026-08-01", "last_date": "2026-08-02"})
+    )
+    index = tmp_path / "index.json"
+    index.write_text(
+        json.dumps({"first_date": "2026-07-01", "last_date": "2026-08-05"})
+    )
+    monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: carrier)
+    monkeypatch.setattr(mod, "activitywatch_event_index_manifest_path", lambda: index)
+    assert mod._default_window(None, None) == (date(2026, 7, 1), date(2026, 8, 6))
+    index.unlink()
+    assert mod._default_window(None, None) == (date(2026, 8, 1), date(2026, 8, 3))
+
+
+def test_failed_later_chunk_preserves_published_manifest(monkeypatch, tmp_path):
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    from lynchpin.sources.activitywatch_models import AWDayActivity
+
+    for name in (
+        "focus_spans",
+        "project_focus_days",
+        "deep_work",
+        "circadian",
+        "loops",
+        "fragmentation",
+        "attention",
+    ):
+        monkeypatch.setattr(mod, name, lambda **_kwargs: ())
+    monkeypatch.setattr(mod, "_clip_to_real_coverage", lambda start, end: (start, end))
+    monkeypatch.setattr(mod, "activitywatch_derived_input_files", lambda: ())
+
+    def daily(*, start, **_kwargs):
+        if start == date(2026, 8, 3):
+            raise RuntimeError("injected later chunk failure")
+        return (
+            AWDayActivity(start, 1.0, 0.0, 0.0, 1, "coding", "fixture", (0.0,) * 24),
+        )
+
+    monkeypatch.setattr(mod, "daily_activity", daily)
+    mod.materialize_activitywatch_derived(
+        start=date(2026, 8, 1), end=date(2026, 8, 2), root=tmp_path
+    )
+    manifest = mod.activitywatch_derived_manifest_path(tmp_path)
+    before = manifest.read_bytes()
+    with pytest.raises(RuntimeError, match="later chunk failure"):
+        mod.materialize_activitywatch_derived(
+            start=date(2026, 8, 2), end=date(2026, 8, 4), root=tmp_path
+        )
+    assert manifest.read_bytes() == before
