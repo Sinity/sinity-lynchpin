@@ -133,6 +133,11 @@ class InputSnapshot:
 _ACTIVE: ContextVar[InputSnapshot | None] = ContextVar("materialization_inputs", default=None)
 
 
+def current_input_snapshot() -> InputSnapshot | None:
+    """Identify the current operation for source observations scoped to it."""
+    return _ACTIVE.get()
+
+
 @contextmanager
 def input_snapshot() -> Iterator[InputSnapshot]:
     """Reuse a parent's snapshot through worker contexts and promotion."""

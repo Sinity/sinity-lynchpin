@@ -20,9 +20,13 @@ from collections import defaultdict
 from bisect import bisect_left
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
-from typing import Iterable, Iterator, Sequence, TypeVar
+from typing import TYPE_CHECKING, Iterable, Iterator, Sequence, TypeVar
 
 from ..core.cache import file_signature
+from ..core.input_snapshot import current_input_snapshot
+
+if TYPE_CHECKING:
+    from .polylogue_session_attribution import SessionRepoInterval
 from ..core.config import get_config
 from ..core.classify import classify
 from ..core.coverage import CoverageBounds
@@ -321,15 +325,14 @@ def _enrich_with_session_overlap(
     from ..core.config import get_config
     from .polylogue_session_attribution import (
         attribute_spans_by_session_overlap,
-        session_repo_intervals,
     )
 
-    try:
-        db_path = get_config().polylogue_db
-        intervals = session_repo_intervals(str(db_path))
-    except Exception as exc:
-        logger.warning("polylogue session overlap unavailable: %s", exc)
-        return spans
+    db_path = str(get_config().polylogue_db)
+    operation = current_input_snapshot()
+    intervals = (
+        _session_overlap_context(db_path, _polylogue_attribution_revision(), operation)
+        if operation is not None else _read_session_overlap(db_path)
+    )
     if not intervals:
         return spans
 
@@ -339,6 +342,25 @@ def _enrich_with_session_overlap(
         if attr is not None:
             spans[i] = replace(spans[i], project=attr.project)
     return spans
+
+
+def _read_session_overlap(db_path: str) -> tuple[SessionRepoInterval, ...] | None:
+    from .polylogue_session_attribution import session_repo_intervals
+
+    try:
+        return session_repo_intervals(db_path)
+    except Exception as exc:
+        logger.warning("polylogue session overlap unavailable: %s", exc)
+        return None
+
+
+@functools.lru_cache(maxsize=8)
+def _session_overlap_context(
+    db_path: str, revision: object, operation: object,
+) -> tuple[SessionRepoInterval, ...] | None:
+    # Exceptions are not retained by the underlying lru_cache. Keep its unavailable
+    # observation for this operation, while ordinary reads and new operations retry.
+    return _read_session_overlap(db_path)
 
 
 @functools.lru_cache(maxsize=32)

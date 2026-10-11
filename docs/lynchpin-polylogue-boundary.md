@@ -47,6 +47,11 @@ timestamps bound the interval. Coverage bounds are the earliest and latest
 creation dates across those typed summaries, not the day archive-coverage
 insight, whose buckets follow the last update. An incomplete summary scan
 yields no bound. A failed facade read is unavailable, not an empty observation.
+During one materialization operation, repeated overlap reads reuse that
+unavailable observation for the same database revision and report it once.
+A changed database revision or a new operation retries the facade; ordinary
+reads outside materialization also retry, so a transient failure cannot prevent
+later attribution after recovery.
 `archive_readiness()` may inspect SQLite directly because it must diagnose the
 archive even when facade construction or a required product read is degraded.
 That diagnostic exception does not permit ordinary analysis to bypass the

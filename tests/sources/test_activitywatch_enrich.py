@@ -30,6 +30,50 @@ def _span(project: str | None = None) -> FocusSpan:
     )
 
 
+def test_session_overlap_unavailability_is_scoped_to_operation(monkeypatch, tmp_path, caplog):
+    from lynchpin.core.input_snapshot import input_snapshot
+    from lynchpin.core.errors import SourceUnavailableError
+
+    path = tmp_path / "index.db"
+    path.touch()
+    config = SimpleNamespace(polylogue_db=path)
+    monkeypatch.setattr("lynchpin.core.config.get_config", lambda: config)
+    monkeypatch.setattr(activitywatch, "get_config", lambda: config)
+    activitywatch._session_overlap_context.cache_clear()
+    calls = 0
+    unavailable = True
+    span = _span()
+
+    def read(_path):
+        nonlocal calls
+        calls += 1
+        if unavailable:
+            raise SourceUnavailableError("polylogue", path=_path, reason="synthetic unavailable")
+        return (polylogue_session_attribution.SessionRepoInterval(
+            session_id="synthetic", project="fixture", start=span.start, end=span.end,
+        ),)
+
+    monkeypatch.setattr(polylogue_session_attribution, "session_repo_intervals", read)
+    with input_snapshot():
+        for _ in range(3):
+            assert activitywatch._enrich_with_session_overlap([span], [0])[0] is span
+        assert calls == 1
+        assert sum("session overlap unavailable" in r.message for r in caplog.records) == 1
+        path.write_bytes(b"new revision")
+        assert activitywatch._enrich_with_session_overlap([span], [0])[0] is span
+        assert calls == 2
+
+    # Unchanged input identity must not poison recovery in the next operation.
+    unavailable = False
+    with input_snapshot():
+        assert activitywatch._enrich_with_session_overlap([span], [0])[0].project == "fixture"
+        assert calls == 3
+    unavailable = True
+    for _ in range(2):
+        assert activitywatch._enrich_with_session_overlap([span], [0])[0] is span
+    assert calls == 5
+
+
 def test_enrich_with_polylogue_assigns_project_without_mutating_frozen_span(monkeypatch):
     activitywatch._polylogue_attribution_context.cache_clear()
     span = _span(project=None)
