@@ -9,9 +9,9 @@ sync-state.json
 last-touched
 .exclusive-lock
 
-# Conversational/audit spill is local operator state. Reviewed issues.jsonl
-# remains the only Git-published Beads surface.
+# Beads data is local only (operator, 2026-10-12): no export is published.
 interactions.jsonl
+issues.jsonl
 
 # Daemon runtime (lock, log, pid)
 daemon.*

@@ -46,8 +46,8 @@ GitHub discussion as public.
   identity profiles, and unrelated personal information do not.
 - Operator-specific identities, vocabularies, classifications, life events, and
   filesystem roots come from external configuration.
-- `.agent/`, root `.claude/`, `.lynchpin/`, and
-  `.beads/interactions.jsonl` are local-only.
+- `.agent/`, root `.claude/`, `.lynchpin/`, and Beads data
+  (`.beads/issues.jsonl`, `.beads/interactions.jsonl`) are local-only.
 - Before committing, review the complete staged diff as public content. A path
   or regex check cannot decide whether arbitrary prose or fixture data is safe.
 - If there is any doubt whether material belongs in the public repository,
