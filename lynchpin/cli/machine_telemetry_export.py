@@ -58,12 +58,19 @@ class TableExportResult:
 
 
 class LakeVerificationError(RuntimeError):
-    """A parquet partition's row count or key checksum disagreed with SQLite."""
+    """A parquet partition's row count or full-row checksum disagreed with SQLite."""
 
 
 def _sql_literal(value: str | Path) -> str:
     """Quote values for DuckDB statements that do not accept bound paths."""
     return "'" + str(value).replace("'", "''") + "'"
+
+
+def _row_checksum_sql(conn: Any, table: str) -> str:
+    """Hash each complete source row, including NULLs and column associations."""
+    columns = conn.execute(f"SELECT * FROM src.{table} LIMIT 0").description
+    names = ['"' + column[0].replace('"', '""') + '"' for column in columns]
+    return "sum(hash(" + ", ".join(names) + "))"
 
 
 def _existing_lake_days(lake_root: Path, table: str) -> set[str]:
@@ -90,10 +97,9 @@ def verify_exported_days(
     tables with no usable `observed_at` index (`service_state`,
     `cgroup_memory_sample`), a per-day SQLite query is a full table scan --
     N of those turns verification into the same O(days) full-scan pathology
-    the design doc measured for the un-de-chunked promoter. `id` is
-    AUTOINCREMENT on every collector table and every table is insert-only, so
-    `sum(id)` is a cheap, deterministic proxy for "same set of rows" without
-    hashing every column.
+    the design doc measured for the un-de-chunked promoter. Checksums hash
+    complete rows in source column order: matching IDs alone do not prove
+    matching payloads. These aggregate checksums are not content digests.
 
     Raises `LakeVerificationError` on the first day whose row count or
     checksum disagree.
@@ -101,10 +107,11 @@ def verify_exported_days(
     if not target_days:
         return {}
     day_list_sql = ", ".join(_sql_literal(d) for d in target_days)
+    checksum_sql = _row_checksum_sql(conn, table)
     src_rows = {
         r[0]: (r[1], r[2])
         for r in conn.execute(
-            f"SELECT substr({time_col}, 1, 10) AS dt, count(*), sum(id) FROM src.{table} "
+            f"SELECT substr({time_col}, 1, 10) AS dt, count(*), {checksum_sql} FROM src.{table} "
             f"WHERE substr({time_col}, 1, 10) IN ({day_list_sql}) GROUP BY dt"
         ).fetchall()
     }
@@ -112,7 +119,7 @@ def verify_exported_days(
     pq_rows = {
         r[0]: (r[1], r[2])
         for r in conn.execute(
-            "SELECT CAST(dt AS VARCHAR), count(*), sum(id) FROM read_parquet(?, hive_partitioning = true) GROUP BY dt",
+            f"SELECT CAST(dt AS VARCHAR), count(*), {checksum_sql} FROM read_parquet(?, hive_partitioning = true) GROUP BY dt",
             [globs],
         ).fetchall()
     }
@@ -257,13 +264,12 @@ def _export_metadata_table(conn: Any, *, table: str, lake_root: Path) -> int:
             f"COPY (SELECT * FROM src.{table}) TO {_sql_literal(staged_file)} "
             "(FORMAT PARQUET, COMPRESSION ZSTD)"
         )
+        checksum_sql = _row_checksum_sql(conn, table)
         source_count, source_checksum = conn.execute(
-            "SELECT count(*), sum(hash(source, checked_at, status, "
-            "coalesce(reason, ''), payload_json)) FROM src.source_status"
+            f"SELECT count(*), {checksum_sql} FROM src.{table}"
         ).fetchone()
         parquet_count, parquet_checksum = conn.execute(
-            "SELECT count(*), sum(hash(source, checked_at, status, "
-            "coalesce(reason, ''), payload_json)) FROM read_parquet(?)",
+            f"SELECT count(*), {checksum_sql} FROM read_parquet(?)",
             [str(staged_file)],
         ).fetchone()
         if (parquet_count, parquet_checksum) != (source_count, source_checksum):
@@ -326,6 +332,10 @@ def run_export(
 ) -> list[TableExportResult]:
     import duckdb
 
+    if tables:
+        unknown = set(tables) - {table for table, _ in _TABLES} - set(_METADATA_TABLES)
+        if unknown:
+            raise ValueError(f"unknown telemetry export tables: {', '.join(sorted(unknown))}")
     export_time = now or datetime.now(timezone.utc)
     today = export_time.astimezone(timezone.utc).date()
     lake_root.mkdir(parents=True, exist_ok=True)

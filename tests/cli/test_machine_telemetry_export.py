@@ -282,3 +282,95 @@ def test_export_accepts_apostrophes_in_configured_paths(tmp_path, quoted_source,
     full = run_export(sqlite_path=db, lake_root=lake, tables=("gpu_sample",), now=now, full=True)
     assert full[0].rows_exported == 2
     assert json.loads((lake / "manifest.json").read_text())["source_database"] == str(db)
+
+
+@pytest.mark.parametrize("change", ["value", "association", "null", "extra_column"])
+@pytest.mark.parametrize("full", [False, True])
+def test_export_rejects_changed_payload_with_unchanged_ids(tmp_path, change, full):
+    import duckdb
+    from lynchpin.cli.machine_telemetry_export import LakeVerificationError, run_export, _sql_literal
+
+    db = tmp_path / "source.sqlite"
+    lake = tmp_path / "lake"
+    _seed_source_db(db, {"2026-08-15": 2})
+    with sqlite3.connect(db) as source:
+        if change == "null":
+            source.execute("UPDATE gpu_sample SET gpu_power_w = NULL WHERE id = 1")
+        if change == "extra_column":
+            source.execute('ALTER TABLE gpu_sample ADD COLUMN "extra""payload" TEXT')
+            source.execute('UPDATE gpu_sample SET "extra""payload" = \'original\'')
+    kwargs = dict(sqlite_path=db, lake_root=lake, tables=("gpu_sample",),
+                  now=datetime(2026, 8, 17, tzinfo=timezone.utc))
+    run_export(**kwargs)
+    part = next((lake / "gpu_sample/dt=2026-08-15").glob("*.parquet"))
+    changed = tmp_path / "changed.parquet"
+    replacements = {
+        "value": "gpu_power_w + 1 AS gpu_power_w",
+        "association": "CASE WHEN id = 1 THEN 101.0 ELSE 100.0 END AS gpu_power_w",
+        "null": "coalesce(gpu_power_w, 0.0) AS gpu_power_w",
+        "extra_column": '\'changed\' AS "extra""payload"',
+    }
+    with duckdb.connect() as conn:
+        conn.execute(f"COPY (SELECT * REPLACE ({replacements[change]}) "
+                     f"FROM read_parquet({_sql_literal(part)}, hive_partitioning=false)) "
+                     f"TO {_sql_literal(changed)} (FORMAT PARQUET)")
+    changed.replace(part)
+    preimage = part.read_bytes()
+    manifest_before = (lake / "manifest.json").read_bytes()
+    with pytest.raises(LakeVerificationError):
+        run_export(**kwargs, full=full)
+    assert part.read_bytes() == preimage
+    assert (lake / "manifest.json").read_bytes() == manifest_before
+
+
+@pytest.mark.parametrize("change", ["null_reason", "extra_column"])
+def test_metadata_payload_mismatch_preserves_published_file(tmp_path, change):
+    import duckdb
+    from lynchpin.cli.machine_telemetry_export import (
+        LakeVerificationError, _export_metadata_table, _sql_literal,
+    )
+
+    db = tmp_path / "source.sqlite"
+    lake = tmp_path / "lake"
+    _seed_source_db(db, {})
+    with sqlite3.connect(db) as source:
+        source.execute("ALTER TABLE source_status ADD COLUMN extra_payload TEXT DEFAULT 'original'")
+    with duckdb.connect() as conn:
+        conn.execute("LOAD sqlite")
+        conn.execute(f"ATTACH {_sql_literal(db)} AS src (TYPE SQLITE, READ_ONLY)")
+        _export_metadata_table(conn, table="source_status", lake_root=lake)
+        final = lake / "source_status/metadata.parquet"
+        preimage = final.read_bytes()
+
+        class CorruptCopy:
+            def execute(self, sql, *args):
+                result = conn.execute(sql, *args)
+                if sql.startswith("COPY"):
+                    staged = next((lake / "source_status").glob(".staging-*/metadata.parquet"))
+                    changed = tmp_path / "changed.parquet"
+                    replacement = "'' AS reason" if change == "null_reason" else "'changed' AS extra_payload"
+                    conn.execute(f"COPY (SELECT * REPLACE ({replacement}) "
+                                 f"FROM read_parquet({_sql_literal(staged)})) "
+                                 f"TO {_sql_literal(changed)} (FORMAT PARQUET)")
+                    changed.replace(staged)
+                return result
+
+        with pytest.raises(LakeVerificationError):
+            _export_metadata_table(CorruptCopy(), table="source_status", lake_root=lake)
+        assert final.read_bytes() == preimage
+
+
+@pytest.mark.parametrize("tables", [("unknown_fixture_table",), ("gpu_sample", "unknown_fixture_table")])
+def test_unknown_export_selector_refuses_before_publishing(tmp_path, tables):
+    from lynchpin.cli.machine_telemetry_export import run_export
+
+    db = tmp_path / "source.sqlite"
+    lake = tmp_path / "lake"
+    _seed_source_db(db, {"2026-08-15": 2})
+    kwargs = dict(sqlite_path=db, lake_root=lake, now=datetime(2026, 8, 17, tzinfo=timezone.utc))
+    run_export(**kwargs, tables=("gpu_sample",))
+    before = {str(p.relative_to(lake)): p.read_bytes() for p in lake.rglob("*") if p.is_file()}
+    with pytest.raises(ValueError, match="unknown telemetry export tables"):
+        run_export(**kwargs, tables=tables)
+    after = {str(p.relative_to(lake)): p.read_bytes() for p in lake.rglob("*") if p.is_file()}
+    assert after == before
