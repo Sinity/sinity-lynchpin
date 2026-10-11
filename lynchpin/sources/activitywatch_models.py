@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Dict
 
+from ..core.primitives import _instant, duration_s as interval_duration_s
+
 
 @dataclass(frozen=True)
 class AWEvent:
@@ -15,7 +17,7 @@ class AWEvent:
     data: Dict[str, object]
 
     def __post_init__(self) -> None:
-        if self.end < self.start:
+        if _instant(self.end) < _instant(self.start):
             raise ValueError(
                 f"AWEvent.end ({self.end}) precedes start ({self.start})"
             )
@@ -40,7 +42,7 @@ class FocusSpan:
     positive_observations: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
-        if self.end < self.start:
+        if _instant(self.end) < _instant(self.start):
             raise ValueError(
                 f"FocusSpan.end ({self.end}) precedes start ({self.start})"
             )
@@ -51,7 +53,7 @@ class FocusSpan:
 
     @property
     def duration_s(self) -> float:
-        return max((self.end - self.start).total_seconds(), 0)
+        return interval_duration_s((self.start, self.end))
 
     @property
     def date(self) -> date:
@@ -87,7 +89,7 @@ class FocusTimelineSpan:
     positive_observations: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
-        if self.end < self.start:
+        if _instant(self.end) < _instant(self.start):
             raise ValueError(
                 f"FocusTimelineSpan.end ({self.end}) precedes start ({self.start})"
             )
@@ -98,7 +100,7 @@ class FocusTimelineSpan:
 
     @property
     def duration_s(self) -> float:
-        return max((self.end - self.start).total_seconds(), 0)
+        return interval_duration_s((self.start, self.end))
 
     @property
     def date(self) -> date:
@@ -115,7 +117,7 @@ class _WindowSpan:
     project: str | None
 
     def __post_init__(self) -> None:
-        if self.end < self.start:
+        if _instant(self.end) < _instant(self.start):
             raise ValueError(
                 f"_WindowSpan.end ({self.end}) precedes start ({self.start})"
             )
@@ -136,7 +138,7 @@ class AppSession:
     observed_intervals: tuple[tuple[datetime, datetime], ...] = ()
 
     def __post_init__(self) -> None:
-        if self.end < self.start:
+        if _instant(self.end) < _instant(self.start):
             raise ValueError(
                 f"AppSession.end ({self.end}) precedes start ({self.start})"
             )
@@ -161,7 +163,7 @@ class DeepWorkBlock:
     app_switches: int
 
     def __post_init__(self) -> None:
-        if self.end < self.start:
+        if _instant(self.end) < _instant(self.start):
             raise ValueError(
                 f"DeepWorkBlock.end ({self.end}) precedes start ({self.start})"
             )
@@ -216,7 +218,7 @@ class FocusLoop:
     dominant_project: str | None
 
     def __post_init__(self) -> None:
-        if self.end < self.start:
+        if _instant(self.end) < _instant(self.start):
             raise ValueError(
                 f"FocusLoop.end ({self.end}) precedes start ({self.start})"
             )
@@ -300,7 +302,7 @@ class SustainedFocus:
     app_switches: int
 
     def __post_init__(self) -> None:
-        if self.end < self.start:
+        if _instant(self.end) < _instant(self.start):
             raise ValueError(
                 f"SustainedFocus.end ({self.end}) precedes start ({self.start})"
             )

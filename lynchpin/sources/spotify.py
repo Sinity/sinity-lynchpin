@@ -175,7 +175,7 @@ def summarize_streaming(
     for stream in iter_streams(root=root, start=start, end=end):
         if stream.end_time is None:
             continue
-        month = f"{stream.end_time.year:04d}-{stream.end_time.month:02d}"
+        month = logical_date(stream.end_time).strftime("%Y-%m")
         if not (start_month <= month <= end_month):
             continue
         hours[month] += stream.ms_played / 3_600_000
@@ -331,7 +331,7 @@ def daily_listening(
 ) -> list[DailyListening]:
     """Daily listening aggregation: hours, top artists/tracks, unique counts."""
     from datetime import timedelta, timezone
-    from ..core.primitives import TopN, merge_intervals
+    from ..core.primitives import TopN, duration_s, merge_intervals
     if ensure and root is None and start is not None and end is not None:
         from ..materialization import ensure_materialized
 
@@ -371,7 +371,7 @@ def daily_listening(
                 tracks.add(s.track, s.ms_played)
                 track_set.add(s.track)
         merged = merge_intervals(intervals)
-        wall_clock_s = sum((iv[1] - iv[0]).total_seconds() for iv in merged)
+        wall_clock_s = sum(duration_s(iv) for iv in merged)
         result.append(DailyListening(
             date=d,
             hours=round(wall_clock_s / 3600, 2),

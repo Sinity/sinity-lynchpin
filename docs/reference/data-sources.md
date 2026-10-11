@@ -243,3 +243,10 @@ For bounded recovery, `agentctl job start lynchpin promote_incremental -- --only
 
 
 Managed capture placement is resolved from Sinnix's exported filesystem-layout registry. `LYNCHPIN_FILESYSTEM_LAYOUT` selects a registry for standalone deployments; its `activity_lanes` map contains relative paths beneath the configured data root's `activity` home. Explicit source roots retain precedence. Event readers raise `SourceUnavailableError` for missing or inaccessible configured directories; an accessible empty directory yields no events. Shallow inventory uses unknown counts and an availability reason for unavailable sources.
+
+
+### Temporal calculations and retained products
+
+Interval validation, duration and ordering use elapsed instants. Hour allocation retains the starting timezone's hour labels, including repeated hours and fractional offset transitions. Spotify monthly totals use the same logical dates as acquisition filters. ActivityWatch content acquisition uses logical-day boundaries.
+
+Activity content schema 2 and personal daily signals schema 3 identify the corrected temporal calculations. A bounded refresh refuses older retained calculations. Run an unbounded rebuild through the owning materialization operation after its inputs are available; failed rebuilds preserve the selected generation. Readiness marks older products partial until that rebuild succeeds.

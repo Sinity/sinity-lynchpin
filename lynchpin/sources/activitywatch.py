@@ -29,6 +29,7 @@ from ..core.coverage import CoverageBounds
 from ..core.title_features import extract_title_features
 from ..core.primitives import (
     TopN,
+    _instant,
     group_by_gap,
     merge_intervals,
     intersect_intervals,
@@ -624,9 +625,9 @@ def _window_spans(
         if i + 1 < len(raw_events):
             evt_end = as_local(raw_events[i + 1].start)
         else:
-            evt_end = evt_start + timedelta(seconds=5)  # last event fallback
-        if evt_end <= evt_start:
-            evt_end = evt_start + timedelta(seconds=1)
+            evt_end = (_instant(evt_start) + timedelta(seconds=5)).astimezone(evt_start.tzinfo)  # last event fallback
+        if _instant(evt_end) <= _instant(evt_start):
+            evt_end = (_instant(evt_start) + timedelta(seconds=1)).astimezone(evt_start.tzinfo)
         timed.append((evt_start, evt_end, evt))
 
     raw_spans: list[_WindowSpan] = []
@@ -673,7 +674,7 @@ def _window_spans(
             classification_cache[cache_key] = cached
         mode, project = cached
         if active is None:
-            overlaps = [(max(evt_start, start_local), min(evt_end, end_local))]
+            overlaps = [(max(evt_start, start_local, key=_instant), min(evt_end, end_local, key=_instant))]
         else:
             overlaps, iv_idx = intersect_intervals(evt_start, evt_end, active, iv_idx)
         for ov_start, ov_end in overlaps:
@@ -690,7 +691,7 @@ def _window_spans(
                 )
     # Linearize merges consecutive same-app spans; filter short ones after merge
     merged = _linearize_windows(raw_spans)
-    return [w for w in merged if (w.end - w.start).total_seconds() >= min_duration_s]
+    return [w for w in merged if duration_s((w.start, w.end)) >= min_duration_s]
 
 
 def _attributed_windows(
@@ -816,17 +817,17 @@ def _linearize_windows(spans: Sequence[_WindowSpan]) -> list[_WindowSpan]:
     """Resolve overlapping windows by preferring richer attribution."""
     if not spans:
         return []
-    ordered = sorted(spans, key=lambda s: (s.start, s.end, s.app, s.title))
+    ordered = sorted(spans, key=lambda s: (_instant(s.start), _instant(s.end), s.app, s.title))
     emitted: list[_WindowSpan] = []
     current = ordered[0]
     for span in ordered[1:]:
-        if span.start >= current.end:
+        if _instant(span.start) >= _instant(current.end):
             _append_or_merge_win(emitted, current)
             current = span
         else:
-            if span.start > current.start:
+            if _instant(span.start) > _instant(current.start):
                 clipped = replace(current, end=span.start)
-                if clipped.end > clipped.start:
+                if _instant(clipped.end) > _instant(clipped.start):
                     _append_or_merge_win(emitted, clipped)
             current = span if _win_score(span) >= _win_score(current) else current
     _append_or_merge_win(emitted, current)
@@ -837,12 +838,12 @@ def _win_score(s: _WindowSpan) -> tuple[int, int, float]:
     return (
         1 if s.project else 0,
         1 if s.mode else 0,
-        (s.end - s.start).total_seconds(),
+        duration_s((s.start, s.end)),
     )
 
 
 def _append_or_merge_win(target: list[_WindowSpan], span: _WindowSpan) -> None:
-    if span.end <= span.start:
+    if _instant(span.end) <= _instant(span.start):
         return
     if target:
         prev = target[-1]
@@ -852,9 +853,9 @@ def _append_or_merge_win(target: list[_WindowSpan], span: _WindowSpan) -> None:
             and prev.mode == span.mode
             and prev.project == span.project
             and logical_date(prev.start) == logical_date(span.start)
-            and prev.end >= span.start
+            and _instant(prev.end) >= _instant(span.start)
         ):
-            target[-1] = replace(prev, end=max(prev.end, span.end))
+            target[-1] = replace(prev, end=max(prev.end, span.end, key=_instant))
             return
     target.append(span)
 
@@ -871,11 +872,11 @@ def _merge_adjacent(spans: Sequence[FocusSpan]) -> Iterator[FocusSpan]:
             and current.mode == s.mode
             and current.project == s.project
             and logical_date(current.start) == logical_date(s.start)
-            and current.end >= s.start
+            and _instant(current.end) >= _instant(s.start)
         ):
             current = FocusSpan(
                 start=current.start,
-                end=max(current.end, s.end),
+                end=max(current.end, s.end, key=_instant),
                 kind=current.kind,
                 app=current.app,
                 title=current.title,
@@ -905,11 +906,11 @@ def _merge_timeline_adjacent(
             and current.project == span.project
             and current.source == span.source
             and logical_date(current.start) == logical_date(span.start)
-            and current.end >= span.start
+            and _instant(current.end) >= _instant(span.start)
         ):
             current = FocusTimelineSpan(
                 start=current.start,
-                end=max(current.end, span.end),
+                end=max(current.end, span.end, key=_instant),
                 kind=current.kind,
                 app=current.app,
                 title=current.title,
@@ -1145,7 +1146,7 @@ def loops(
             if second is None or _ctx(first) == _ctx(second):
                 i += 1
                 continue
-            if (second.start - first.end).total_seconds() > max_gap:
+            if duration_s((first.end, second.start)) > max_gap:
                 i += 1
                 continue
             ctx_a, ctx_b = _ctx(first), _ctx(second)
@@ -1154,7 +1155,7 @@ def loops(
             j = i + 2
             while j < len(ds):
                 span = ds[j]
-                if (span.start - collected[-1].end).total_seconds() > max_gap:
+                if duration_s((collected[-1].end, span.start)) > max_gap:
                     break
                 ctx = _ctx(span)
                 if ctx not in {ctx_a, ctx_b} or ctx != expected:
@@ -1163,7 +1164,7 @@ def loops(
                 expected = ctx_b if expected == ctx_a else ctx_a
                 j += 1
             if len(collected) >= min_spans:
-                dur = (collected[-1].end - collected[0].start).total_seconds() / 60
+                dur = duration_s((collected[0].start, collected[-1].end)) / 60
                 if dur >= 8:
                     projects = TopN(1)
                     for s in collected:
@@ -1238,7 +1239,7 @@ def _focus_stretches(sessions: Sequence[AppSession]) -> list[float]:
     mins = sessions[0].duration_s / 60
     end = sessions[0].end
     for s in sessions[1:]:
-        gap_min = max((s.start - end).total_seconds(), 0) / 60
+        gap_min = duration_s((end, s.start)) / 60
         if _session_ctx(s) == key and gap_min <= 5:
             mins += gap_min + s.duration_s / 60
             end = s.end

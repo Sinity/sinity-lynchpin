@@ -528,6 +528,7 @@ def test_materialize_personal_daily_signals_merges_window_and_tracks_precise_cov
     output.with_suffix(".manifest.json").write_text(
         json.dumps(
             {
+                "schema_version": PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION,
                 "row_order": "logical_date",
                 "row_offsets": offsets,
                 "row_counts": {"2026-05-01": 1},
@@ -1191,3 +1192,23 @@ def test_daily_signal_contract_sources_have_materializer_branches() -> None:
     materialized_sources = set(re.findall(r'_clip_window\(audit_by_name, "([^"]+)"', source))
 
     assert set(DAILY_SIGNAL_SOURCE_NAMES) <= materialized_sources
+
+
+def test_retired_personal_temporal_schema_preserves_selected_generation(monkeypatch, tmp_path):
+    from lynchpin.ingest import personal_signals_materialize as materializer
+
+    output = tmp_path / "personal_daily_signals.ndjson"
+    rows = [("activity_content", date(2026, 5, 1), "focused_minutes", 10.0, {})]
+    monkeypatch.setattr(materializer, "_personal_daily_signal_rows_with_inputs", lambda: (rows, ()))
+    materialize_personal_daily_signals(output=output)
+    manifest_path = output.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema_version"] = PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION - 1
+    manifest_path.write_text(json.dumps(manifest))
+    before = (output.read_bytes(), manifest_path.read_bytes())
+    monkeypatch.setattr(materializer, "_window_personal_daily_signal_rows_with_inputs", lambda start, end: ([], ()))
+    with pytest.raises(MaterializationError):
+        materialize_personal_daily_signals(output=output, start=date(2026, 5, 2), end=date(2026, 5, 4))
+    assert (output.read_bytes(), manifest_path.read_bytes()) == before
+    result = materialize_personal_daily_signals(output=output)
+    assert result["schema_version"] == PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION

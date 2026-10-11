@@ -74,3 +74,9 @@ verify-title-aggregates:
     just lint
     just typecheck
     pytest -q tests/substrate/test_product_lineage.py tests/analysis/test_substrate_promote_personal.py tests/mcp/test_analytical_read_provenance.py
+
+[positional-arguments]
+verify-temporal-consumers *args:
+    just lint
+    just typecheck
+    pytest -q tests/core/test_primitives.py tests/sources/test_source_activitywatch.py tests/sources/test_source_spotify.py tests/ingest/test_activity_content_materialize.py tests/ingest/test_temporal_signals_materialize.py tests/ingest/test_personal_materializers.py "$@"

@@ -73,6 +73,8 @@ def test_materialize_activity_content_bounds_focus_windows(monkeypatch, tmp_path
 
 
 def _write_preserved_daily_fixture(output, day: str) -> None:
+    from lynchpin.ingest.activity_content_materialize import ACTIVITY_CONTENT_SCHEMA_VERSION
+
     preserved_row = {
         "date": day,
         "focused_seconds": 120.0,
@@ -90,7 +92,7 @@ def _write_preserved_daily_fixture(output, day: str) -> None:
     }
     output.write_text(json.dumps(preserved_row) + "\n", encoding="utf-8")
     output.with_suffix(".manifest.json").write_text(
-        f'{{"first_date": "{day}", "last_date": "{day}"}}\n',
+        json.dumps({"first_date": day, "last_date": day, "schema_version": ACTIVITY_CONTENT_SCHEMA_VERSION}) + "\n",
         encoding="utf-8",
     )
 
@@ -377,6 +379,7 @@ def test_failed_bootstrap_does_not_turn_file_creation_into_completion(content_re
     output.parent.mkdir(parents=True)
     output.write_text(json.dumps({"date": "2026-01-01", "focused_seconds": 60,
                                  "matched_seconds": 0, "source_counts": {}}) + "\n")
+    output.with_suffix(".manifest.json").write_text(json.dumps({"schema_version": materializer.ACTIVITY_CONTENT_SCHEMA_VERSION}))
     original = materializer.focus_spans
     with monkeypatch.context() as patch:
         def fail(**kwargs):
@@ -474,3 +477,37 @@ def test_bootstrap_checks_fact_days_not_only_the_grand_total(content_refresh):
         connection.execute("UPDATE title_usage_daily SET focused_seconds = 120 WHERE day = '2026-01-02'")
     refresh(start=date(2026, 1, 2))
     assert totals() == (120,) * 4
+
+
+def test_retired_temporal_bundle_requires_full_rebuild(content_refresh, monkeypatch):
+    from lynchpin.core.errors import MaterializationError
+
+    materializer, output, seconds, refresh, totals = content_refresh
+    refresh()
+    manifest_path = output.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema_version"] = materializer.ACTIVITY_CONTENT_SCHEMA_VERSION - 1
+    manifest_path.write_text(json.dumps(manifest))
+    old_output = output.read_bytes()
+    old_manifest = manifest_path.read_bytes()
+    old_selection = output.resolve().parent
+    monkeypatch.setattr(materializer, "_default_window", lambda start, end: (date(2026, 1, 1), date(2026, 1, 3)))
+    with pytest.raises(MaterializationError, match="unbounded rebuild"):
+        refresh()
+    assert output.resolve().parent == old_selection
+    assert output.read_bytes() == old_output
+    assert manifest_path.read_bytes() == old_manifest
+    with monkeypatch.context() as patch:
+        def fail(**kwargs):
+            raise RuntimeError("injected acquisition failure")
+        patch.setattr(materializer, "focus_spans", fail)
+        with pytest.raises(RuntimeError, match="acquisition failure"):
+            materializer.materialize_activity_content(output=output)
+    assert output.resolve().parent == old_selection
+    assert output.read_bytes() == old_output
+    assert manifest_path.read_bytes() == old_manifest
+    seconds[date(2026, 1, 2)] = 120
+    result = materializer.materialize_activity_content(output=output)
+    assert result["schema_version"] == materializer.ACTIVITY_CONTENT_SCHEMA_VERSION
+    assert output.resolve().parent != old_selection
+    assert totals() == (180, 180, 180, 180)

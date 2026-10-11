@@ -123,7 +123,7 @@ def group_by_gap(
         if gap <= max_gap and anchor is not None and compatible(anchor, item):
             current.append(item)
             anchor = item
-            if current_end is None or item_end > current_end:
+            if current_end is None or _instant(item_end) > _instant(current_end):
                 current_end = item_end
         elif (
             gap <= max_gap
@@ -132,7 +132,7 @@ def group_by_gap(
         ):
             current.append(item)
             interruptions += 1
-            if current_end is None or item_end > current_end:
+            if current_end is None or _instant(item_end) > _instant(current_end):
                 current_end = item_end
         else:
             if current_start is None or current_end is None:
@@ -275,13 +275,28 @@ def split_by_day(start: datetime, end: datetime) -> Iterator[tuple[date, Interva
 
 
 def split_by_hour(start: datetime, end: datetime) -> Iterator[tuple[int, Interval]]:
-    """Split an interval into per-hour segments."""
-    cursor = start
-    while cursor < end:
-        next_hour = cursor.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        segment_end = min(end, next_hour)
-        if segment_end > cursor:
-            yield cursor.hour, (cursor, segment_end)
+    """Allocate elapsed time to hour labels in the start's timezone."""
+    cursor = start if start.tzinfo is not None else as_local(start)
+    end_instant = _instant(end)
+    while _instant(cursor) < end_instant:
+        cursor_instant = _instant(cursor)
+        until_hour = timedelta(hours=1) - timedelta(
+            minutes=cursor.minute, seconds=cursor.second, microseconds=cursor.microsecond,
+        )
+        candidate = min(end_instant, cursor_instant + until_hour)
+        # A transition may change the label before the nominal hour boundary,
+        # including fractional-hour and historical timezone changes.
+        if candidate.astimezone(cursor.tzinfo).utcoffset() != cursor.utcoffset():
+            left, right = cursor_instant, candidate
+            while right - left > timedelta(microseconds=1):
+                middle = left + (right - left) // 2
+                if middle.astimezone(cursor.tzinfo).utcoffset() == cursor.utcoffset():
+                    left = middle
+                else:
+                    right = middle
+            candidate = right
+        segment_end = candidate.astimezone(cursor.tzinfo)
+        yield cursor.hour, (cursor, segment_end)
         cursor = segment_end
 
 

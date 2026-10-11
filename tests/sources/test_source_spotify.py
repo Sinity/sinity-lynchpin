@@ -265,3 +265,41 @@ def test_spotify_monthly_summary_uses_bounded_stream_reader(monkeypatch):
 
     assert calls == [(None, date(2026, 5, 1), date(2026, 6, 1), True)]
     assert summary.hours == {"2026-05": 1.0}
+
+
+def test_daily_listening_elapsed_time_across_dst(tmp_path, monkeypatch) -> None:
+    from lynchpin.core.parse import local_tz
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    local_tz.cache_clear()
+    try:
+        for case, ending in [("autumn", "2026-10-25 02:00"), ("spring", "2026-03-29 02:00")]:
+            root = tmp_path / case
+            root.mkdir()
+            (root / "StreamingHistory0.json").write_text(json.dumps([{"endTime": ending, "artistName": "Artist", "trackName": "Track", "msPlayed": 7200000}]))
+            day = daily_listening(root=root, ensure=False)[0]
+            assert day.hours == day.playback_hours == 2.0
+    finally:
+        local_tz.cache_clear()
+
+
+def test_monthly_listening_is_additive_across_logical_month_and_year_boundaries(tmp_path, monkeypatch) -> None:
+    from lynchpin.core.parse import local_tz
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    local_tz.cache_clear()
+    try:
+        for index, (ending, first, second) in enumerate([
+            ("2026-02-01 02:00", "2026-01", "2026-02"),
+            ("2026-01-01 02:00", "2025-12", "2026-01"),
+        ]):
+            root = tmp_path / str(index)
+            root.mkdir()
+            (root / "StreamingHistory0.json").write_text(json.dumps([{"endTime": ending, "artistName": "Artist", "trackName": "Track", "msPlayed": 60000}]))
+            one = spotify.summarize_streaming(first, first, root=root).hours
+            two = spotify.summarize_streaming(second, second, root=root).hours
+            combined = spotify.summarize_streaming(first, second, root=root).hours
+            assert abs((sum(one.values()) + sum(two.values())) * 3600 - 60) < 1e-9
+            assert abs(sum(combined.values()) * 3600 - 60) < 1e-9
+            assert one == {first: 1 / 60}
+            assert two == {}
+    finally:
+        local_tz.cache_clear()

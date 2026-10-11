@@ -11,15 +11,15 @@ import sqlite3
 import sys
 from collections import Counter, defaultdict
 from contextlib import closing
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
 from ..core.io import atomic_exchange_paths, latest_mtime_iso
 from ..core.errors import MaterializationError
 from ..core.cache import input_versions, manifest_versions_current
-from ..core.parse import local_tz
-from ..core.primitives import duration_s, split_by_day
+from ..core.parse import as_local
+from ..core.primitives import date_to_dt_range, duration_s, split_by_day
 from ..sources.activity_content import activity_content_daily_path, activity_title_usage_path
 from ..sources.activitywatch import focus_spans
 from ..sources.activitywatch_raw import canonical_activitywatch_events_path
@@ -29,7 +29,7 @@ from ._manifest import atomic_write_ndjson, product_lock, write_manifest
 from ..materializers.partition_store import ArtifactStore, ProductPartitionKey, deterministic_input_digest
 
 
-ACTIVITY_CONTENT_SCHEMA_VERSION = 1
+ACTIVITY_CONTENT_SCHEMA_VERSION = 2
 DEFAULT_CHUNK_DAYS = 30
 RECENT_CHUNK_DAYS = 1
 RECENT_WINDOW_DAYS = 30
@@ -361,7 +361,19 @@ def materialize_activity_content(
         _fsync_directory(output.parent)
         previous = current.resolve(strict=True)
         selected_output = previous / output.name
-        if start is None or end is None:
+        selected_manifest = _read_manifest(selected_output.with_suffix(".manifest.json"))
+        history = _read_existing_daily(selected_output) if selected_output.exists() else {}
+        incompatible = bool(history) and selected_manifest.get("schema_version") != ACTIVITY_CONTENT_SCHEMA_VERSION
+        if incompatible:
+            if start is not None or end is not None:
+                raise MaterializationError(
+                    "activity_content",
+                    reason="retired temporal calculations require an unbounded rebuild; partial reuse is unavailable",
+                )
+            start, end = _default_window(None, None)
+            start = min(start, min(history))
+            end = max(end, max(history) + timedelta(days=1))
+        if not incompatible and (start is None or end is None):
             files = activity_content_input_files()
             daily_store = ArtifactStore(previous / f".{output.stem}.partitions")
             usage_store = ArtifactStore(previous / ".title_usage.partitions")
@@ -372,7 +384,12 @@ def materialize_activity_content(
                     and manifest_versions_current(selected_manifest, files)):
                 return selected_manifest
         generation = root / f"gen-{uuid.uuid4().hex}"
-        _copy_bundle(previous, generation, names)
+        if incompatible:
+            # Build every retained day afresh, retaining the previous bundle if
+            # acquisition or validation fails. Never relabel old calculations.
+            generation.mkdir(mode=0o700)
+        else:
+            _copy_bundle(previous, generation, names)
         staged_output = generation / output.name
         manifest = _materialize_activity_content(start=start, end=end, output=staged_output)
         manifest["generation_id"] = generation.name
@@ -481,8 +498,7 @@ def _materialize_activity_content(
                 chunk_end = min(cursor + timedelta(days=DEFAULT_CHUNK_DAYS), recent_start)
             else:
                 chunk_end = min(cursor + timedelta(days=RECENT_CHUNK_DAYS), end)
-            span_start = datetime.combine(cursor, time.min, tzinfo=local_tz())
-            span_end = datetime.combine(chunk_end, time.min, tzinfo=local_tz())
+            span_start, span_end = map(as_local, date_to_dt_range(cursor, chunk_end - timedelta(days=1)))
             for span in focus_spans(start=span_start, end=span_end, enrich_polylogue=False, ensure=False):
                 if span.kind != "focused" or not span.title or not span.app or span.duration_s <= 0:
                     continue

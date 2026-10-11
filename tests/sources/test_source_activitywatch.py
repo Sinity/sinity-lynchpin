@@ -547,3 +547,23 @@ def test_daily_activity_no_floor_filters_nothing(monkeypatch) -> None:
 
     result = aw.daily_activity(start=date(2013, 1, 1), end=date(2013, 1, 31), ensure=False)
     assert {row.date for row in result} == {some_day}
+
+
+def test_local_fold_models_validate_instants_and_window_consumers_preserve_spans() -> None:
+    from zoneinfo import ZoneInfo
+    from lynchpin.sources.activitywatch_models import AWEvent, FocusTimelineSpan, _WindowSpan
+    from lynchpin.sources.activitywatch import _linearize_windows
+
+    zone = ZoneInfo("Europe/Warsaw")
+    a = datetime(2026, 10, 25, 0, 45, tzinfo=UTC)
+    b = datetime(2026, 10, 25, 1, 15, tzinfo=UTC)
+    for tz in (UTC, timezone(timedelta(hours=1)), zone):
+        start, end = a.astimezone(tz), b.astimezone(tz)
+        assert make_span(start, end).duration_s == 1800
+        assert FocusTimelineSpan(start, end, "focused", "app", "title", None, None, "fixture").duration_s == 1800
+        AWEvent("fixture", start, end, {})
+        window = _WindowSpan(start, end, "app", "title", None, None)
+        assert _linearize_windows([window]) == [window]
+        with pytest.raises(ValueError, match="precedes"):
+            make_span(end, start)
+        assert make_span(start, start).duration_s == 0

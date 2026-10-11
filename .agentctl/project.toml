@@ -279,3 +279,10 @@ exec = ["just", "verify-title-aggregates"]
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"
+
+[operations.verify_temporal_consumers]
+description = "Verify instant arithmetic, temporal consumers and derived output contracts"
+exec = ["just", "verify-temporal-consumers"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"

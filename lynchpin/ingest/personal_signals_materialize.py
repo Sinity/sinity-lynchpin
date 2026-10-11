@@ -29,7 +29,7 @@ from ._manifest import (
 
 
 SignalRow = tuple[str, date, str, float, dict[str, Any]]
-PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION = 2
+PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION = 3
 SPOTIFY_DAILY_SCHEMA_VERSION = 1
 
 
@@ -666,6 +666,8 @@ def _can_replace_tail(
     start: date,
     end: date,
 ) -> bool:
+    if manifest.get("schema_version") != PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION:
+        return False
     if not output.exists() or not isinstance(manifest.get("row_offsets"), dict):
         return False
     last = manifest.get("last_date")

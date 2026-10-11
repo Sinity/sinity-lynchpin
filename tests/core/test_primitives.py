@@ -192,3 +192,37 @@ class TestIntervals:
 
     def test_duration(self):
         assert duration_s((dt(10), dt(11))) == 3600.0
+
+
+def test_group_envelope_contains_later_fold_member() -> None:
+    from types import SimpleNamespace
+    zone = ZoneInfo("Europe/Warsaw")
+    bounds = [(datetime(2026, 10, 25, 0, 40, tzinfo=UTC), datetime(2026, 10, 25, 0, 50, tzinfo=UTC)),
+              (datetime(2026, 10, 25, 1, 10, tzinfo=UTC), datetime(2026, 10, 25, 1, 20, tzinfo=UTC))]
+    for tz in (UTC, timezone(timedelta(hours=1)), zone):
+        items = [SimpleNamespace(start=a.astimezone(tz), end=b.astimezone(tz)) for a, b in bounds]
+        groups = list(group_by_gap(items, start_of=lambda x: x.start, end_of=lambda x: x.end, max_gap=1800))
+        assert len(groups) == 1
+        assert groups[0].end.astimezone(UTC) == bounds[-1][1]
+        assert duration_s((groups[0].start, groups[0].end)) == 2400
+
+
+def test_hour_allocation_conserves_elapsed_time_across_transitions() -> None:
+    cases = [
+        ("Europe/Warsaw", datetime(2026,10,25,0,45,tzinfo=UTC), datetime(2026,10,25,1,15,tzinfo=UTC), {2:1800}),
+        ("Australia/Lord_Howe", datetime(2026,4,4,14,45,tzinfo=UTC), datetime(2026,4,4,15,45,tzinfo=UTC), {1:2700, 2:900}),
+        ("Australia/Lord_Howe", datetime(2026,10,3,15,15,tzinfo=UTC), datetime(2026,10,3,16,15,tzinfo=UTC), {1:900, 2:1800, 3:900}),
+        ("Pacific/Chatham", datetime(2026,4,4,13,55,tzinfo=UTC), datetime(2026,4,4,14,25,tzinfo=UTC), {2:900, 3:900}),
+    ]
+    for name, start, end, expected in cases:
+        zone = ZoneInfo(name)
+        segments = list(split_by_hour(start.astimezone(zone), end.astimezone(zone)))
+        totals = {}
+        for hour, interval in segments:
+            assert interval[0].hour == hour
+            assert interval[0].astimezone(UTC) < interval[1].astimezone(UTC)
+            totals[hour] = totals.get(hour, 0) + duration_s(interval)
+        assert totals == expected
+        assert sum(totals.values()) == duration_s((start, end))
+        assert list(split_by_hour(end.astimezone(zone), start.astimezone(zone))) == []
+        assert list(split_by_hour(start.astimezone(zone), start.astimezone(zone))) == []
