@@ -7,8 +7,12 @@ archival lake (``exports/raindrop/raw/``):
   paginated), highlights — JSON/JSONL plus an ``EXPORT-MANIFEST.json``.
 - **permanent copies**: bulk-download of Raindrop's cached page snapshots
   (``cache.status == "ready"``) as ``{id}.html.gz``. Resumable (existing
-  non-empty files are skipped), failures append to ``errors.jsonl``, and
+  retained non-empty files are skipped), failures append to ``errors.jsonl``, and
   ``--only-ids`` retries specific items.
+
+New copies are staged and published only after a complete write. Existing
+historical copies retain their bytes; ``verify_copies`` checks complete gzip
+streams without assuming that a non-empty historical file is verified.
 
 Folded from the 2026-08-02 one-off scripts (sinnix-0h2). This module is
 acquisition-only; ``sources.raindrop_live`` stays the live-API read/analysis
@@ -25,10 +29,12 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import zlib
 from collections.abc import Iterable, Iterator
 from datetime import date
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from ..core.config import get_config
 from ._manifest import atomic_write_ndjson, atomic_write_text
@@ -234,7 +240,19 @@ def download_permanent_copies(
                 continue
             try:
                 data = _request_bytes(f"{RAINDROP_API_BASE}/raindrop/{rid}/cache", token)
-                (out_dir / f"{rid}{sniff_extension(data[:16])}").write_bytes(data)
+                if not data:
+                    raise ValueError("cached copy response is empty")
+                target = out_dir / f"{rid}{sniff_extension(data[:16])}"
+                staged = out_dir / f".{target.name}.{uuid4().hex}.partial"
+                staged.write_bytes(data)
+                with staged.open("rb") as handle:
+                    os.fsync(handle.fileno())
+                staged.replace(target)
+                directory_fd = os.open(out_dir, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
                 done += 1
             except urllib.error.HTTPError as exc:
                 errlog.write(json.dumps({"id": rid, "code": exc.code}) + "\n")
@@ -272,8 +290,9 @@ def verify_copies(out_dir: Path, ids: Iterable[int]) -> list[int]:
         if path.suffix == ".gz":
             try:
                 with gzip.open(path, "rb") as handle:
-                    handle.read(64)
-            except OSError:
+                    while handle.read(1024 * 1024):
+                        pass
+            except (OSError, EOFError, zlib.error):
                 bad.append(rid)
     return bad
 

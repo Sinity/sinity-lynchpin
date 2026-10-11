@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import gzip
+import io
 import json
+from pathlib import Path
 
 from lynchpin.ingest import raindrop_archive as mod
 
@@ -142,3 +145,35 @@ def test_rename_by_content_repairs_mislabeled_corpus(tmp_path):
     assert (tmp_path / "10.html.gz").exists()
     assert (tmp_path / "11.html").exists()
     assert (tmp_path / "12.pdf").exists()
+
+
+def test_failed_copy_write_remains_retryable(tmp_path, monkeypatch):
+    src = tmp_path / "all.jsonl"
+    _write_jsonl(src, [{"_id": 7, "cache": {"status": "ready"}}])
+    out = tmp_path / "copies"
+    monkeypatch.setattr(mod, "_request_bytes", lambda *args: b"<html>complete</html>")
+    original = Path.write_bytes
+    failed = False
+
+    def fail_once(path, data):
+        nonlocal failed
+        if not failed:
+            failed = True
+            original(path, data[:5])
+            raise OSError("injected interrupted write")
+        return original(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_once)
+    first = mod.download_permanent_copies([src], out, "fixture", delay_s=0, log=io.StringIO())
+    assert first["errors"] == 1
+    assert mod.existing_copy(out, 7) is None
+    second = mod.download_permanent_copies([src], out, "fixture", delay_s=0, log=io.StringIO())
+    assert second["downloaded"] == 1 and second["skipped"] == 0
+    assert (out / "7.html").read_bytes() == b"<html>complete</html>"
+
+
+def test_verify_copies_checks_entire_gzip_and_continues(tmp_path):
+    payload = gzip.compress(b"fixture" * 100_000)
+    (tmp_path / "7.html.gz").write_bytes(payload[:-8])
+    (tmp_path / "8.html.gz").write_bytes(payload)
+    assert mod.verify_copies(tmp_path, [7, 8]) == [7]
