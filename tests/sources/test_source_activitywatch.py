@@ -567,3 +567,26 @@ def test_local_fold_models_validate_instants_and_window_consumers_preserve_spans
         with pytest.raises(ValueError, match="precedes"):
             make_span(end, start)
         assert make_span(start, start).duration_s == 0
+
+
+def test_focus_boundaries_distinguish_repeated_local_clock_times(monkeypatch):
+    from zoneinfo import ZoneInfo
+    from lynchpin.sources import activitywatch as aw
+    from lynchpin.sources.activitywatch_models import _WindowSpan
+
+    zone = ZoneInfo("Europe/Warsaw")
+    first = datetime(2025, 10, 26, 2, 1, 39, tzinfo=zone, fold=0)
+    second = datetime(2025, 10, 26, 2, 1, 21, tzinfo=zone, fold=1)
+    end = datetime(2025, 10, 26, 2, 1, 39, tzinfo=zone, fold=1)
+    monkeypatch.setattr(aw, "_repaired_afk_events_cached", lambda *args: ([(first, end)], []))
+    monkeypatch.setattr(aw, "_window_spans", lambda *args, **kwargs: [
+        _WindowSpan(first, second, "editor", "first", None, None),
+        _WindowSpan(second, end, "browser", "second", None, None),
+    ])
+    monkeypatch.setattr(aw, "_attach_keypress_counts", lambda spans, **kwargs: spans)
+    aw._focus_spans_cached.cache_clear()
+    spans = aw._focus_spans_cached(first, end, 0.0, False, "fold-test")
+    assert [s.app for s in spans] == ["editor", "browser"]
+    assert [s.duration_s for s in spans] == [3582, 18]
+    assert sum(s.duration_s for s in spans) == 3600
+    assert spans[-1].end.fold == 1

@@ -406,41 +406,48 @@ def _focus_spans_cached(
     windows = _window_spans(start, end, active=active, min_duration_s=0.0, ensure=ensure)
 
     # Collect all boundary points
-    boundaries = {start, end}
+    # Local datetimes sharing one ZoneInfo compare wall clocks and collapse
+    # fold=0/fold=1 in sets. Key by absolute instant, retaining local values
+    # for the published spans and local day boundaries.
+    boundaries = {_instant(start): start, _instant(end): end}
+
+    def add_boundary(value: datetime) -> None:
+        boundaries[_instant(value)] = value
+
     for s, e in active:
-        boundaries.add(max(s, start))
-        boundaries.add(min(e, end))
+        add_boundary(max(s, start, key=_instant))
+        add_boundary(min(e, end, key=_instant))
     for s, e in afk:
-        boundaries.add(max(s, start))
-        boundaries.add(min(e, end))
+        add_boundary(max(s, start, key=_instant))
+        add_boundary(min(e, end, key=_instant))
     for w in windows:
-        boundaries.add(max(w.start, start))
-        boundaries.add(min(w.end, end))
+        add_boundary(max(w.start, start, key=_instant))
+        add_boundary(min(w.end, end, key=_instant))
     # Day boundaries
     cursor = datetime.combine(start.date(), time.min, tzinfo=start.tzinfo) + timedelta(
         days=1
     )
-    while cursor < end:
-        boundaries.add(cursor)
+    while _instant(cursor) < _instant(end):
+        add_boundary(cursor)
         cursor += timedelta(days=1)
 
-    ordered = sorted(boundaries)
+    ordered = [boundaries[key] for key in sorted(boundaries)]
     spans: list[FocusSpan] = []
     a_idx = w_idx = afk_idx = 0
 
     for left, right in zip(ordered, ordered[1:]):
-        if right <= left:
+        if _instant(right) <= _instant(left):
             continue
         # Advance indices past segments that end before left
-        while afk_idx < len(afk) and afk[afk_idx][1] <= left:
+        while afk_idx < len(afk) and _instant(afk[afk_idx][1]) <= _instant(left):
             afk_idx += 1
-        while a_idx < len(active) and active[a_idx][1] <= left:
+        while a_idx < len(active) and _instant(active[a_idx][1]) <= _instant(left):
             a_idx += 1
-        while w_idx < len(windows) and windows[w_idx].end <= left:
+        while w_idx < len(windows) and _instant(windows[w_idx].end) <= _instant(left):
             w_idx += 1
 
         # Priority: AFK → window → active_unknown
-        if afk_idx < len(afk) and afk[afk_idx][0] <= left and afk[afk_idx][1] >= right:
+        if afk_idx < len(afk) and _instant(afk[afk_idx][0]) <= _instant(left) and _instant(afk[afk_idx][1]) >= _instant(right):
             spans.append(
                 FocusSpan(
                     start=left,
@@ -454,8 +461,8 @@ def _focus_spans_cached(
             )
         elif (
             w_idx < len(windows)
-            and windows[w_idx].start <= left
-            and windows[w_idx].end >= right
+            and _instant(windows[w_idx].start) <= _instant(left)
+            and _instant(windows[w_idx].end) >= _instant(right)
         ):
             w = windows[w_idx]
             spans.append(
@@ -471,8 +478,8 @@ def _focus_spans_cached(
             )
         elif (
             a_idx < len(active)
-            and active[a_idx][0] <= left
-            and active[a_idx][1] >= right
+            and _instant(active[a_idx][0]) <= _instant(left)
+            and _instant(active[a_idx][1]) >= _instant(right)
         ):
             spans.append(
                 FocusSpan(

@@ -166,6 +166,15 @@ result = "json"
 cache = "none"
 timeout_seconds = 7200
 
+[operations.repair_activitywatch_derived]
+description = "Explicitly repair a bounded ActivityWatch-derived history window from retained indexed events"
+exec = ["python", "-m", "lynchpin.ingest.activitywatch_derived_materialize"]
+arguments = "required"
+pool = "bulk"
+result = "json"
+cache = "none"
+timeout_seconds = 7200
+
 [operations.repair_git_facts]
 description = "Recompute commit and file-change artifacts from owner Git histories for explicit start/end dates"
 exec = ["python", "-c", "import sys; from datetime import date; from lynchpin.analysis.active.git_facts import run_active_git_facts; run_active_git_facts('active_commit_facts.json', 'active_file_change_facts.json', start=date.fromisoformat(sys.argv[1]), end=date.fromisoformat(sys.argv[2]))"]
