@@ -526,7 +526,7 @@ def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch, t
     ]
     assert read_windows == [
         ("activity_content_days", date(2026, 5, 1), date(2026, 5, 2), False),
-        ("activity_title_usage", date(2026, 5, 1), date(2026, 5, 2), False),
+        ("activity_title_usage", None, None, False),
         ("personal_daily_signals", date(2026, 5, 1), date(2026, 5, 2), False),
     ]
     assert "BEGIN TRANSACTION" not in executed_sql
