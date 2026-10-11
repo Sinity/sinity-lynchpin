@@ -1,7 +1,9 @@
 import csv
 import json
+import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from lynchpin.ingest.exports_materialize import (
     REDDIT_CANONICAL_SCHEMA_VERSION,
@@ -12,6 +14,49 @@ from lynchpin.ingest.exports_materialize import (
     _write_manifest,
     _write_reddit_manifest,
 )
+
+
+def test_raindrop_older_export_cannot_replace_newer_observation(tmp_path, monkeypatch):
+    from lynchpin.ingest import exports_materialize as mod
+    from lynchpin.sources import exports_raindrop as source
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    cfg = SimpleNamespace(accounts_root=tmp_path / "accounts", raindrop_dir=raw, raindrop_csv=None)
+    monkeypatch.setattr(mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(source, "get_config", lambda: cfg)
+
+    def export(name, timestamp, rows):
+        path = raw / name
+        with path.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=("id", "url", "title", "tags", "created"))
+            writer.writeheader()
+            writer.writerows(rows)
+        os.utime(path, (timestamp, timestamp))
+        return path
+
+    newer = export("new.csv", 200, [{"id": 7, "url": "https://example.org/current", "title": "new", "tags": "current", "created": "2026-08-01"}])
+    mod.materialize_raindrop()
+    before = mod.raindrop_bookmarks_path().read_bytes()
+    older = export("old.csv", 100, [{"id": 7, "url": "https://example.org/current", "title": "old", "tags": "old", "created": "2026-08-01"}])
+    report = mod.materialize_raindrop()
+    assert mod.raindrop_bookmarks_path().read_bytes() == before
+    assert set(report["input_files"]) == {str(newer), str(older)}
+    row = list(source.iter_raindrop_bookmarks(ensure=False))[0]
+    assert (row.title, row.tags, row.raw["source_file"]) == ("new", ["current"], str(newer))
+
+    # CSV exports preserve historical identity/URL observations. A changed
+    # URL remains attributable; absence in a later CSV is not a deletion event.
+    export("old.csv", 100, [
+        {"id": 7, "url": "https://example.org/previous", "title": "previous"},
+        {"id": 8, "url": "https://example.org/retained", "title": "retained"},
+    ])
+    mod.materialize_raindrop()
+    rows = list(source.iter_raindrop_bookmarks(ensure=False))
+    assert {(row.id, row.url) for row in rows} == {
+        (7, "https://example.org/current"), (7, "https://example.org/previous"), (8, "https://example.org/retained"),
+    }
+    assert all(row.raw["source_file"] == str(older) for row in rows if row.url != "https://example.org/current")
 
 
 def test_communications_materialize_includes_themotte(tmp_path, monkeypatch) -> None:

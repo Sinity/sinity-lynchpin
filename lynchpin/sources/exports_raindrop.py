@@ -71,7 +71,7 @@ def list_raindrop_exports(root: Optional[Path] = None) -> list[RaindropExport]:
     if not base.exists():
         return []
     exports: list[RaindropExport] = []
-    for path in sorted(base.glob("*.csv"), key=lambda p: p.stat().st_mtime, reverse=True):
+    for path in sorted(base.glob("*.csv"), key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True):
         stat = path.stat()
         label = path.stem
         exports.append(

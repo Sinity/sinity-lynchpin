@@ -14,14 +14,14 @@ from typing import Any, Iterable
 from ..core.config import get_config
 from ..core.io import latest_mtime_iso
 from ..sources.exports_messenger import iter_fbmessenger_messages, iter_fbmessenger_threads
-from ..sources.exports_raindrop import iter_raindrop_bookmarks_all
+from ..sources.exports_raindrop import iter_raindrop_bookmarks, list_raindrop_exports
 from ..sources.spotify import iter_streams
 from ._manifest import atomic_write_ndjson, atomic_write_text, write_manifest
 
 
 SPOTIFY_STREAMS_SCHEMA_VERSION = 1
 REDDIT_CANONICAL_SCHEMA_VERSION = 2
-RAINDROP_BOOKMARKS_SCHEMA_VERSION = 1
+RAINDROP_BOOKMARKS_SCHEMA_VERSION = 2
 MESSENGER_CANONICAL_SCHEMA_VERSION = 2
 
 
@@ -138,27 +138,34 @@ def materialize_reddit() -> dict[str, Any]:
 
 
 def materialize_raindrop() -> dict[str, Any]:
+    """Union observed ID/URL pairs, taking details from the newest CSV."""
     out = raindrop_bookmarks_path()
     out.parent.mkdir(parents=True, exist_ok=True)
     rows: dict[tuple[str, str], dict[str, str]] = {}
-    for export, bookmark in iter_raindrop_bookmarks_all():
-        key = (str(bookmark.id), bookmark.url)
-        rows[key] = {
-            "id": str(bookmark.id),
-            "title": bookmark.title,
-            "note": bookmark.note,
-            "excerpt": bookmark.excerpt,
-            "url": bookmark.url,
-            "folder": bookmark.folder,
-            "tags": ",".join(bookmark.tags),
-            "created": bookmark.created.isoformat() if bookmark.created else "",
-            "cover": bookmark.cover or "",
-            "favorite": "true" if bookmark.favorite else "false",
-            "source_file": str(export.path),
-        }
+    exports = list_raindrop_exports()
+    for export in exports:
+        for bookmark in iter_raindrop_bookmarks(export.path, ensure=False):
+            key = (str(bookmark.id), bookmark.url)
+            # Export discovery is newest first. Retained older observations
+            # must not overwrite current details for the same identity/URL.
+            if key in rows:
+                continue
+            rows[key] = {
+                "id": str(bookmark.id),
+                "title": bookmark.title,
+                "note": bookmark.note,
+                "excerpt": bookmark.excerpt,
+                "url": bookmark.url,
+                "folder": bookmark.folder,
+                "tags": ",".join(bookmark.tags),
+                "created": bookmark.created.isoformat() if bookmark.created else "",
+                "cover": bookmark.cover or "",
+                "favorite": "true" if bookmark.favorite else "false",
+                "source_file": str(export.path),
+            }
     ordered = [rows[key] for key in sorted(rows)]
     _write_csv(out, ordered)
-    source_files = sorted({Path(str(row["source_file"])) for row in ordered if row.get("source_file")})
+    source_files = [export.path for export in exports]
     return _write_manifest(
         out.with_suffix(".manifest.json"),
         "raindrop.bookmarks",

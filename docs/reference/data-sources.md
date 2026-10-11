@@ -31,6 +31,8 @@ availability, coverage, provenance, iterators, and source-local summaries.
 
 Gmail Takeout materialization retains full message bodies, headers, MIME data and encoded message content alongside summary previews. `find_materialized_gmail_messages` searches the retained body and headers. Undated messages remain in the canonical product with an explicit date status; date-bounded activity excludes them. An unreadable archive prevents replacement of the last complete Gmail product.
 
+The canonical Raindrop CSV preserves observed ID/URL pairs across exports. Details for the same pair come from the newest file modification time, with filename as the deterministic tie breaker. Earlier URLs remain historical observations; absence from a later CSV is not a deletion event. Each row records its winning source, and the manifest records every inspected export, including exports that contribute no winning rows.
+
 Canonical communication event IDs hash the versioned semantic fields, including
 the complete message text, normalized timestamp, recipients, media count, and
 raw kind. The 240-character excerpt is presentation data only; exact semantic
