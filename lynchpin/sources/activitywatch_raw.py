@@ -20,6 +20,7 @@ from ..core.io import latest_mtime_iso
 from ..core.parse import as_local
 from ..core.primitives import logical_date
 from .activitywatch_event_index import (
+    ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
     activitywatch_event_index_manifest_path,
     iter_indexed_activitywatch_events,
 )
@@ -148,6 +149,14 @@ def events(
 ) -> Iterator[AWEvent]:
     start = as_local(start)
     end = as_local(end)
+    if db_path is None and not ensure and _indexed_window_available(start, end):
+        # Disabling refresh avoids recursive materialization, not the canonical
+        # read route. Use retained indexed history without scanning mutable
+        # SQLite bounds for every derived product and day.
+        yield from iter_indexed_activitywatch_events(
+            bucket_prefix=bucket_prefix, start=start, end=end,
+        )
+        return
     if db_path is None and ensure:
         from ..materialization import ensure_materialized
 
@@ -190,6 +199,28 @@ def events(
             yield from events_from_activitywatch_dbs(bucket_prefix, start=start, end=end)
         return
     yield from events_from_activitywatch_dbs(bucket_prefix, start=start, end=end, db_path=db_path)
+
+
+def _indexed_window_available(start: datetime, end: datetime) -> bool:
+    manifest = activitywatch_event_index_manifest_path()
+    if not manifest.exists():
+        return False
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        if payload.get("schema_version") != ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION:
+            return False
+        first, last = payload.get("first_date"), payload.get("last_date")
+        if not first or not last:
+            return False
+        # The indexed reader validates recipe identity and every selected
+        # partition. Unindexed dates and explicit SQLite overrides stay native.
+        return (date.fromisoformat(str(first)) <= logical_date(start)
+                and logical_date(end - timedelta(microseconds=1)) <= date.fromisoformat(str(last)))
+    except (OSError, TypeError, ValueError, AttributeError) as exc:
+        raise SourceUnavailableError(
+            "activitywatch_event_index", path=str(manifest),
+            reason=f"retained index manifest cannot be read: {exc}",
+        ) from exc
 
 
 def _indexed_last_date() -> date | None:
