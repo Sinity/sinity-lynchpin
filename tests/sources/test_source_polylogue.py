@@ -4,6 +4,8 @@ import sqlite3
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
+from polylogue.analysis.readiness import InsightReadinessEntry
+
 from lynchpin.core.parse import parse_datetime
 from lynchpin.sources import polylogue
 from lynchpin.sources.polylogue import DaySessionSummary
@@ -11,23 +13,22 @@ from lynchpin.sources.polylogue import DaySessionSummary
 
 def _readiness_entry(
     name: str, rows: int, verdict: str = "ready", expected: int | None = None
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        insight_name=name,
-        row_count=rows,
-        verdict=verdict,
-        expected_row_count=expected,
+) -> InsightReadinessEntry:
+
+    return InsightReadinessEntry(
+        insight_name=name, display_name=name, row_count=rows,
+        expected_row_count=expected, stale_count=1 if verdict == "stale" else 0,
     )
 
 
 def _readiness_report(
-    *entries: SimpleNamespace, total_conversations: int = 0
+    *entries: InsightReadinessEntry, total_conversations: int = 0
 ) -> SimpleNamespace:
     return SimpleNamespace(insights=entries, total_conversations=total_conversations)
 
 
 def _ready_client(
-    *entries: SimpleNamespace, total_conversations: int = 0
+    *entries: InsightReadinessEntry, total_conversations: int = 0
 ) -> SimpleNamespace:
     return SimpleNamespace(
         insight_readiness_report=lambda query: _readiness_report(
@@ -36,7 +37,6 @@ def _ready_client(
         ),
         list_session_profile_insights=lambda query: [object()],
         list_archive_coverage_insights=lambda query: [object()],
-        list_session_work_event_insights=lambda query: [object()],
     )
 
 
@@ -433,7 +433,7 @@ def test_work_events_reads_current_polylogue_schema(tmp_path, monkeypatch) -> No
 def test_session_profile_maps_workflow_shape_and_terminal_state() -> None:
     insight = SimpleNamespace(
         session_id="conv-1",
-        source_name="claude-code",
+        origin="claude-code-session",
         title="Implement reader",
         evidence=SimpleNamespace(
             first_message_at=None,
@@ -475,7 +475,7 @@ def test_session_profile_maps_workflow_shape_and_terminal_state() -> None:
     assert profile.workflow_shape_confidence == 0.86
     assert profile.terminal_state == "tool_left"
     assert profile.terminal_state_confidence == 0.72
-    assert profile.work_event_kind == "implementation"
+    assert profile.work_event_kind is None
 
 
 def test_daily_activity_uses_day_summaries_without_profile_query(monkeypatch):
@@ -542,7 +542,7 @@ def test_day_session_summaries_reads_current_archive_coverage_dto(monkeypatch):
                     total_words=200,
                     work_event_breakdown={"implementation": 3},
                     repos_active=("sinity-lynchpin",),
-                    origin_breakdown={"codex": 4},
+                    origin_breakdown={"codex-session": 4},
                 )
             ]
 
@@ -828,12 +828,12 @@ def test_archive_readiness_reports_populated_products(monkeypatch, tmp_path):
     assert readiness.conversation_count == 3
     assert readiness.session_profile_count == 3
     assert readiness.day_summary_count == 2
-    assert readiness.work_event_count == 7
+    assert readiness.work_event_count is None
     assert readiness.message_count is None
     assert readiness.provider_event_count is None
 
 
-def test_archive_readiness_treats_complete_stale_counts_as_ready(monkeypatch, tmp_path):
+def test_archive_readiness_marks_complete_stale_counts_degraded(monkeypatch, tmp_path):
     db = tmp_path / "polylogue.db"
     monkeypatch.setattr(polylogue, "_default_polylogue_db_path", lambda: db)
     monkeypatch.setattr(
@@ -849,17 +849,13 @@ def test_archive_readiness_treats_complete_stale_counts_as_ready(monkeypatch, tm
 
     readiness = polylogue.archive_readiness()
 
-    assert readiness.status == "ready"
-    assert (
-        readiness.reason
-        == "materialized profile, archive-coverage, and work-event products are populated"
-    )
+    assert readiness.status == "degraded"
+    assert "stale=1" in readiness.reason
 
 
 def test_archive_readiness_degrades_when_required_read_fails(monkeypatch, tmp_path):
     db = tmp_path / "polylogue.db"
     monkeypatch.setattr(polylogue, "_default_polylogue_db_path", lambda: db)
-    monkeypatch.setattr(polylogue.time, "sleep", lambda seconds: None)
 
     def fail_profile(query):
         raise RuntimeError("profile_rows_ready is false")
@@ -876,7 +872,6 @@ def test_archive_readiness_degrades_when_required_read_fails(monkeypatch, tmp_pa
             ),
             list_session_profile_insights=fail_profile,
             list_archive_coverage_insights=lambda query: [object()],
-            list_session_work_event_insights=lambda query: [object()],
         ),
     )
 
@@ -886,13 +881,12 @@ def test_archive_readiness_degrades_when_required_read_fails(monkeypatch, tmp_pa
     assert "profile_rows_ready is false" in readiness.reason
 
 
-def test_archive_readiness_retries_transient_required_read_failure(
+def test_archive_readiness_reports_transient_required_read_failure(
     monkeypatch, tmp_path
 ):
     db = tmp_path / "polylogue.db"
     calls = 0
     monkeypatch.setattr(polylogue, "_default_polylogue_db_path", lambda: db)
-    monkeypatch.setattr(polylogue.time, "sleep", lambda seconds: None)
 
     def flaky_profile(query):
         nonlocal calls
@@ -913,14 +907,13 @@ def test_archive_readiness_retries_transient_required_read_failure(
             ),
             list_session_profile_insights=flaky_profile,
             list_archive_coverage_insights=lambda query: [object()],
-            list_session_work_event_insights=lambda query: [object()],
         ),
     )
 
     readiness = polylogue.archive_readiness()
 
-    assert readiness.status == "ready"
-    assert calls == 2
+    assert readiness.status == "degraded"
+    assert calls == 1
 
 
 def test_daily_activity_gracefully_degrades_on_missing_products(monkeypatch, caplog):

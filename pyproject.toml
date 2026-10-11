@@ -9,17 +9,18 @@ description = "Local-first evidence and analysis platform for personal data expo
 authors = [{name = "Sinity"}]
 readme = "README.md"
 license = {file = "LICENSE"}
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "beautifulsoup4>=4.12",
     "cachew>=0.22",
     "claude-agent-sdk>=0.1.48",
     "cryptography>=42",
-    "duckdb>=0.10",
+    "duckdb>=1.5.5",
     "hmmlearn>=0.3",
     "mcp>=1.7",
     "numpy>=1.26",
     "polars>=1.0",
+    "pandas>=2.2",
     "polylogue",
     "pyyaml>=6.0",
     "rich>=13",
@@ -84,7 +85,7 @@ filterwarnings = [
 cache-dir = ".lynchpin/cache/ruff"
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 strict = true
 follow_imports = "silent"
 cache_dir = ".lynchpin/cache/mypy"

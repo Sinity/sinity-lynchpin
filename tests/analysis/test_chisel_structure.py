@@ -326,6 +326,8 @@ def test_source_warning_is_recorded_on_its_file_and_not_printed(tmp_path: Path, 
     rows = list(__import__("csv").DictReader((output / "structure/file_metrics.csv").open()))
 
     assert rows[0]["parse_status"] == "parsed"
-    assert rows[0]["parse_warnings"] == "line 2: SyntaxWarning: invalid escape sequence '\\('"
+    warning = rows[0]["parse_warnings"]
+    assert warning.startswith("line 2: SyntaxWarning:")
+    assert "invalid escape sequence" in warning and "\\(" in warning
     assert coverage["inventory"]["source_files_with_parse_warnings"] == 1
     assert "SyntaxWarning" not in capfd.readouterr().err

@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-import time
 from collections import Counter, defaultdict
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from functools import lru_cache
@@ -144,14 +143,13 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
     if direct is not None:
         return direct
     try:
-        from polylogue.insights.readiness import InsightReadinessQuery
+        from polylogue.analysis.readiness import InsightReadinessQuery
 
         report = _polylogue_client().insight_readiness_report(
             InsightReadinessQuery(
                 insights=(
                     "session_profiles",
                     "archive_coverage",
-                    "session_work_events",
                 )
             )
         )
@@ -165,7 +163,7 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
             conversation_stats_count=0,
             session_profile_count=0,
             day_summary_count=0,
-            work_event_count=0,
+            work_event_count=None,
             provider_event_count=None,
             derives_profiles_from_base_tables=False,
             derives_day_summaries_from_profiles=False,
@@ -174,27 +172,25 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
     entries = {entry.insight_name: entry for entry in report.insights}
     profile = entries.get("session_profiles")
     day = entries.get("archive_coverage")
-    work_event = entries.get("session_work_events")
     profile_count = _readiness_row_count(profile)
     day_count = _readiness_row_count(day)
-    work_event_count = _readiness_row_count(work_event)
+    work_event_count = None
     total_conversations = _readiness_total_conversations(report)
     incomplete_entries = tuple(
         entry
-        for entry in (profile, day, work_event)
+        for entry in (profile, day)
         if entry is None or not _readiness_entry_complete(entry)
     )
 
     if (
         profile_count > 0
         and day_count > 0
-        and work_event_count > 0
         and not incomplete_entries
     ):
         probe_error = _probe_required_insight_reads()
         if probe_error is None:
             status = "ready"
-            reason = "materialized profile, archive-coverage, and work-event products are populated"
+            reason = "materialized profile and archive-coverage products are populated"
         else:
             status = "degraded"
             reason = f"required Polylogue insight read failed: {probe_error}"
@@ -202,7 +198,6 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
         total_conversations > 0
         or profile_count > 0
         or day_count > 0
-        or work_event_count > 0
     ):
         status = "degraded"
         reason = _readiness_reason(entries)
@@ -312,22 +307,23 @@ def _readiness_row_count(entry: Any | None) -> int:
 
 
 def _readiness_entry_complete(entry: Any) -> bool:
-    row_count = _readiness_row_count(entry)
-    expected = entry.expected_row_count
-    if expected is None:
-        return entry.verdict in {"ready", "empty"} and row_count > 0
-    return row_count >= int(expected) and row_count > 0
+    return (
+        bool(entry.table_present)
+        and not entry.diverged
+        and not entry.incomplete
+        and _readiness_row_count(entry) > 0
+    )
 
 
 def _readiness_reason(entries: dict[str, Any]) -> str:
     missing = []
     degraded = []
-    for name in ("session_profiles", "archive_coverage", "session_work_events"):
+    for name in ("session_profiles", "archive_coverage"):
         entry = entries.get(name)
         if entry is None or entry.row_count == 0:
             missing.append(name)
         elif not _readiness_entry_complete(entry):
-            degraded.append(f"{name}={entry.verdict}")
+            degraded.append(f"{name}: stale={entry.stale_count}, incompatible={entry.incompatible_count}")
     parts = []
     if missing:
         parts.append("missing or empty products: " + ", ".join(missing))
@@ -338,33 +334,19 @@ def _readiness_reason(entries: dict[str, Any]) -> str:
 
 def _probe_required_insight_reads() -> str | None:
     """Verify the same insight readers used by analysis can open their products."""
-    error: str | None = None
-    for attempt in range(3):
-        try:
-            from polylogue.insights.archive import (
-                ArchiveCoverageInsightQuery,
-                SessionProfileInsightQuery,
-                SessionWorkEventInsightQuery,
-            )
+    try:
+        from polylogue.analysis.archive import ArchiveCoverageInsightQuery, SessionProfileInsightQuery
 
-            client = _polylogue_client()
-            client.list_session_profile_insights(SessionProfileInsightQuery(limit=1))
-            client.list_archive_coverage_insights(
-                ArchiveCoverageInsightQuery(group_by="day", limit=1)
-            )
-            client.list_session_work_event_insights(
-                SessionWorkEventInsightQuery(limit=1)
-            )
-            return None
-        except Exception as exc:
-            error = str(exc)
-            if attempt < 2:
-                time.sleep(0.5)
-    return error
+        client = _polylogue_client()
+        client.list_session_profile_insights(SessionProfileInsightQuery(limit=1))
+        client.list_archive_coverage_insights(ArchiveCoverageInsightQuery(group_by="day", limit=1))
+    except Exception as exc:
+        return str(exc)
+    return None
 
 
 def _require_materialized_products() -> None:
-    """Refuse to read profile / work-event products only when the archive
+    """Refuse to read current session-profile and coverage products when the archive
     can't serve them at all.
 
     ``degraded`` is treated as readable-with-caveat. Polylogue flags rows
@@ -381,7 +363,7 @@ def _require_materialized_products() -> None:
         return
     raise PolylogueMaterializationError(
         f"Polylogue insight products are not materialized: {readiness.reason}. "
-        "Run `polylogue doctor --repair --target session_insights`."
+        "Consult Polylogue source readiness and its declared convergence operation."
     )
 
 
@@ -391,7 +373,9 @@ def _require_materialized_products() -> None:
 
 
 _cached_profiles: list[SessionProfile] | None = None
-_cached_profiles_signature: tuple[int, int] | None = None
+_ProfileFileIdentity = tuple[int, int, int, int]
+_ProfileCacheSignature = tuple[str, _ProfileFileIdentity, _ProfileFileIdentity | None]
+_cached_profiles_signature: _ProfileCacheSignature | None = None
 
 
 def _profiles_from_facade() -> list[SessionProfile]:
@@ -407,7 +391,7 @@ def _profiles_from_facade() -> list[SessionProfile]:
 
     _require_materialized_products()
     try:
-        from polylogue.insights.archive import SessionProfileInsightQuery
+        from polylogue.analysis.archive import SessionProfileInsightQuery
 
         insights = _polylogue_client().list_session_profile_insights(
             SessionProfileInsightQuery(limit=None)
@@ -418,6 +402,13 @@ def _profiles_from_facade() -> list[SessionProfile]:
         ) from exc
 
     return [_session_profile_from_insight(insight) for insight in insights]
+
+
+def _provider_from_origin(origin: str) -> str:
+    from polylogue.core.enums import Origin
+    from polylogue.core.sources import provider_from_origin
+
+    return provider_from_origin(Origin(origin)).value
 
 
 def _session_profile_from_insight(insight: Any) -> SessionProfile:
@@ -443,14 +434,6 @@ def _session_profile_from_insight(insight: Any) -> SessionProfile:
     workflow_shape_confidence = 0.0
     terminal_state: Optional[str] = None
     terminal_state_confidence = 0.0
-    if inference is not None and inference.work_events:
-        kinds = [
-            str(ev["heuristic_label"])
-            for ev in inference.work_events
-            if isinstance(ev, dict) and ev.get("heuristic_label")
-        ]
-        if kinds:
-            work_event_kind = Counter(kinds).most_common(1)[0][0]
     if inference is not None:
         workflow_shape_raw = getattr(inference, "workflow_shape", None)
         if workflow_shape_raw:
@@ -496,16 +479,14 @@ def _session_profile_from_insight(insight: Any) -> SessionProfile:
         wall_duration_ms = evidence.wall_duration_ms
 
     engaged_duration_ms = 0
-    work_event_count = 0
-    phase_count = 0
+    work_event_count = None
+    phase_count = None
     if inference is not None:
         engaged_duration_ms = inference.engaged_duration_ms
-        work_event_count = inference.work_event_count
-        phase_count = inference.phase_count
 
     return SessionProfile(
         conversation_id=insight.session_id,
-        provider=insight.source_name,
+        provider=_provider_from_origin(insight.origin),
         title=str(insight.title or ""),
         message_count=message_count,
         word_count=word_count,
@@ -533,36 +514,55 @@ def _session_profile_from_insight(insight: Any) -> SessionProfile:
 
 
 def _load_profiles() -> list[SessionProfile]:
-    """Load session profiles from the Polylogue facade."""
+    """Reuse a profile snapshot only while its observed source identity is stable."""
     global _cached_profiles, _cached_profiles_signature
     signature = _profile_cache_signature()
-    if _cached_profiles is not None and _cached_profiles_signature == signature:
+    if signature is not None and _cached_profiles is not None and _cached_profiles_signature == signature:
         return _cached_profiles
-    _cached_profiles = _profiles_from_facade()
-    _cached_profiles_signature = signature
-    return _cached_profiles
+    profiles = _profiles_from_facade()
+    if signature is not None and signature == _profile_cache_signature():
+        _cached_profiles = profiles
+        _cached_profiles_signature = signature
+    else:
+        # The reader owns its SQLite snapshot. A changed or unavailable source
+        # identity cannot certify that snapshot for later cache reuse.
+        _cached_profiles = None
+        _cached_profiles_signature = None
+    return profiles
 
 
-def _profile_cache_signature() -> tuple[int, int] | None:
-    path = _default_polylogue_db_path()
+def _profile_file_identity(path: Path) -> _ProfileFileIdentity:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size
+
+
+def _profile_cache_signature() -> _ProfileCacheSignature | None:
     try:
-        stat = path.stat()
+        # Resolve the selected generation, as the read-only SQLite route does.
+        path = _default_polylogue_db_path().resolve(strict=True)
+        main = _profile_file_identity(path)
+        try:
+            wal = _profile_file_identity(Path(str(path) + "-wal"))
+        except FileNotFoundError:
+            wal = None
     except OSError:
         return None
-    return stat.st_mtime_ns, stat.st_size
+    return str(path), main, wal
 
 
 def iter_session_profiles(
     *, start: Optional[date] = None, end: Optional[date] = None
 ) -> Iterator[SessionProfile]:
     """Yield session profiles from polylogue archive, optionally date-bounded."""
-    if start is not None and end is not None:
+    if start is not None or end is not None:
         yield from session_profiles_for_date(start=start, end=end)
         return
     yield from _load_profiles()
 
 
-def session_profiles_for_date(*, start: date, end: date) -> list[SessionProfile]:
+def session_profiles_for_date(
+    *, start: date | None = None, end: date | None = None
+) -> list[SessionProfile]:
     """Date-bounded session profiles with graceful degradation on missing products."""
     try:
         return _session_profiles_from_facade(start=start, end=end)
@@ -571,20 +571,24 @@ def session_profiles_for_date(*, start: date, end: date) -> list[SessionProfile]
         return []
 
 
-def _session_profiles_from_facade(*, start: date, end: date) -> list[SessionProfile]:
-    """Read date-bounded session profiles through Polylogue's public facade."""
+def _session_profiles_from_facade(
+    *, start: date | None = None, end: date | None = None
+) -> list[SessionProfile]:
+    """Read profiles with independently inclusive canonical-date bounds."""
+    if start is not None and end is not None and start > end:
+        raise ValueError("profile start must not be after end")
     direct = _session_profiles_from_sqlite(start=start, end=end)
     if direct is not None:
         return direct
 
     _require_materialized_products()
     try:
-        from polylogue.insights.archive import SessionProfileInsightQuery
+        from polylogue.analysis.archive import SessionProfileInsightQuery
 
         insights = _polylogue_client().list_session_profile_insights(
             SessionProfileInsightQuery(
-                session_date_since=start.isoformat(),
-                session_date_until=end.isoformat(),
+                session_date_since=start.isoformat() if start is not None else None,
+                session_date_until=end.isoformat() if end is not None else None,
                 limit=None,
             )
         )
@@ -614,42 +618,33 @@ def _session_profiles_from_sqlite(
                 if session_id_column == "conversation_id"
                 else "session_id AS conversation_id"
             )
-            if start is not None and end is not None:
-                rows = conn.execute(
-                    f"""
-                    SELECT
-                        {session_id_expr}, source_name, title, first_message_at,
-                        last_message_at, canonical_session_date, repo_names_json,
-                        repo_paths_json, auto_tags_json, message_count, word_count,
-                        engaged_duration_ms, wall_duration_ms, total_cost_usd,
-                        tool_use_count, thinking_count, substantive_count,
-                        attachment_count, work_event_count, phase_count,
-                        cost_is_estimated, workflow_shape, workflow_shape_confidence,
-                        terminal_state, terminal_state_confidence,
-                        inference_payload_json
-                    FROM session_profiles
-                    WHERE canonical_session_date >= ? AND canonical_session_date <= ?
-                    ORDER BY canonical_session_date, first_message_at, {session_id_column}
-                    """,
-                    (start.isoformat(), end.isoformat()),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    f"""
-                    SELECT
-                        {session_id_expr}, source_name, title, first_message_at,
-                        last_message_at, canonical_session_date, repo_names_json,
-                        repo_paths_json, auto_tags_json, message_count, word_count,
-                        engaged_duration_ms, wall_duration_ms, total_cost_usd,
-                        tool_use_count, thinking_count, substantive_count,
-                        attachment_count, work_event_count, phase_count,
-                        cost_is_estimated, workflow_shape, workflow_shape_confidence,
-                        terminal_state, terminal_state_confidence,
-                        inference_payload_json
-                    FROM session_profiles
-                    ORDER BY canonical_session_date, first_message_at, {session_id_column}
-                    """
-                ).fetchall()
+            conditions = []
+            parameters = []
+            if start is not None:
+                conditions.append("canonical_session_date >= ?")
+                parameters.append(start.isoformat())
+            if end is not None:
+                conditions.append("canonical_session_date <= ?")
+                parameters.append(end.isoformat())
+            where = " WHERE " + " AND ".join(conditions) if conditions else ""
+            rows = conn.execute(
+                f"""
+                SELECT
+                    {session_id_expr}, source_name, title, first_message_at,
+                    last_message_at, canonical_session_date, repo_names_json,
+                    repo_paths_json, auto_tags_json, message_count, word_count,
+                    engaged_duration_ms, wall_duration_ms, total_cost_usd,
+                    tool_use_count, thinking_count, substantive_count,
+                    attachment_count, work_event_count, phase_count,
+                    cost_is_estimated, workflow_shape, workflow_shape_confidence,
+                    terminal_state, terminal_state_confidence,
+                    inference_payload_json
+                FROM session_profiles
+                {where}
+                ORDER BY canonical_session_date, first_message_at, {session_id_column}
+                """,
+                parameters,
+            ).fetchall()
     except sqlite3.Error as exc:
         logger.warning("polylogue direct session profile read failed: %s", exc)
         return None
@@ -996,67 +991,14 @@ def _work_events_from_facade(
     start: Optional[date] = None,
     end: Optional[date] = None,
 ) -> list[WorkEvent]:
-    """Load Polylogue's durable work-event insights via the typed facade."""
+    """Read retained historical work events; the owner no longer produces them."""
     direct = _work_events_from_sqlite(start=start, end=end)
     if direct is not None:
         return direct
 
-    _require_materialized_products()
-    from polylogue.insights.archive import SessionWorkEventInsightQuery
-
-    profile_context = {
-        profile.conversation_id: profile
-        for profile in (
-            session_profiles_for_date(start=start, end=end)
-            if start is not None and end is not None
-            else _load_profiles()
-        )
-    }
-
-    query_model: Any = SessionWorkEventInsightQuery
-    query = query_model(
-        session_date_since=start.isoformat() if start else None,
-        session_date_until=end.isoformat() if end else None,
-        limit=None,
+    raise PolylogueMaterializationError(
+        "Polylogue retired the work-event product; no retained historical work-event table is available"
     )
-    try:
-        insights = _polylogue_client().list_session_work_event_insights(query)
-    except Exception as exc:
-        raise PolylogueMaterializationError(
-            f"Polylogue session work-event product read failed: {exc}"
-        ) from exc
-
-    events: list[WorkEvent] = []
-    for insight in insights:
-        ev = insight.evidence
-        inf = insight.inference
-        profile = profile_context.get(str(insight.session_id))
-        start = _parse_dt(ev.start_time) if ev.start_time else None
-        end = _parse_dt(ev.end_time) if ev.end_time else None
-        events.append(
-            WorkEvent(
-                event_id=insight.event_id,
-                conversation_id=insight.session_id,
-                provider=insight.source_name,
-                kind=str(inf.heuristic_label or "unknown"),
-                confidence=float(inf.confidence),
-                start=start,
-                end=end,
-                duration_ms=int(ev.duration_ms),
-                file_paths=tuple(ev.file_paths),
-                tools_used=tuple(ev.tools_used),
-                summary=str(inf.summary or ""),
-                workflow_shape=profile.workflow_shape if profile else None,
-                workflow_shape_confidence=profile.workflow_shape_confidence
-                if profile
-                else 0.0,
-                terminal_state=profile.terminal_state if profile else None,
-                terminal_state_confidence=profile.terminal_state_confidence
-                if profile
-                else 0.0,
-            )
-        )
-    return events
 
 
 def _work_events_from_sqlite(
@@ -1236,7 +1178,7 @@ def _day_summaries_from_facade(
     """
     _require_materialized_products()
     try:
-        from polylogue.insights.archive import ArchiveCoverageInsightQuery
+        from polylogue.analysis.archive import ArchiveCoverageInsightQuery
 
         insights = _polylogue_client().list_archive_coverage_insights(
             ArchiveCoverageInsightQuery(
@@ -1265,9 +1207,9 @@ def _day_summaries_from_facade(
                 total_cost_usd=float(insight.total_cost_usd),
                 total_messages=int(insight.message_count),
                 total_words=int(insight.total_words),
-                work_event_breakdown=dict(insight.work_event_breakdown),
+                work_event_breakdown={},
                 repos_active=tuple(insight.repos_active),
-                providers=dict(insight.origin_breakdown),
+                providers={_provider_from_origin(origin): count for origin, count in insight.origin_breakdown.items()},
             )
         )
     return summaries
@@ -1412,9 +1354,9 @@ def work_thread_activity(*, start: date, end: date) -> list[ChatDayActivity]:
         return []
 
     try:
-        from polylogue.insights.archive import ThreadInsightQuery
+        from polylogue.analysis.archive import ThreadInsightQuery
 
-        insights = _polylogue_client().list_work_thread_insights(
+        insights = _polylogue_client().list_thread_insights(
             ThreadInsightQuery(limit=None)
         )
     except Exception as exc:
@@ -1434,19 +1376,16 @@ def work_thread_activity(*, start: date, end: date) -> list[ChatDayActivity]:
         if thread_date < start or thread_date > end:
             continue
 
-        # Extract work event breakdown from the work_event_breakdown
         work_kinds: Counter[str] = Counter()
-        if thread_payload.work_event_breakdown:
-            work_kinds.update(thread_payload.work_event_breakdown)
 
-        # Provider is inferred from provider_breakdown; use the most common provider
+        # Infer the provider from the most common source origin.
         provider = "unknown"
-        if thread_payload.provider_breakdown:
+        if thread_payload.origin_breakdown:
             # Get the provider with the most sessions in this thread
-            provider = max(
-                thread_payload.provider_breakdown.keys(),
-                key=lambda p: thread_payload.provider_breakdown[p],
-            )
+            provider = _provider_from_origin(max(
+                thread_payload.origin_breakdown.keys(),
+                key=lambda p: thread_payload.origin_breakdown[p],
+            ))
 
         # Use wall_duration_ms as the primary duration metric
         wall_ms = thread_payload.wall_duration_ms or 0
@@ -1458,7 +1397,7 @@ def work_thread_activity(*, start: date, end: date) -> list[ChatDayActivity]:
             "dominant_repo": thread_payload.dominant_repo,
             "session_count": thread_payload.session_count,
             "message_count": thread_payload.total_messages,
-            "provider_breakdown": thread_payload.provider_breakdown,
+            "provider_breakdown": thread_payload.origin_breakdown,
         })
 
     result: list[ChatDayActivity] = []

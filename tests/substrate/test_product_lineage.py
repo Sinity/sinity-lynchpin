@@ -40,15 +40,15 @@ def _signals(conn: Any, refresh_id: str) -> list[tuple[date, float]]:
     return [(row[1], row[3]) for row in load_personal_daily_signals(conn, refresh_id=refresh_id)]
 
 
-def test_native_duckdb_rejects_delete_and_reinsert_of_one_key_in_a_transaction() -> None:
-    """The engine limit that makes partition re-promotion two committed units."""
+def test_native_duckdb_replacement_rolls_back_in_one_transaction() -> None:
+    """The supported engine keeps the original key when replacement rolls back."""
     conn = duckdb.connect()
     conn.execute("CREATE TABLE t (k VARCHAR, refresh_id VARCHAR, v INT, PRIMARY KEY (k, refresh_id))")
     conn.execute("INSERT INTO t VALUES ('a', 'r', 1)")
     conn.execute("BEGIN TRANSACTION")
     conn.execute("DELETE FROM t WHERE refresh_id = 'r'")
-    with pytest.raises(duckdb.ConstraintException):
-        conn.execute("INSERT INTO t VALUES ('a', 'r', 2)")
+    conn.execute("INSERT INTO t VALUES ('a', 'r', 2)")
+    assert conn.execute("SELECT v FROM t").fetchall() == [(2,)]
     conn.execute("ROLLBACK")
     assert conn.execute("SELECT v FROM t").fetchall() == [(1,)]
 
@@ -188,6 +188,19 @@ def test_failed_publication_commits_no_rows_tombstones_or_lineage(tmp_path: Path
 
     assert leftovers == [0, 0, 0]
     assert resolved == [("a",), ("b",)]
+
+
+def test_failed_replacement_preserves_existing_rows_and_lineage(tmp_path: Path) -> None:
+    with connect(tmp_path / "sub.duckdb") as conn:
+        apply_schema(conn)
+        promote_personal_daily_signals(conn, refresh_id="r", rows=[_signal(5, 1.0)])
+        before = conn.execute("SELECT * FROM substrate_product_lineage").fetchall()
+        with pytest.raises(duckdb.IOException, match="disk full"):
+            promote_personal_daily_signals(
+                _FailingLineage(conn), refresh_id="r", rows=[_signal(7, 2.0)]
+            )
+        assert _signals(conn, "r") == [(date(2026, 1, 5), 1.0)]
+        assert conn.execute("SELECT * FROM substrate_product_lineage").fetchall() == before
 
 
 def _run_title_promotion(monkeypatch: pytest.MonkeyPatch, conn: Any, tmp_path: Path, refresh_id: str) -> Any:

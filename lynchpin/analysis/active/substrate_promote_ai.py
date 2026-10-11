@@ -128,8 +128,8 @@ def promote_ai_sources(
             status = "unavailable"
             reason = (
                 "polylogue archive_readiness=ready but work_events() "
-                "returned [] — likely missing or outdated insight rows; run "
-                "`polylogue doctor --repair --target session_insights`"
+                "returned no rows; consult Polylogue source readiness and its "
+                "declared convergence operation"
             )
         log.warning(
             "substrate_promote: ai_work_events empty in window %s–%s (%s: %s)",
@@ -149,12 +149,14 @@ def promote_ai_sources(
             window_end=window_end,
         )
     except Exception as exc:
+        from lynchpin.sources.polylogue import PolylogueMaterializationError
+
         log.warning("substrate_promote: AI work events promotion failed: %s", exc)
         record_source_status(
             conn,
             refresh_id=refresh_id,
             source=SOURCE_AI_WORK_EVENTS,
-            status="error",
+            status="unavailable" if isinstance(exc, PolylogueMaterializationError) else "error",
             reason=str(exc),
             row_count=0,
             window_start=window_start,

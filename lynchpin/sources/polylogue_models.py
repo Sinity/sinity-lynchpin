@@ -140,7 +140,7 @@ class PolylogueReadiness:
     conversation_stats_count: int
     session_profile_count: int
     day_summary_count: int
-    work_event_count: int
+    work_event_count: int | None
     provider_event_count: int | None
     derives_profiles_from_base_tables: bool
     derives_day_summaries_from_profiles: bool
@@ -166,8 +166,8 @@ class SessionProfile:
     auto_tags: tuple[str, ...]
     substantive_count: int = 0
     attachment_count: int = 0
-    work_event_count: int = 0
-    phase_count: int = 0
+    work_event_count: int | None = None
+    phase_count: int | None = None
     cost_is_estimated: bool = False
     workflow_shape: Optional[str] = None
     workflow_shape_confidence: float = 0.0

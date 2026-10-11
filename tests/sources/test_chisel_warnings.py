@@ -11,7 +11,12 @@ import pytest
 from lynchpin.sources.chisel_warnings import captured_warnings, parse_python_source
 
 _BAD_ESCAPE = 'PATTERN = "blockers=\\(\\)"\n'
-_EXPECTED = "line 1: SyntaxWarning: invalid escape sequence '\\('"
+
+def _assert_source_warning(result: tuple[str, ...]) -> None:
+    assert len(result) == 1
+    assert result[0].startswith("line 1: SyntaxWarning:")
+    assert "invalid escape sequence" in result[0]
+    assert "\\(" in result[0]
 
 
 @pytest.mark.parametrize("inside_build", [False, True])
@@ -28,7 +33,9 @@ def test_parse_returns_source_warnings_on_every_parse(tmp_path: Path, inside_bui
         assert log.count == 0
     else:
         results = parse_twice()
-    assert results == [(_EXPECTED,), (_EXPECTED,)]
+    assert results[0] == results[1]
+    for result in results:
+        _assert_source_warning(result)
     assert capfd.readouterr().err == ""
 
 
@@ -54,7 +61,8 @@ def test_library_warning_from_worker_thread_goes_to_log(tmp_path: Path, capfd) -
         thread.join()
 
     assert log.count == 1
-    assert parsed == [(_EXPECTED,)]
+    assert len(parsed) == 1
+    _assert_source_warning(parsed[0])
     text = log_path.read_text()
     assert "UserWarning" in text and "model_ref" in text
     assert echoed == text.splitlines()

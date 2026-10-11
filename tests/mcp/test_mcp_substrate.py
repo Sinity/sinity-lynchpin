@@ -238,7 +238,7 @@ def test_query_substrate_disables_external_file_reads(
     from lynchpin.mcp.tools.substrate import query_substrate
     import duckdb
 
-    with pytest.raises(duckdb.PermissionException, match="disabled through configuration"):
+    with pytest.raises(duckdb.PermissionException, match="disabled (through|by) configuration"):
         query_substrate("SELECT * FROM read_csv(?)", parameters=[str(source)])
 
 

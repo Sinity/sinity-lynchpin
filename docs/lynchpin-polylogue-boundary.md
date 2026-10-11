@@ -9,7 +9,7 @@ system. Lynchpin is the cross-source evidence and analysis system.
 - ingestion from supported AI providers and local agent-session formats;
 - the conversation/message/content archive;
 - archive schema and migrations;
-- session profiles, work events, summaries, threads, cost/usage products, and
+- session profiles, archive coverage, threads, cost/usage products, and
   other inference whose primary evidence is the session archive;
 - the typed `SyncPolylogue` facade used by local Python consumers.
 
@@ -28,6 +28,17 @@ reimplement transcript ingestion.
   multiple owners.
 
 ## Read contract
+
+Current facade queries use `polylogue.analysis.archive` and `.readiness`.
+Readiness requires session profiles and archive coverage, with the owner's
+freshness and divergence checks. The retired work-event product is not a
+readiness prerequisite. Retained historical work-event tables remain readable;
+without one, that lane raises an unavailable-product error. Missing work-event
+and phase counts in current profiles remain null, rather than measured zeros.
+Profile cache reuse tracks the resolved index generation and its WAL, and is
+refused when source identity changes during the read or cannot be observed.
+Canonical session-date bounds are independently optional and inclusive;
+reversed bounds are rejected. Bounded selections are not cached as full profiles.
 
 Normal reads use the typed Polylogue facade or stable archive-product tables.
 ActivityWatch's coarse session overlap fallback reads typed archive summaries:

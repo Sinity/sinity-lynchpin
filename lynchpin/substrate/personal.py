@@ -124,33 +124,19 @@ def _commit_product(
         raise ValueError(f"empty {product} replacement range {replacement[0]}..{replacement[1]}")
     if predecessor_refresh_id is not None:
         _lineage(conn, product=product, refresh_id=predecessor_refresh_id)
-    existing = conn.execute(
-        "SELECT 1 FROM substrate_product_lineage WHERE product = ? AND refresh_id = ? "
-        f"UNION ALL SELECT 1 FROM {table} WHERE refresh_id = ? LIMIT 1",
-        [product, refresh_id, refresh_id],
-    ).fetchone()
-    if existing is not None:
-        # DuckDB 1.1 rejects deleting and re-inserting one primary key in a
-        # single transaction (tests/substrate/test_product_lineage.py reproduces
-        # it natively), so a re-promoted partition is retired as one committed
-        # unit before its replacement commits as another.
-        conn.execute("BEGIN TRANSACTION")
-        try:
-            conn.execute(f"DELETE FROM {table} WHERE refresh_id = ?", [refresh_id])
-            conn.execute(
-                "DELETE FROM substrate_product_tombstone WHERE product = ? AND refresh_id = ?",
-                [product, refresh_id],
-            )
-            conn.execute(
-                "DELETE FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?",
-                [product, refresh_id],
-            )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
     conn.execute("BEGIN TRANSACTION")
     try:
+        # The supported DuckDB runtime can replace a key in one transaction.
+        # Keep the previous partition intact if any replacement write fails.
+        conn.execute(f"DELETE FROM {table} WHERE refresh_id = ?", [refresh_id])
+        conn.execute(
+            "DELETE FROM substrate_product_tombstone WHERE product = ? AND refresh_id = ?",
+            [product, refresh_id],
+        )
+        conn.execute(
+            "DELETE FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?",
+            [product, refresh_id],
+        )
         count = promote_rows(
             conn, table=table, columns=columns, refresh_id=refresh_id, rows=rows,
             extractor=lambda row: row, batch_size=batch_size,

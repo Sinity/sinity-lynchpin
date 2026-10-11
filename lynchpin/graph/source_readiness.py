@@ -403,7 +403,7 @@ def _polylogue_source(*, include_product_counts: bool) -> SourceReadiness:
         caveats.append("session-profile products are stale or missing; repair Polylogue session insights")
     if readiness.derives_day_summaries_from_profiles:
         caveats.append("day-summary products are stale or missing; repair Polylogue session insights")
-    if readiness.work_event_count == 0:
+    if readiness.work_event_count is None or readiness.work_event_count == 0:
         caveats.append("work-event products are unavailable; chat semantics are limited")
     return SourceReadiness(
         source="polylogue",

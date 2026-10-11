@@ -100,7 +100,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         name="polylogue",
         authority="Polylogue archive database",
         query_surface="lynchpin.sources.polylogue",
-        materialization_hint="polylogue doctor --repair --target session_insights",
+        materialization_hint="Consult Polylogue source readiness and its declared convergence operation",
     ),
     SourceContract(
         name="codex",

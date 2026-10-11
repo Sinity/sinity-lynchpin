@@ -175,9 +175,8 @@ def test_fill_polylogue_reads_current_archive_coverage_dto() -> None:
                     total_cost_usd=0.0,
                     message_count=30,
                     total_words=300,
-                    work_event_breakdown={"implementation": 2},
                     repos_active=("sinity-lynchpin",),
-                    origin_breakdown={"codex": 3},
+                    origin_breakdown={"codex-session": 3},
                 )
             ]
 

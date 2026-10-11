@@ -17,6 +17,11 @@ check:
     just typecheck
     just test
 
+verify-polylogue-contract:
+    just lint
+    just typecheck
+    pytest -q tests/sources/test_source_polylogue.py tests/sources/test_polylogue_archive.py tests/sources/test_polylogue_verification.py tests/analysis/test_polylogue_archive_shape.py tests/sources/test_polylogue_owner_contract.py tests/sources/test_polylogue_profile_freshness.py
+
 # --- Analysis -----------------------------------------------------------------------
 
 # Materialize the default cross-project velocity dashboard.

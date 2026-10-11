@@ -251,3 +251,10 @@ pool = "normal"
 result = "exit"
 cache = "tree+environment"
 timeout_seconds = 1800
+
+[operations.verify_polylogue_contract]
+description = "Verify current Polylogue facade, historical records, and unavailable coverage"
+exec = ["just", "verify-polylogue-contract"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"

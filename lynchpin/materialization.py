@@ -1887,7 +1887,7 @@ def _polylogue_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=readiness.session_profile_count if status in {"ready", "empty", "partial"} else None,
         first_date=first,
         last_date=last,
-        materialization_hint="polylogue doctor --repair --target session_insights",
+        materialization_hint="Consult Polylogue source readiness and its declared convergence operation",
         reason=readiness.reason,
     )
 

@@ -157,7 +157,8 @@ require an explicit `execute` decision and produce receipts.
 
 ## Quick start
 
-The supported development environment is Nix-first:
+Lynchpin requires Python 3.14 and DuckDB 1.5.5 or newer. Its development and
+deployment environments share these runtimes. The supported environment is Nix-first:
 
 ```bash
 direnv allow

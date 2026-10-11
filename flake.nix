@@ -3,9 +3,9 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
-    # Repomix is not present in the stable package set. Keep that one tool
-    # pinned separately so an operation dependency cannot upgrade Lynchpin's
-    # entire development closure.
+    # The separately pinned unstable set supplies Repomix, Python 3.14,
+    # and the DuckDB CLI matching the Python runtime.
+    # General workstation tools continue to use the stable package set.
     nixpkgsRepomix.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     polylogueSrc = {
@@ -115,18 +115,20 @@
               google-auth-httplib2
               httpx
               h2
+              starlette
+              uvicorn
               rich
-              textual
               jinja2
               markdown-it-py
               pygments
               ijson
+              lark
               sqlite-vec
               questionary
               click
               tenacity
               dateparser
-              orjson
+              msgspec
               structlog
               pydantic
               aiosqlite
@@ -142,7 +144,12 @@
             doCheck = false;
             pythonImportsCheck = [
               "polylogue"
+              "polylogue.api.sync"
+              "polylogue.analysis.archive"
+              "polylogue.analysis.readiness"
             ];
+            # Match the owner package: Nix runtime builds use its declared
+            # dependency closure; facade imports verify this consumer.
             dontCheckRuntimeDeps = true;
           };
 
@@ -254,15 +261,13 @@
               ;
           };
 
-        devPython = pkgs.python312.override {
-          packageOverrides = pythonPackagesBaseOverlay;
-        };
-
-        python = pkgs.python312.override {
+        # Polylogue's pinned public facade requires Python 3.14. Development
+        # and deployment share its runtime and existing dependency corrections.
+        python = repomixPkgs.python314.override {
           packageOverrides = pythonPackagesPatchedOverlay;
         };
 
-        pythonEnv = devPython.withPackages (
+        pythonEnv = python.withPackages (
           ps: with ps; [
             beautifulsoup4
             black
@@ -283,6 +288,7 @@
             cryptography
             mcp
             polars
+            pandas
             polylogue
             tree-sitter
             tree-sitter-python
@@ -294,7 +300,7 @@
         defaultDevPackages =
           (with pkgs; [
             pythonEnv
-            duckdb
+            repomixPkgs.duckdb
             sqlite
             git
             gh
@@ -364,6 +370,7 @@
             mcp
             numpy
             polars
+            pandas
             polylogue
             pyyaml
             rich
