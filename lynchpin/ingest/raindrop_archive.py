@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import os
 import sys
@@ -31,12 +32,13 @@ import urllib.error
 import urllib.request
 import zlib
 from collections.abc import Iterable, Iterator
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from ..core.config import get_config
+from ..core.errors import SourceUnavailableError
 from ._manifest import atomic_write_ndjson, atomic_write_text
 
 RAINDROP_API_BASE = "https://api.raindrop.io/rest/v1"
@@ -87,6 +89,8 @@ def _get_json(path: str, token: str) -> dict[str, Any]:
     payload = json.loads(_request_bytes(RAINDROP_API_BASE + path, token))
     if not isinstance(payload, dict):
         raise RuntimeError(f"unexpected non-object response from {path}")
+    if payload.get("result") is False:
+        raise RuntimeError(f"Raindrop rejected request for {path}")
     return payload
 
 
@@ -98,7 +102,9 @@ def _dump_paginated(path_template: str, out_path: Path, token: str, *, delay_s: 
         page = 0
         while True:
             data = _get_json(path_template.format(page=page), token)
-            items = data.get("items", [])
+            items = data.get("items")
+            if not isinstance(items, list):
+                raise RuntimeError("Raindrop pagination response has no items array")
             if not items:
                 break
             for item in items:
@@ -111,8 +117,15 @@ def _dump_paginated(path_template: str, out_path: Path, token: str, *, delay_s: 
     return count
 
 
-def export_metadata(out_dir: Path, token: str) -> dict[str, int]:
-    out_dir.mkdir(parents=True, exist_ok=True)
+def export_metadata(out_dir: Path, token: str) -> tuple[Path, dict[str, int]]:
+    """Publish a complete immutable bundle; retain prior exports on failure."""
+    target = out_dir
+    if target.exists():
+        base = target.name.removesuffix("-api-export")
+        target = target.with_name(f"{base}-{time.time_ns()}-{uuid4().hex[:8]}-api-export")
+    staged = target.with_name(f".{target.name}.{uuid4().hex}.staging")
+    staged.mkdir(parents=True)
+    out_dir = staged
     atomic_write_text(out_dir / "collections-root.json", json.dumps(_get_json("/collections", token)))
     atomic_write_text(
         out_dir / "collections-children.json",
@@ -133,40 +146,111 @@ def export_metadata(out_dir: Path, token: str) -> dict[str, int]:
     manifest = {
         "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         **counts,
+        "sha256": {name: _file_digest(out_dir / name) for name in _EXPORT_FILES},
     }
     atomic_write_text(out_dir / "EXPORT-MANIFEST.json", json.dumps(manifest, indent=1))
-    return counts
+    if not _snapshot_complete(out_dir):
+        raise RuntimeError("staged Raindrop bundle failed validation")
+    out_dir.rename(target)
+    directory_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    return target, counts
 
 
-def iter_retained_metadata(raw_root: Path | None = None) -> Iterator[dict[str, Any]]:
-    """Read the newest retained API snapshot, including trash state and highlights."""
+_EXPORT_FILES = {
+    "collections-root.json": None,
+    "collections-children.json": None,
+    "tags.json": None,
+    "raindrops-all.jsonl": "active",
+    "raindrops-trash.jsonl": "trash",
+    "highlights.jsonl": "highlights",
+}
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _snapshot_complete(path: Path) -> bool:
+    try:
+        marker = path / "EXPORT-MANIFEST.json"
+        manifest = json.loads(marker.read_text(encoding="utf-8"))
+        published_ns = marker.stat().st_mtime_ns
+        digests = manifest.get("sha256")
+        if digests is not None and set(digests) != set(_EXPORT_FILES):
+            return False
+        for name, counter in _EXPORT_FILES.items():
+            source = path / name
+            if source.stat().st_mtime_ns > published_ns:
+                return False  # Old completion marker beside rewritten payload.
+            if digests is not None and _file_digest(source) != digests[name]:
+                return False
+            with source.open(encoding="utf-8") as handle:
+                if counter is None:
+                    if not isinstance(json.load(handle), dict):
+                        return False
+                else:
+                    count = 0
+                    for line in handle:
+                        if line.strip():
+                            if not isinstance(json.loads(line), dict):
+                                return False
+                            count += 1
+                    if type(manifest.get(counter)) is not int or manifest[counter] != count:
+                        return False
+        return True
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def select_retained_snapshot(raw_root: Path | None = None) -> Path:
+    """Select one completed bundle. Unmarked packages remain retained history."""
     root = raw_root or _default_raw_root()
-    snapshots = sorted(root.glob("*-api-export"), reverse=True)
-    if not snapshots:
-        return
-    latest = snapshots[0]
-    for filename, state in (("raindrops-all.jsonl", "active"), ("raindrops-trash.jsonl", "trash")):
-        path = latest / filename
-        if not path.exists():
+    candidates = []
+    for path in root.glob("*-api-export"):
+        try:
+            marker = path / "EXPORT-MANIFEST.json"
+            manifest = json.loads(marker.read_text(encoding="utf-8"))
+            stamp = manifest.get("exported_at") or f"{path.name[:10]}T00:00:00+00:00"
+            exported = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+            if exported.tzinfo is None:
+                exported = exported.replace(tzinfo=timezone.utc)
+            candidates.append((exported.timestamp(), marker.stat().st_mtime_ns, path))
+        except (OSError, ValueError, TypeError, AttributeError):
             continue
-        with path.open(encoding="utf-8") as handle:
+    for _, _, path in sorted(candidates, key=lambda item: (item[0], item[1], item[2].name), reverse=True):
+        if _snapshot_complete(path):
+            return path
+    raise SourceUnavailableError(
+        "raindrop", path=str(root),
+        reason="no validated completed API snapshot; incomplete or unmarked packages remain retained for inspection",
+    )
+
+
+def iter_retained_metadata(raw_root: Path | None = None, *, snapshot: Path | None = None) -> Iterator[dict[str, Any]]:
+    """Read active and trash records from one selected complete snapshot."""
+    latest = snapshot if snapshot is not None else select_retained_snapshot(raw_root)
+    for filename, state in (("raindrops-all.jsonl", "active"), ("raindrops-trash.jsonl", "trash")):
+        with (latest / filename).open(encoding="utf-8") as handle:
             for line in handle:
                 if line.strip():
                     item = json.loads(line)
                     yield {**item, "_lynchpin_state": state, "_lynchpin_snapshot": str(latest)}
 
 
-def iter_retained_highlights(raw_root: Path | None = None) -> Iterator[dict[str, Any]]:
-    root = raw_root or _default_raw_root()
-    snapshots = sorted(root.glob("*-api-export"), reverse=True)
-    if not snapshots:
-        return
-    path = snapshots[0] / "highlights.jsonl"
-    if path.exists():
-        with path.open(encoding="utf-8") as handle:
-            for line in handle:
-                if line.strip():
-                    yield json.loads(line)
+def iter_retained_highlights(raw_root: Path | None = None, *, snapshot: Path | None = None) -> Iterator[dict[str, Any]]:
+    latest = snapshot if snapshot is not None else select_retained_snapshot(raw_root)
+    with (latest / "highlights.jsonl").open(encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                yield json.loads(line)
 
 
 def iter_cache_ready_ids(jsonl_paths: Iterable[Path]) -> Iterator[int]:
@@ -348,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     raw_root = args.raw_root or _default_raw_root()
     api_dir = args.source_dir or raw_root / f"{args.snapshot_date}-api-export"
     if args.metadata:
-        counts = export_metadata(api_dir, token)
+        api_dir, counts = export_metadata(api_dir, token)
         print(f"metadata export: {counts} -> {api_dir}")
     if args.copies:
         sources = [api_dir / "raindrops-all.jsonl"]

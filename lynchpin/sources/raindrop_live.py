@@ -31,7 +31,8 @@ from .exports_raindrop import (
     RaindropDayActivity,
     iter_raindrop_bookmarks,
 )
-from ..ingest.raindrop_archive import iter_retained_highlights, iter_retained_metadata
+from ..ingest.raindrop_archive import iter_retained_highlights, iter_retained_metadata, select_retained_snapshot
+from ..core.errors import SourceUnavailableError
 
 __all__ = [
     "RaindropBookmarkLive",
@@ -100,13 +101,23 @@ class RetainedRaindrop:
 
 
 def iter_retained_bookmarks(*, raw_root=None) -> Iterator[RetainedRaindrop]:
+    snapshot = select_retained_snapshot(raw_root)
     highlights_by_id: dict[int, list[dict]] = defaultdict(list)
-    for highlight in iter_retained_highlights(raw_root):
+    for highlight in iter_retained_highlights(snapshot=snapshot):
         item = highlight.get("item") or {}
-        rid = highlight.get("raindropId") or highlight.get("itemId") or item.get("_id") or highlight.get("_id")
-        if rid is not None:
-            highlights_by_id[int(rid)].append(highlight)
-    for item in iter_retained_metadata(raw_root):
+        # The endpoint's _id identifies the highlight itself. raindropRef
+        # identifies its parent bookmark; confusing them invents a join.
+        rid = highlight.get("raindropRef") or highlight.get("raindropId") or highlight.get("itemId") or item.get("_id")
+        try:
+            if isinstance(rid, bool) or not isinstance(rid, (int, str)):
+                raise ValueError("missing integer bookmark reference")
+            bookmark_id = int(rid)
+            if bookmark_id <= 0:
+                raise ValueError("bookmark reference must be positive")
+        except ValueError as exc:
+            raise SourceUnavailableError("raindrop", path=str(snapshot), reason="highlight has no valid parent bookmark reference") from exc
+        highlights_by_id[bookmark_id].append(highlight)
+    for item in iter_retained_metadata(snapshot=snapshot):
         created_raw = item.get("created")
         updated_raw = item.get("lastUpdate")
         yield RetainedRaindrop(

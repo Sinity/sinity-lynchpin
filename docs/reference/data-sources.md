@@ -33,6 +33,10 @@ Gmail Takeout materialization retains full message bodies, headers, MIME data an
 
 The canonical Raindrop CSV preserves observed ID/URL pairs across exports. Details for the same pair come from the newest file modification time, with filename as the deterministic tie breaker. Earlier URLs remain historical observations; absence from a later CSV is not a deletion event. Each row records its winning source, and the manifest records every inspected export, including exports that contribute no winning rows.
 
+Raindrop API acquisition publishes complete metadata bundles from sibling staging directories. Re-exporting preserves the prior package and returns the newly published path, which the CLI also uses for subsequent copy acquisition. Retained metadata and highlights resolve one bundle together, ordered by recorded export time (dated-directory time for older markers). New bundles carry full-file SHA-256 digests; older completion markers require valid payloads, matching row counts, and no payload written after the marker. Unmarked or incomplete packages remain retained and unavailable through the completed-snapshot reader; their presence is not zero activity.
+
+Retained highlights join bookmarks through the provider's `raindropRef`, preserving the highlight's separate string `_id`. A missing parent reference raises a source error. The [Raindrop highlights contract](https://developer.raindrop.io/v1/highlights) documents these separate identities.
+
 Canonical communication event IDs hash the versioned semantic fields, including
 the complete message text, normalized timestamp, recipients, media count, and
 raw kind. The 240-character excerpt is presentation data only; exact semantic
