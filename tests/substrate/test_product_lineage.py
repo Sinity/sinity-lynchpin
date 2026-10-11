@@ -381,3 +381,87 @@ def test_lineage_selection_uses_inherited_coverage_without_bridging_gaps(tmp_pat
             conn.execute("INSERT INTO substrate_source_status (refresh_id, source, kind, status, row_count, window_start, window_end, recorded_at) VALUES (?, 'personal_daily_signal', 'source', 'ok', 1, ?, ?, ?)", [rid, date(2026, 1, lower), date(2026, 1, upper), f"2026-01-{upper:02d} 00:00:00"])
         selected = best_materialized_refresh_id(conn, "personal_daily_signal", caller="test", start=date(2026, 1, 1), end=date(2026, 1, 11))
         assert selected == (None if gap else "tail")
+
+
+@pytest.mark.parametrize("ranges,expected", [
+    ([(1, 3), (1, 3)], [(1, 3)]),
+    ([(1, 1), (4, 2)], []),
+    ([(1, 1), (2, 3)], [(2, 3)]),
+    ([(3, 5), (1, 3), (2, 4)], [(1, 5)]),
+    ([(1, 3), (4, 5)], [(1, 3), (4, 5)]),
+    ([(4, None), (1, 3)], [(1, 3), (4, None)]),
+    ([(3, None), (1, 4), (6, 8)], [(1, None)]),
+])
+def test_replacement_union_preserves_half_open_coverage(ranges, expected) -> None:
+    from lynchpin.substrate.personal import _replacement_union
+
+    def dated(values):
+        return tuple((date(2026, 1, lower), date(2026, 1, upper) if upper is not None else None) for lower, upper in values)
+    assert _replacement_union(dated(ranges)) == dated(expected)
+
+
+@pytest.mark.parametrize("depth", [10, 50, 200])
+def test_repeated_empty_corrections_have_linear_replacement_predicates(depth) -> None:
+    from lynchpin.substrate.personal import _lineage
+
+    class CountSQL:
+        def __init__(self, conn):
+            self.conn = conn
+            self.statements = []
+        def execute(self, sql, params=None):
+            self.statements.append(sql)
+            return self.conn.execute(sql, params or [])
+
+    with duckdb.connect(":memory:") as conn:
+        conn.execute("CREATE TABLE substrate_product_lineage (product VARCHAR, refresh_id VARCHAR, predecessor_refresh_id VARCHAR, replacement_start DATE, replacement_end DATE)")
+        conn.execute("CREATE TABLE substrate_product_tombstone (product VARCHAR, refresh_id VARCHAR, natural_key VARCHAR)")
+        conn.execute("CREATE TABLE facts (date DATE, value DOUBLE, refresh_id VARCHAR)")
+        conn.execute("INSERT INTO facts VALUES (DATE '2026-01-01', 1, 'r0'), (DATE '2026-01-02', 2, 'r0'), (DATE '2026-01-03', 3, 'r0')")
+        conn.executemany("INSERT INTO substrate_product_lineage VALUES (?, ?, ?, ?, ?)", [
+            ("fixture", f"r{i}", f"r{i-1}" if i else None, date(2026, 1, 2) if i else None, date(2026, 1, 3) if i else None)
+            for i in range(depth + 1)
+        ])
+        counter = CountSQL(conn)
+        resolved = _resolved_rows(counter, product="fixture", refresh_id=f"r{depth}", table="facts", columns=("date", "value"), key=lambda row: row[0])
+        assert resolved == [(date(2026, 1, 1), 1.0), (date(2026, 1, 3), 3.0)]
+        assert len(counter.statements) == 4 * depth + 3
+        assert sum(sql.count("AND NOT") for sql in counter.statements) == depth
+        assert max(len(ranges) for _, ranges in _lineage(conn, product="fixture", refresh_id=f"r{depth}")) == 1
+
+
+def test_normalized_lineage_matches_legacy_overlay_with_tombstones(tmp_path, monkeypatch) -> None:
+    import lynchpin.substrate.personal as personal
+
+    def legacy_lineage(conn, *, product, refresh_id):
+        result, ranges, current = [], (), refresh_id
+        while current is not None:
+            predecessor, lower, upper = conn.execute("SELECT predecessor_refresh_id, replacement_start, replacement_end FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?", [product, current]).fetchone()
+            result.append((current, ranges))
+            if lower is not None:
+                ranges = (*ranges, (lower, upper))
+            current = predecessor
+        return result
+
+    with connect(tmp_path / "sub.duckdb") as conn:
+        apply_schema(conn)
+        promote_personal_daily_signals(conn, refresh_id="base", rows=[_signal(day, float(day)) for day in range(1, 13)])
+        parent = "base"
+        for index, (lower, upper) in enumerate([(2, 4), (6, 8), (3, 5), (2, 4)]):
+            refresh = f"r{index}"
+            promote_personal_daily_signals(conn, refresh_id=refresh, rows=[_signal(lower, 100.0 + index)], previous_refresh_id=parent, replacement_start=date(2026, 1, lower), replacement_end=date(2026, 1, upper))
+            parent = refresh
+        # A tombstone outside the dated replacement still blocks its natural key.
+        conn.execute("INSERT INTO substrate_product_tombstone (product, refresh_id, natural_key) VALUES ('personal_daily_signals', ?, ?)", [parent, "web\x1f2026-01-10\x1fvisits"])
+        def resolved():
+            # Exercise the generic resolver's string-key tombstone contract;
+            # the personal daily reader uses tuple keys and dated replacement.
+            rows = _resolved_rows(
+                conn, product="personal_daily_signals", refresh_id=parent,
+                table="personal_daily_signal", columns=("source", "date", "metric", "value"),
+                key=lambda row: f"{row[0]}\x1f{row[1]}\x1f{row[2]}",
+            )
+            return [(row[1], row[3]) for row in rows]
+        normalized = resolved()
+        monkeypatch.setattr(personal, "_lineage", legacy_lineage)
+        assert resolved() == normalized
+        assert normalized == [(date(2026, 1, day), value) for day, value in [(1, 1.0), (2, 103.0), (5, 5.0), (6, 101.0), (8, 8.0), (9, 9.0), (11, 11.0), (12, 12.0)]]

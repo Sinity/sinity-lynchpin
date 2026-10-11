@@ -18,14 +18,34 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def _replacement_union(
+    ranges: Iterable[tuple[date, date | None]],
+) -> tuple[tuple[date, date | None], ...]:
+    """Normalize half-open replacement coverage without bridging gaps."""
+    merged: list[tuple[date, date | None]] = []
+    for lower, upper in sorted(ranges, key=lambda interval: interval[0]):
+        if upper is not None and upper <= lower:
+            # Such a predicate excluded no dates in the original SQL either.
+            continue
+        if merged and (merged[-1][1] is None or lower <= merged[-1][1]):
+            previous_lower, previous_upper = merged[-1]
+            merged[-1] = (
+                previous_lower,
+                None if previous_upper is None or upper is None else max(previous_upper, upper),
+            )
+        else:
+            merged.append((lower, upper))
+    return tuple(merged)
+
+
 def _lineage(
     conn: "duckdb.DuckDBPyConnection", *, product: str, refresh_id: str,
 ) -> list[tuple[str, tuple[tuple[date, date | None], ...]]]:
     """Return newest-first product partitions with the ranges newer ones replaced.
 
     Each partition carries every replacement range recorded by a newer partition
-    in the chain, not only its immediate child's: after a Jan20 and then a Jan10
-    replacement, a Jan15 row in the grandparent stays replaced.  An open range
+    in the chain, normalized as a union, not only its immediate child's: after
+    a Jan20 and then a Jan10 replacement, a Jan15 row in the grandparent stays replaced.  An open range
     (``None`` end) is a lineage row written before replacement ends existed.
     """
     result: list[tuple[str, tuple[tuple[date, date | None], ...]]] = []
@@ -53,7 +73,7 @@ def _lineage(
             if parent is None:
                 raise ValueError(f"missing predecessor {predecessor!r} for {product} refresh {current}")
         if start is not None:
-            replaced = (*replaced, (start, end))
+            replaced = _replacement_union((*replaced, (start, end)))
         current = str(predecessor) if predecessor is not None else None
     return result
 
