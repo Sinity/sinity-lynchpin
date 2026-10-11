@@ -293,3 +293,10 @@ exec = ["just", "verify-index-recipe"]
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"
+
+[operations.verify_partition_integrity]
+description = "Verify retained artifact integrity and protected GC roots"
+exec = ["just", "verify-partition-integrity"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"

@@ -86,3 +86,9 @@ verify-index-recipe *args:
     just lint
     just typecheck
     pytest -q tests/ingest/test_activitywatch_event_index_materialize.py tests/sources/test_activitywatch_derived.py tests/test_materialization.py -k 'event_index or indexed or recipe' "$@"
+
+[positional-arguments]
+verify-partition-integrity *args:
+    just lint
+    just typecheck
+    pytest -q tests/materializers/test_partition_store.py tests/ingest/test_activity_content_materialize.py "$@"

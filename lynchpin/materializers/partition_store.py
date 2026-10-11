@@ -14,7 +14,7 @@ import os
 import re
 import shutil
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Literal, Mapping, cast
@@ -191,6 +191,8 @@ class ArtifactStore:
             target = self._artifact_path(key, digest, chosen_format)
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
+                if _file_digest(target) != digest:
+                    raise ValueError(f"retained artifact digest mismatch: {target}")
                 temp_path.unlink()
             else:
                 os.replace(temp_path, target)
@@ -272,8 +274,19 @@ class ArtifactStore:
         recovery. Readers use only ``partitions``. A failed write therefore
         leaves the previous complete selection readable.
         """
+        for key, ref in partitions.items():
+            path = (self.root / ref.path).resolve()
+            if ref.key != key or self.root.resolve() not in path.parents:
+                raise ValueError("selected artifact identity or path does not match its store")
+            if path.stat().st_size != ref.byte_count or _file_digest(path) != ref.digest:
+                raise ValueError(f"selected artifact digest or size mismatch: {path}")
         existing = {item.path: item for item in self.load_manifest()}
-        existing.update({ref.path: ref for ref in partitions.values()})
+        for ref in partitions.values():
+            prior = existing.get(ref.path)
+            if prior is not None:
+                ref = replace(ref, generations=tuple(sorted(set(prior.generations) | set(ref.generations))),
+                              created_at=min(prior.created_at, ref.created_at))
+            existing[ref.path] = ref
         payload: dict[str, Any] = {
             "schema_version": 2,
             "artifacts": [item.to_dict() for item in sorted(existing.values(), key=lambda item: item.path)],
@@ -293,10 +306,34 @@ class ArtifactStore:
         return dict(value) if isinstance(value, dict) else {}
 
     def plan_gc(self, referenced_generations: Iterable[str], *, now: datetime | None = None, grace_period: timedelta = timedelta(days=7)) -> tuple[ArtifactRef, ...]:
-        """Return only old artifacts absent from the explicitly referenced generations."""
+        """Plan reclamation outside current and caller-declared retained/in-flight roots.
+
+        This is a read-only plan. A deletion owner must revalidate its roots
+        before acting because a later publication may select another artifact.
+        """
+        if not self.manifest_path.exists():
+            return ()
+        raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        inventory = tuple(ArtifactRef.from_dict(item) for item in raw.get("artifacts", []))
+        selected = raw.get("partitions")
+        if isinstance(selected, list):
+            selected_paths = {ArtifactRef.from_dict(item).path for item in selected}
+        else:
+            # Match the historical manifest's newest-per-key read contract.
+            latest = {item.key: item for item in inventory}
+            selected_paths = {item.path for item in latest.values()}
         referenced = set(referenced_generations)
         cutoff = (now or datetime.now(timezone.utc)) - grace_period
-        return tuple(item for item in self.load_manifest() if not referenced.intersection(item.generations) and item.created_at < cutoff)
+        return tuple(item for item in inventory if item.path not in selected_paths
+                     and not referenced.intersection(item.generations) and item.created_at < cutoff)
+
+
+def _file_digest(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1_048_576), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def _fsync_dir(path: Path) -> None:

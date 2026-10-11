@@ -1,4 +1,5 @@
 import hashlib
+import json
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -138,6 +139,7 @@ def test_manifest_records_metadata_and_gc_respects_referenced_generation(tmp_pat
     )
     unreferenced = replace(store.put(ProductPartitionKey.day("events", "2026-01-02"), b"unused", format="ndjson"), created_at=old)
     store.publish({referenced.key: referenced, unreferenced.key: unreferenced})
+    store.publish({referenced.key: referenced})
     candidates = store.plan_gc(["gen-a"], now=datetime(2026, 8, 25, tzinfo=timezone.utc), grace_period=timedelta(days=7))
     assert [item.path for item in candidates] == [unreferenced.path]
     assert referenced not in candidates
@@ -153,3 +155,61 @@ def test_partition_keys_reject_path_traversal() -> None:
 def test_input_digest_is_order_and_type_sensitive() -> None:
     assert deterministic_input_digest(["a", "b"]) != deterministic_input_digest(["b", "a"])
     assert deterministic_input_digest([b"a"]) != deterministic_input_digest(["a"])
+
+
+def test_same_size_corruption_refuses_reuse_and_publication(tmp_path):
+    store = ArtifactStore(tmp_path / "store")
+    key = ProductPartitionKey.day("events", "2026-01-01")
+    ref = store.put(key, b"good")
+    store.publish({key: ref})
+    before = store.manifest_path.read_bytes()
+    path = store.root / ref.path
+    path.write_bytes(b"evil")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        store.put(key, b"good")
+    with pytest.raises(ValueError, match="digest or size mismatch"):
+        store.publish({key: ref})
+    assert path.read_bytes() == b"evil"
+    assert store.manifest_path.read_bytes() == before
+
+
+def test_gc_excludes_selected_retained_and_inflight_roots(tmp_path):
+    from dataclasses import replace
+    store = ArtifactStore(tmp_path / "store")
+    old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    refs = []
+    for name in ["selected", "retained", "inflight", "orphan"]:
+        refs.append(replace(store.put(ProductPartitionKey.entity("events", name), name,
+                                      generations=[name]), created_at=old))
+    store.publish({ref.key: ref for ref in refs})
+    store.publish({refs[0].key: refs[0]})
+    candidates = store.plan_gc(["retained", "inflight"], now=datetime(2026, 8, 25, tzinfo=timezone.utc))
+    assert candidates == (refs[3],)
+
+
+def test_gc_protects_legacy_newest_selection(tmp_path):
+    from dataclasses import replace
+    store = ArtifactStore(tmp_path / "store")
+    key = ProductPartitionKey.entity("events", "fixture")
+    old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    first = replace(store.put(key, b"first"), created_at=old)
+    second = replace(store.put(key, b"second"), created_at=old)
+    store.manifest_path.write_text(json.dumps({"artifacts": [first.to_dict(), second.to_dict()]}))
+    assert store.plan_gc([], now=datetime(2026, 8, 25, tzinfo=timezone.utc)) == (first,)
+
+
+def test_reuse_preserves_earlier_generation_roots(tmp_path):
+    store = ArtifactStore(tmp_path / "store")
+    key = ProductPartitionKey.entity("events", "fixture")
+    old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    first = replace(store.put(key, b"same", generations=["retained"]), created_at=old)
+    store.publish({key: first})
+    same = store.put(key, b"same", generations=["current"])
+    store.publish({key: same})
+    store.publish({})
+    inventory = store.load_manifest()
+    assert len(inventory) == 1
+    assert inventory[0].generations == ("current", "retained")
+    assert inventory[0].created_at == old
+    assert store.plan_gc(["retained"], now=datetime(2026, 8, 25, tzinfo=timezone.utc)) == ()
+    assert store.plan_gc([], now=datetime(2026, 8, 25, tzinfo=timezone.utc)) == inventory
