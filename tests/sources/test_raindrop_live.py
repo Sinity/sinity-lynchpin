@@ -1,12 +1,12 @@
 """Tests for live Raindrop source (raindrop_live.py)."""
 
 import json
+import pytest
 from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, patch
 
 
 from lynchpin.sources.raindrop_live import (
-    RaindropPollCursor,
     _parse_raindrop_item,
     raindrop_api_token,
     iter_live_bookmarks,
@@ -111,7 +111,7 @@ def test_iter_live_bookmarks_parses_response(mock_urlopen, monkeypatch):
 
 @patch("urllib.request.urlopen")
 def test_iter_live_bookmarks_respects_since(mock_urlopen, monkeypatch):
-    """Bookmarks before 'since' should stop iteration (newest-first)."""
+    """Bookmarks with no newer creation or update timestamp are filtered."""
     monkeypatch.setenv("RAINDROP_API_TOKEN", "fake-token")
     mock_resp = MagicMock()
     mock_resp.read.return_value = json.dumps(_FAKE_API_RESPONSE).encode()
@@ -181,9 +181,35 @@ def test_iter_merged_bookmarks_passes_bounds_to_live_and_export(monkeypatch):
     }
 
 
-def test_raindrop_poll_cursor_is_serializable():
-    cursor = RaindropPollCursor(last_id=42, last_polled="2026-04-21T10:00:00+00:00")
-    data = {"last_id": cursor.last_id, "last_polled": cursor.last_polled}
-    serialized = json.dumps(data)
-    parsed = json.loads(serialized)
-    assert parsed["last_id"] == 42
+def test_updated_old_bookmark_is_found_after_older_page(monkeypatch):
+    pages = [
+        {"items": [{**_FAKE_API_ITEM, "created": "2026-01-02T00:00:00Z", "lastUpdate": "2026-01-03T00:00:00Z"}]},
+        {"items": [{**_FAKE_API_ITEM, "_id": 42, "created": "2026-01-01T00:00:00Z", "lastUpdate": "2026-08-03T00:00:00Z"}]},
+        {"items": []},
+    ]
+    calls = []
+
+    def api(path, token):
+        calls.append(path)
+        return pages.pop(0)
+
+    monkeypatch.setattr("lynchpin.sources.raindrop_live._api_get", api)
+    monkeypatch.setattr("lynchpin.sources.raindrop_live.time.sleep", lambda _seconds: None)
+    rows = list(iter_live_bookmarks(since=datetime(2026, 8, 1, tzinfo=timezone.utc), per_page=1, token="fixture"))
+    assert [row.id for row in rows] == [42]
+    assert rows[0].created == datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert rows[0].updated == datetime(2026, 8, 3, tzinfo=timezone.utc)
+    assert datetime.fromisoformat(rows[0].to_legacy().raw["updated"]) == rows[0].updated
+    assert len(calls) == 3
+
+
+def test_update_timestamp_does_not_invent_creation_date():
+    row = _parse_raindrop_item({"_id": 7, "lastUpdate": "2026-08-03T00:00:00Z"})
+    assert row.created is None
+    assert row.updated == datetime(2026, 8, 3, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("per_page", [0, 51])
+def test_unsupported_page_size_refuses_query(per_page):
+    with pytest.raises(ValueError, match="1 and 50"):
+        list(iter_live_bookmarks(per_page=per_page, token="fixture"))

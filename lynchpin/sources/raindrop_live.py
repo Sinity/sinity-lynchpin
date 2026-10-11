@@ -36,20 +36,16 @@ from ..core.errors import SourceUnavailableError
 
 __all__ = [
     "RaindropBookmarkLive",
-    "RaindropPollCursor",
-    "LAST_CURSOR_FILE",
     "raindrop_api_token",
     "iter_live_bookmarks",
     "iter_merged_bookmarks",
     "daily_raindrop_live_activity",
-    "poll_raindrop",
     "iter_retained_bookmarks",
 ]
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 RAINDROP_API_BASE = "https://api.raindrop.io/rest/v1"
-LAST_CURSOR_FILE = ".lynchpin/raindrop_last_cursor.json"
 
 
 @dataclass(frozen=True)
@@ -66,6 +62,7 @@ class RaindropBookmarkLive:
     cover: str | None
     favorite: bool
     collection: str  # Raindrop collection ID or title
+    updated: datetime | None = None
 
     def to_legacy(self) -> RaindropBookmark:
         return RaindropBookmark(
@@ -79,14 +76,11 @@ class RaindropBookmarkLive:
             excerpt=self.excerpt,
             cover=self.cover,
             favorite=self.favorite,
-            raw={"source": "raindrop_live", "collection": self.collection},
+            raw={
+                "source": "raindrop_live", "collection": self.collection,
+                **({"updated": self.updated.isoformat()} if self.updated else {}),
+            },
         )
-
-
-@dataclass(frozen=True)
-class RaindropPollCursor:
-    last_id: int
-    last_polled: str  # ISO datetime
 
 
 @dataclass(frozen=True)
@@ -157,7 +151,7 @@ def _api_get(path: str, token: str) -> dict:
 
 
 def _parse_raindrop_item(item: dict) -> RaindropBookmarkLive:
-    created_raw = item.get("created") or item.get("lastUpdate")
+    created_raw = item.get("created")
     created = parse_datetime(created_raw) if created_raw else None
     tags_raw = item.get("tags", [])
     tags = tags_raw if isinstance(tags_raw, list) else []
@@ -173,6 +167,7 @@ def _parse_raindrop_item(item: dict) -> RaindropBookmarkLive:
         cover=item.get("cover"),
         favorite=bool(item.get("favorite") or item.get("important")),
         collection=str(item.get("collection") or ""),
+        updated=parse_datetime(item.get("lastUpdate")),
     )
 
 
@@ -194,6 +189,8 @@ def iter_live_bookmarks(
     Yields:
         RaindropBookmarkLive for each returned item.
     """
+    if not 1 <= per_page <= 50:
+        raise ValueError("Raindrop page size must be between 1 and 50")
     api_token = token or raindrop_api_token()
     if not api_token:
         return
@@ -215,9 +212,11 @@ def iter_live_bookmarks(
                 bm = _parse_raindrop_item(item)
             except Exception:
                 continue
-            if since is not None and bm.created is not None and bm.created < since:
-                # Items are newest-first; stop iteration
-                return
+            timestamps = [stamp for stamp in (bm.created, bm.updated) if stamp is not None]
+            if since is not None and timestamps and max(timestamps) < since:
+                # The API sorts by creation, not modification. An older-created
+                # item updated recently may occur on any later page.
+                continue
             yield bm
 
         if len(items) < per_page:
@@ -297,40 +296,3 @@ def daily_raindrop_live_activity(
         ],
         key=lambda x: x.date,
     )
-
-# ── Poll convenience ───────────────────────────────────────────────────────────
-
-
-def poll_raindrop(token: str | None = None) -> tuple[int, datetime]:
-    """Poll Raindrop API and return (new_count, last_polled_at).
-
-    Updates the cursor file at ``LAST_CURSOR_FILE``.
-    """
-    api_token = token or raindrop_api_token()
-    if not api_token:
-        return 0, datetime.now(timezone.utc)
-
-    cursor_path = get_config().repo_root / LAST_CURSOR_FILE
-    since: datetime | None = None
-    if cursor_path.exists():
-        try:
-            cursor_data = json.loads(cursor_path.read_text())
-            since = datetime.fromisoformat(cursor_data.get("last_polled", ""))
-        except Exception:
-            pass
-
-    count = 0
-    newest: datetime | None = None
-    now = datetime.now(timezone.utc)
-    # Consume every page successfully before advancing progress. A failed page
-    # leaves the prior cursor intact so the next run retries the same window.
-    for bm in iter_live_bookmarks(since=since, token=api_token):
-        count += 1
-        if newest is None or (bm.created is not None and bm.created > newest):
-            newest = bm.created
-
-    cursor_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = cursor_path.with_suffix(cursor_path.suffix + ".tmp")
-    temporary.write_text(json.dumps({"last_polled": now.isoformat()}), encoding="utf-8")
-    temporary.replace(cursor_path)
-    return count, now

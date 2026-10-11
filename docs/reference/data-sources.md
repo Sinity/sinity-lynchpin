@@ -37,6 +37,8 @@ Raindrop API acquisition publishes complete metadata bundles from sibling stagin
 
 Retained highlights join bookmarks through the provider's `raindropRef`, preserving the highlight's separate string `_id`. A missing parent reference raises a source error. The [Raindrop highlights contract](https://developer.raindrop.io/v1/highlights) documents these separate identities.
 
+Live Raindrop reads preserve creation and modification timestamps separately. An older creation time cannot terminate an update-filtered read: the [API](https://developer.raindrop.io/v1/raindrops/multiple) orders by creation and permits at most 50 items per page. The unused cursor-only poll, which retained no records, is retired. Explicit durable acquisition uses `python -m lynchpin.ingest.raindrop_archive --metadata`; a completed validated bundle is its progress evidence. Historical cursor files remain retained.
+
 Canonical communication event IDs hash the versioned semantic fields, including
 the complete message text, normalized timestamp, recipients, media count, and
 raw kind. The 240-character excerpt is presentation data only; exact semantic
