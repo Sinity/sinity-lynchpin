@@ -158,6 +158,14 @@ result = "json"
 cache = "none"
 timeout_seconds = 3600
 
+[operations.repair_activitywatch_index]
+description = "Explicitly rebuild the ActivityWatch day index from retained owner-native databases"
+exec = ["python", "-m", "lynchpin.ingest.activitywatch_event_index_materialize", "--full"]
+pool = "bulk"
+result = "json"
+cache = "none"
+timeout_seconds = 7200
+
 [operations.promote_node]
 description = "Atomically publish one complete substrate generation"
 exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "promote"]
