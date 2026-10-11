@@ -183,6 +183,14 @@ result = "exit"
 cache = "none"
 timeout_seconds = 3600
 
+[operations.repair_machine_telemetry_archive]
+description = "Verify retained telemetry partitions and backfill missing sealed days without changing captured SQLite rows"
+exec = ["python", "-m", "lynchpin.cli.machine_telemetry_export"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+timeout_seconds = 7200
+
 [operations.recompute_activity_products]
 description = "Recompute affected ActivityWatch-derived history and publish typed facts with its graph"
 exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--promote", "--history", "all", "--full", "--only", "activity_content", "personal_daily_signals", "temporal_signals", "sleep_productivity", "--progress", "plain"]
