@@ -175,6 +175,14 @@ result = "exit"
 cache = "none"
 timeout_seconds = 7200
 
+[operations.raindrop_archive]
+description = "Acquire and validate one complete Raindrop metadata bundle while preserving prior exports"
+exec = ["python", "-m", "lynchpin.ingest.raindrop_archive", "--metadata"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+timeout_seconds = 3600
+
 [operations.recompute_activity_products]
 description = "Recompute affected ActivityWatch-derived history and publish typed facts with its graph"
 exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--promote", "--history", "all", "--full", "--only", "activity_content", "personal_daily_signals", "temporal_signals", "sleep_productivity", "--progress", "plain"]
