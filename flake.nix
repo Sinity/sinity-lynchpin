@@ -332,7 +332,7 @@
           cores = ''${LYNCHPIN_NIX_CORES:-4}
           fallback = true"
           export PYTHONUSERBASE=$PWD/.pyuser
-          export LYNCHPIN_REPO_ROOT=$PWD
+          export LYNCHPIN_REPO_ROOT="''${LYNCHPIN_REPO_ROOT:-$PWD}"
           export PYTHONPATH=$PWD
           export PATH="$PWD/tool:$PATH"
         '';
