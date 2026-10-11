@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import csv
 import json
-from datetime import datetime, timezone
 
+import pytest
+from datetime import datetime, timedelta, timezone
+
+from lynchpin.core import parse
 from lynchpin.sources.samsung_binning import iter_hr_bins, iter_hrv_bins, iter_stress_bins
 
 
@@ -11,7 +14,8 @@ def _ms(dt: datetime) -> int:
     return int(dt.timestamp() * 1000)
 
 
-def test_samsung_binning_iterators_filter_by_timestamp_window(tmp_path) -> None:
+@pytest.mark.parametrize("bounds_kind", ["utc", "naive_local", "aware_offset"])
+def test_samsung_binning_iterators_filter_by_timestamp_window(tmp_path, monkeypatch, bounds_kind) -> None:
     root = tmp_path
     stress_dir = root / "Stress Internal Data"
     stress_dir.mkdir()
@@ -86,6 +90,15 @@ def test_samsung_binning_iterators_filter_by_timestamp_window(tmp_path) -> None:
 
     start = datetime(2026, 5, 1, 6, tzinfo=timezone.utc)
     end = datetime(2026, 5, 1, 9, tzinfo=timezone.utc)
+
+    if bounds_kind == "naive_local":
+        monkeypatch.setattr(parse, "local_tz", lambda: timezone(timedelta(hours=2)))
+        start = parse.as_local(start).replace(tzinfo=None)
+        end = parse.as_local(end).replace(tzinfo=None)
+    elif bounds_kind == "aware_offset":
+        offset = timezone(timedelta(hours=5, minutes=30))
+        start = start.astimezone(offset)
+        end = end.astimezone(offset)
 
     assert [row.score for row in iter_stress_bins(root, start=start, end=end)] == [20.0]
     assert [row.sdnn for row in iter_hrv_bins(root, start=start, end=end)] == [20.0]

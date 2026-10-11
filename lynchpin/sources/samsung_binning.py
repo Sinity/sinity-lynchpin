@@ -9,6 +9,9 @@ and Health HRV/ contains finer-grained binning_data fields:
   - Health HRV: per-30s rolling 5-min window sdnn/rmssd, 2025-05 onwards
   - Heart Rate: per-window HR readings, 2022-08 onwards (rich binning since ~2025)
 
+Query bounds follow the shared instant policy: naive bounds mean local time,
+while exported epoch timestamps remain UTC.
+
 This module exposes typed iterators for time-aligned analysis. Useful for:
   - Reverse-engineering Samsung's stress score formula (see analysis.health_modeling)
   - Cross-correlating with AW activity, polylogue, substance log, etc.
@@ -21,6 +24,8 @@ from pathlib import Path
 from typing import Iterator, Optional
 import csv
 import json
+
+from ..core.primitives import _instant
 
 
 SAMSUNG_GDPR_ROOT_DEFAULT = Path(
@@ -86,6 +91,8 @@ def iter_stress_bins(
     Coverage: 2022-08-30 → 2026-03-29 (varies by export).
     Roughly 640k bins per typical export.
     """
+    start = _instant(start) if start is not None else None
+    end = _instant(end) if end is not None else None
     base = (root or _gdpr_root()) / "Stress Internal Data"
     if not base.exists():
         return
@@ -133,6 +140,8 @@ def iter_hrv_bins(
     Coverage: 2025-05-21 onwards (post Galaxy Watch firmware update that
     enabled raw HRV export — see raw-log 2025-05-24 entry).
     """
+    start = _instant(start) if start is not None else None
+    end = _instant(end) if end is not None else None
     base = (root or _gdpr_root()) / "Health HRV"
     if not base.exists():
         return
@@ -177,6 +186,8 @@ def iter_hr_bins(
     Coverage: 2022-08 onwards. Rich binning_data with min/max appears
     from ~2025-03 onwards; before that bins have heart_rate only.
     """
+    start = _instant(start) if start is not None else None
+    end = _instant(end) if end is not None else None
     base = (root or _gdpr_root()) / "Heart Rate"
     if not base.exists():
         return
