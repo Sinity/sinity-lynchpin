@@ -403,12 +403,10 @@ def _promote_snapshot_daily_signals(
             refresh_id=refresh_id,
             rows=(
                 row
-                for row in iter_activity_title_usage(path=content_usage, start=content_start, end=end, ensure=False)
+                for row in iter_activity_title_usage(path=content_usage, ensure=False)
                 if row.last_date is not None and row.first_date is not None
             ),
             previous_refresh_id=previous_refresh_id,
-            replacement_start=incremental_tail_start,
-            replacement_end=end if incremental_tail_start is not None else None,
         )
         count = promote_personal_daily_signals(
             conn,

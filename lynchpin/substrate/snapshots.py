@@ -291,10 +291,48 @@ def best_materialized_refresh_id(
                 if scoped and (start is not None or end is not None):
                     if has_declared_window:
                         window_start, window_end = window
-                        if start is not None and (window_start is None or window_start > start):
-                            continue
-                        if end is not None and (window_end is None or window_end < end):
-                            continue
+                        product_lineage = LINEAGE_PARTITION_TABLES.get(table, "")
+                        has_lineage = (
+                            product_lineage.startswith("substrate_product_lineage:")
+                            and _table_exists(conn, "substrate_product_lineage")
+                            and conn.execute(
+                                "SELECT 1 FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?",
+                                [product_lineage.removeprefix("substrate_product_lineage:"), refresh_id],
+                            ).fetchone() is not None
+                        )
+                        if has_lineage:
+                            from lynchpin.substrate.personal import _lineage
+
+                            intervals = []
+                            for partition, _ in _lineage(
+                                conn, product=product_lineage.removeprefix("substrate_product_lineage:"),
+                                refresh_id=refresh_id,
+                            ):
+                                ancestor = status_by_id.get(partition)
+                                if ancestor is not None:
+                                    lower, upper = ancestor[2:]
+                                    if lower is not None and upper is not None and lower < upper:
+                                        intervals.append((lower, upper))
+                            # Ready predecessor windows remain covered by the
+                            # logical product. Merge adjacent intervals without
+                            # claiming coverage across an unscanned gap.
+                            merged: list[tuple[date, date]] = []
+                            for lower, upper in sorted(intervals):
+                                if merged and lower <= merged[-1][1]:
+                                    merged[-1] = (merged[-1][0], max(merged[-1][1], upper))
+                                else:
+                                    merged.append((lower, upper))
+                            if not any(
+                                (start is None or lower <= start < upper)
+                                and (end is None or lower < end <= upper)
+                                for lower, upper in merged
+                            ):
+                                continue
+                        else:
+                            if start is not None and (window_start is None or window_start > start):
+                                continue
+                            if end is not None and (window_end is None or window_end < end):
+                                continue
                     elif legacy_graph_window:
                         span = conn.execute(
                             f"SELECT MIN(date), MAX(date) FROM {table} WHERE refresh_id = ?",

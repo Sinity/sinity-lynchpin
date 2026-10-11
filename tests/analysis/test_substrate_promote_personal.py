@@ -42,7 +42,7 @@ def test_promote_personal_sources_bounds_activity_content_reads(monkeypatch, tmp
     def fake_iter_activity_title_usage(*, path=None, start=None, end=None, ensure=True):
         assert path == pinned[1]
         usage_windows.append((start, end, ensure))
-        yield UsageRow(first_date=start, last_date=start)
+        yield UsageRow(first_date=date(2026, 1, 1), last_date=date(2026, 1, 1))
 
     monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
     monkeypatch.setattr(
@@ -85,7 +85,7 @@ def test_promote_personal_sources_bounds_activity_content_reads(monkeypatch, tmp
     )
 
     assert content_windows == [(date(2026, 5, 1), date(2026, 5, 4), False)]
-    assert usage_windows == [(date(2026, 5, 1), date(2026, 5, 4), False)]
+    assert usage_windows == [(None, None, False)]
     assert counts["activity_content_day"] == 1
     assert counts["activity_content_bucket"] == 1
     assert counts["activity_title_usage"] == 1

@@ -272,3 +272,10 @@ exec = ["just", "verify-generation-selection"]
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"
+
+[operations.verify_title_aggregates]
+description = "Verify lifetime title corrections and native promotion readers"
+exec = ["just", "verify-title-aggregates"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"

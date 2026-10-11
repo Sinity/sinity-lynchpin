@@ -309,3 +309,75 @@ def test_zero_row_lineage_rejects_unreadable_or_failed_head(
         else:
             conn.execute("UPDATE substrate_product_lineage SET predecessor_refresh_id=? WHERE refresh_id='new'", ["missing" if broken == "missing" else "new"])
             assert best_materialized_refresh_id(conn, "title_classification", caller="test") is None
+
+
+@pytest.mark.parametrize("case,first,last,seconds", [
+    ("first", 10, 10, 40.0),
+    ("last", 1, 1, 60.0),
+    ("interior", 1, 10, 80.0),
+    ("all", None, None, 0.0),
+    ("unchanged", 1, 10, 100.0),
+])
+def test_active_title_correction_matches_full_snapshot(case, first, last, seconds, tmp_path, monkeypatch) -> None:
+    from dataclasses import asdict, replace
+    from lynchpin.analysis.active.substrate_promote_personal import promote_personal_sources
+    from lynchpin.analysis.active.substrate_promote_status import SOURCE_ACTIVITY_CONTENT, SourceSelection
+    from lynchpin.sources.activity_content import ActivityTitleUsage, iter_activity_title_usage
+    from lynchpin.substrate.personal import _ACTIVITY_TITLE_USAGE_COLUMNS, _title_usage_key, promote_activity_title_usage
+
+    daily = tmp_path / "daily.ndjson"
+    usage = tmp_path / "usage.ndjson"
+    daily.write_text("")
+    old = ActivityTitleUsage("changed", "app", "title", "title", 100.0, 2, date(2026, 1, 1), date(2026, 1, 10), True)
+    unrelated = replace(old, title_hash="unrelated", focused_seconds=30.0)
+    current = [unrelated]
+    if first is not None:
+        current.append(replace(old, first_date=date(2026, 1, first), last_date=date(2026, 1, last), focused_seconds=seconds))
+    usage.write_text("\n".join(json.dumps(asdict(row), default=str) for row in current))
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", lambda *_a, **_k: SimpleNamespace(status="ready", reason="ready"))
+    monkeypatch.setattr("lynchpin.sources.activity_content.activity_content_bundle_paths", lambda: (daily, usage))
+    correction_day = 10 if case == "last" else 5 if case == "interior" else 1
+    with connect(tmp_path / "sub.duckdb") as conn:
+        apply_schema(conn)
+        promote_activity_title_usage(conn, refresh_id="base", rows=[old, unrelated])
+        counts = {}
+        promote_personal_sources(
+            conn, refresh_id="tail", window_start=date(2026, 1, correction_day),
+            window_end=date(2026, 1, correction_day + 1), counts=counts,
+            selection=SourceSelection.from_collection({SOURCE_ACTIVITY_CONTENT}),
+        )
+        promote_activity_title_usage(conn, refresh_id="full", rows=iter_activity_title_usage(usage, ensure=False))
+        def resolved(refresh):
+            return _resolved_rows(conn, product="activity_title_usage", refresh_id=refresh, table="activity_title_usage", columns=_ACTIVITY_TITLE_USAGE_COLUMNS, key=_title_usage_key)
+        assert resolved("tail") == resolved("full")
+        assert counts["activity_title_usage"] == (0 if case in {"all", "unchanged"} else 1)
+        assert conn.execute("SELECT COUNT(*) FROM activity_title_usage WHERE refresh_id = 'tail' AND title_hash = 'unrelated'").fetchone()[0] == 0
+
+
+def test_title_snapshot_failure_preserves_predecessor(tmp_path) -> None:
+    from lynchpin.sources.activity_content import ActivityTitleUsage
+    from lynchpin.substrate.personal import promote_activity_title_usage
+
+    row = ActivityTitleUsage("a", "app", "a", "a", 1.0, 1, date(2026, 1, 1), date(2026, 1, 1), True)
+    with connect(tmp_path / "sub.duckdb") as conn:
+        apply_schema(conn)
+        promote_activity_title_usage(conn, refresh_id="base", rows=[row])
+        before = conn.execute("SELECT * FROM substrate_product_lineage").fetchall()
+        with pytest.raises(duckdb.IOException, match="disk full"):
+            promote_activity_title_usage(_FailingLineage(conn), refresh_id="tail", rows=[], previous_refresh_id="base")
+        assert conn.execute("SELECT * FROM substrate_product_lineage").fetchall() == before
+        assert conn.execute("SELECT COUNT(*) FROM substrate_product_tombstone").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("gap", [False, True])
+def test_lineage_selection_uses_inherited_coverage_without_bridging_gaps(tmp_path, gap) -> None:
+    from lynchpin.substrate.snapshots import best_materialized_refresh_id
+
+    with connect(tmp_path / "sub.duckdb") as conn:
+        apply_schema(conn)
+        promote_personal_daily_signals(conn, refresh_id="base", rows=[_signal(1, 1.0)])
+        promote_personal_daily_signals(conn, refresh_id="tail", rows=[_signal(10, 2.0)], previous_refresh_id="base", replacement_start=date(2026, 1, 10), replacement_end=date(2026, 1, 11))
+        for rid, lower, upper in [("base", 1, 5 if gap else 10), ("tail", 10, 11)]:
+            conn.execute("INSERT INTO substrate_source_status (refresh_id, source, kind, status, row_count, window_start, window_end, recorded_at) VALUES (?, 'personal_daily_signal', 'source', 'ok', 1, ?, ?, ?)", [rid, date(2026, 1, lower), date(2026, 1, upper), f"2026-01-{upper:02d} 00:00:00"])
+        selected = best_materialized_refresh_id(conn, "personal_daily_signal", caller="test", start=date(2026, 1, 1), end=date(2026, 1, 11))
+        assert selected == (None if gap else "tail")

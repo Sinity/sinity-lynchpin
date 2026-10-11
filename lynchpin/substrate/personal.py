@@ -185,14 +185,12 @@ def _promote_dated_product(
     columns: tuple[str, ...], refresh_id: str, rows: Iterable[tuple[Any, ...]],
     previous_refresh_id: str | None, replacement_start: date | None,
     replacement_end: date | None, row_date, tombstones: Iterable[str] = (),
-    batch_size: int | None = None, clip_end: bool = True,
+    batch_size: int | None = None,
 ) -> int:
     """Promote a full partition, or one replacing ``[start, end)`` of its predecessor.
 
     Predecessor rows outside the range stay visible to readers, so a finite
     historical correction never removes later data it did not read.
-    ``clip_end=False`` keeps rows whose date lies past the range: a title-usage
-    aggregate that overlaps the range carries its last date beyond it.
     """
     replacement = _replacement(product, previous_refresh_id, replacement_start, replacement_end)
     built = list(rows)
@@ -200,7 +198,7 @@ def _promote_dated_product(
         start, end = replacement
         built = [
             row for row in built
-            if row_date(row) >= start and (not clip_end or row_date(row) < end)
+            if start <= row_date(row) < end
         ]
     return _commit_product(
         conn, product=product, table=table, columns=columns, refresh_id=refresh_id,
@@ -795,9 +793,8 @@ def promote_activity_title_usage(
     refresh_id: str,
     rows: Iterable[Any],
     previous_refresh_id: str | None = None,
-    replacement_start: date | None = None,
-    replacement_end: date | None = None,
 ) -> int:
+    """Publish a complete canonical lifetime-title snapshot as keyed changes."""
     built = [
         (
             row.title_hash,
@@ -819,35 +816,26 @@ def promote_activity_title_usage(
         )
         for row in rows
     ]
-    replacement = _replacement(
-        "activity_title_usage", previous_refresh_id, replacement_start, replacement_end,
-    )
-    removed: set[str] = set()
-    if replacement is not None and previous_refresh_id is not None:
-        # Predecessor titles last seen inside the range that this read no
-        # longer reports are removed; titles last seen elsewhere were not read.
-        start, end = replacement
-        current_keys = {_title_usage_key(row) for row in built}
-        removed = {
-            _title_usage_key(row) for row in _resolved_rows(
-                conn, product="activity_title_usage", refresh_id=previous_refresh_id,
-                table="activity_title_usage", columns=_ACTIVITY_TITLE_USAGE_COLUMNS,
-                key=_title_usage_key,
-            )
-            if row[7] is not None and start <= row[7] < end
-        } - current_keys
-    return _promote_dated_product(
-        conn,
-        product="activity_title_usage", table="activity_title_usage",
-        columns=_ACTIVITY_TITLE_USAGE_COLUMNS,
-        refresh_id=refresh_id,
-        rows=built,
-        previous_refresh_id=previous_refresh_id,
-        replacement_start=replacement_start, replacement_end=replacement_end,
-        row_date=lambda row: row[7],
-        tombstones=removed,
+    # Lifetime totals are keyed snapshots, not dated partitions. The producer
+    # supplies the complete canonical view, including surviving keys whose
+    # temporal extent moved outside the corrected input window.
+    current = {_title_usage_key(row): row for row in built}
+    if len(current) != len(built):
+        raise ValueError("duplicate title keys in canonical activity title usage")
+    previous = {
+        _title_usage_key(row): row for row in _resolved_rows(
+            conn, product="activity_title_usage", refresh_id=previous_refresh_id,
+            table="activity_title_usage", columns=_ACTIVITY_TITLE_USAGE_COLUMNS,
+            key=_title_usage_key,
+        )
+    } if previous_refresh_id is not None else {}
+    return _commit_product(
+        conn, product="activity_title_usage", table="activity_title_usage",
+        columns=_ACTIVITY_TITLE_USAGE_COLUMNS, refresh_id=refresh_id,
+        rows=[row for key, row in current.items() if previous.get(key) != row],
+        predecessor_refresh_id=previous_refresh_id, replacement=None,
+        tombstones=previous.keys() - current.keys(), logical_row_count=len(current),
         batch_size=10_000,
-        clip_end=False,
     )
 
 

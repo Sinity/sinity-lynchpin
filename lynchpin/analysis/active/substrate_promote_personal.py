@@ -322,7 +322,7 @@ def promote_personal_sources(
             content_rows = list(iter_activity_content_days(path=content_daily, start=window_start, end=window_end, ensure=False))
             usage_rows = [
                 row
-                for row in iter_activity_title_usage(path=content_usage, start=window_start, end=window_end, ensure=False)
+                for row in iter_activity_title_usage(path=content_usage, ensure=False)
                 if row.last_date is not None
                 and row.first_date is not None
             ]
@@ -356,8 +356,6 @@ def promote_personal_sources(
                 refresh_id=refresh_id,
                 rows=usage_rows,
                 previous_refresh_id=usage_predecessor,
-                replacement_start=window_start if usage_predecessor else None,
-                replacement_end=window_end if usage_predecessor else None,
             )
             row_count = counts["activity_content_day"] + counts["activity_content_bucket"] + counts["activity_title_usage"]
             record_source_status(
