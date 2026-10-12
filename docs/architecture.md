@@ -71,6 +71,9 @@ spill supported operations beside the database on the configured storage.
 This budget leaves room for Python and other native allocations inside the
 job cap; it does not bound Python collections. Budget failures remain explicit
 and cannot publish an incomplete candidate.
+Machine promotion stops on Python or DuckDB memory exhaustion, including
+lake bootstrap and incremental reads. It records the stage failure rather
+than attempting a larger full scan or treating the retained database as corrupt.
 
 Promoters load canonical rows into typed tables for work, projects, personal
 signals, machine state, GitHub/review context, claims, and graph products.

@@ -48,6 +48,22 @@ _MACHINE_STAGE_NAMES = {
 }
 
 
+def _is_memory_exhaustion(exc: Exception) -> bool:
+    import duckdb
+
+    return isinstance(exc, (MemoryError, duckdb.OutOfMemoryException))
+
+
+def _reject_memory_exhaustion(exc: Exception, *, stage: str) -> None:
+    """A memory limit is a stop condition, not a reason for a larger fallback."""
+    from lynchpin.substrate.connection import CandidateGenerationRejected
+
+    if _is_memory_exhaustion(exc):
+        raise CandidateGenerationRejected(
+            f"machine stage {stage} exhausted memory; promotion stopped without fallback"
+        ) from exc
+
+
 def _is_fatal_duckdb_error(exc: Exception) -> bool:
     """Return whether ``exc`` invalidates the connection or its indexes.
 
@@ -189,6 +205,7 @@ def _run_machine_stage(
             window_start=window_start,
             window_end=window_end,
         )
+        _reject_memory_exhaustion(exc, stage=stage)
         if _is_fatal_duckdb_error(exc):
             _raise_fatal_machine_error(exc, stage=stage)
         log.warning("substrate_promote: %s failed: %s", stage, reason)
@@ -264,6 +281,7 @@ def promote_machine_tables(
 
             if isinstance(exc, CandidateGenerationRejected):
                 raise
+            _reject_memory_exhaustion(exc, stage="promote_machine_fast_setup")
             if _is_fatal_duckdb_error(exc):
                 _raise_fatal_machine_error(exc, stage="promote_machine_fast_setup")
             log.warning(
@@ -411,6 +429,8 @@ def _maybe_bootstrap_from_lake(
             f"SELECT {', '.join(columns)}, refresh_id FROM {staging_table}"
         )
     except Exception as exc:
+        if _is_memory_exhaustion(exc):
+            raise
         log.warning(
             "substrate_promote: %s lake bootstrap failed, falling back to full ATTACH scan: %s",
             dst_table, exc,
@@ -664,6 +684,8 @@ def _promote_machine_fast(
                         watermark=watermark,
                     )
                 except Exception as exc:
+                    if _is_memory_exhaustion(exc):
+                        raise
                     if _is_fatal_duckdb_error(exc):
                         raise
                     log.warning(

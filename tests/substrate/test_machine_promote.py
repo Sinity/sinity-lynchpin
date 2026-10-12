@@ -1405,3 +1405,73 @@ def test_incremental_lake_watermark_uses_utc_day(tmp_path, monkeypatch):
     assert count == 2
     assert conn.execute("SELECT observed_at FROM samples ORDER BY observed_at").fetchall() == [(previous,), (live,)]
     conn.close()
+
+
+def test_machine_memory_exhaustion_keeps_committed_data_without_fallback(tmp_path, monkeypatch):
+    import duckdb
+    import pytest
+    from lynchpin.analysis.active import substrate_promote_machine as machine
+    from lynchpin.substrate.connection import CandidateGenerationRejected
+
+    sqlite = tmp_path / "source.sqlite"
+    sqlite.touch()
+    db = tmp_path / "retained.duckdb"
+    monkeypatch.setattr(machine, "_machine_sqlite_path", lambda: sqlite)
+    monkeypatch.setattr(machine, "_promote_machine_slow", lambda *_a, **_k: pytest.fail("memory exhaustion must not start a larger fallback"))
+    with duckdb.connect(str(db)) as conn:
+        conn.execute("CREATE TABLE retained AS SELECT 17 AS value")
+        conn.execute("SET memory_limit = '1MiB'")
+        def exhaust(*_args, **_kwargs):
+            conn.execute("SELECT list(i) FROM range(1000000) AS r(i)").fetchone()
+        monkeypatch.setattr(machine, "_promote_machine_fast", exhaust)
+        with pytest.raises(CandidateGenerationRejected, match="exhausted memory") as failure:
+            machine.promote_machine_tables(
+                conn, refresh_id="fixture", window_start=date(2026, 5, 1),
+                window_end=date(2026, 5, 2), counts={},
+                selection=machine.SourceSelection.from_collection({machine.SOURCE_MACHINE}),
+            )
+        assert isinstance(failure.value.__cause__, duckdb.OutOfMemoryException)
+        assert conn.execute("SELECT value FROM retained").fetchone() == (17,)
+    with duckdb.connect(str(db), read_only=True) as conn:
+        assert conn.execute("SELECT value FROM retained").fetchone() == (17,)
+
+
+def test_machine_python_memory_failure_records_error_and_stops(tmp_path):
+    import pytest
+    from lynchpin.analysis.active import substrate_promote_machine as machine
+    from lynchpin.substrate.connection import CandidateGenerationRejected, apply_schema, connect
+
+    with connect(tmp_path / "fixture.duckdb") as conn:
+        apply_schema(conn)
+        def exhaust():
+            raise MemoryError("neutral bounded allocation")
+        with pytest.raises(CandidateGenerationRejected, match="exhausted memory"):
+            machine._run_machine_stage(
+                conn, refresh_id="fixture", stage="fixture_memory",
+                source=machine.SOURCE_MACHINE, counts={},
+                window_start=date(2026, 5, 1), window_end=date(2026, 5, 2), fn=exhaust,
+            )
+        assert conn.execute("SELECT status FROM substrate_source_status WHERE refresh_id='fixture'").fetchone() == ("error",)
+
+
+def test_lake_memory_failure_propagates_instead_of_requesting_full_scan(tmp_path):
+    import pytest
+    from lynchpin.analysis.active import substrate_promote_machine as machine
+
+    partition = tmp_path / "metric_sample" / "dt=2026-05-01"
+    partition.mkdir(parents=True)
+    (partition / "fixture.parquet").touch()
+    class FailingConnection:
+        def execute(self, sql, *_args):
+            if "FROM read_parquet" in sql:
+                raise MemoryError("neutral lake allocation")
+            return self
+        def fetchone(self):
+            return (0,)
+    with pytest.raises(MemoryError, match="neutral lake allocation"):
+        machine._maybe_bootstrap_from_lake(
+            FailingConnection(), src_table="metric_sample", dst_table="fixture",
+            refresh_id="fixture", lake_root=tmp_path,
+            window_start=date(2026, 5, 1), window_end=date(2026, 5, 2),
+            columns=("observed_at",), overrides={},
+        )
