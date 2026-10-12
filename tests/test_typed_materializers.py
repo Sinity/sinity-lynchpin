@@ -161,8 +161,10 @@ def test_production_failure_skips_dependent_and_reports_reuse(monkeypatch) -> No
     plan = planned(spec("base"), spec("child", dependencies=("base",)))
     steps = tuple(replace_step(step, action="materialize") for step in plan.steps)
     production_harness(monkeypatch, [("test:base", broken), ("test:child", lambda _context: calls.append("child"))], receipts)
-    with pytest.raises(MaterializationError, match="base, child"):
+    with pytest.raises(MaterializationError, match="base, child") as failure:
         production.run_materialization_plan(steps, continue_on_error=True, progress=progress.append)
+    assert "base: RuntimeError: broken" in str(failure.value)
+    assert "child: dependency base failed" in str(failure.value)
     assert calls == []
     assert ("base", "error") in receipts
     assert ("child", "skipped") in receipts

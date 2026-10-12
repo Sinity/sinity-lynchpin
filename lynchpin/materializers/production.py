@@ -613,9 +613,13 @@ def run_materialization_plan(
     if failed:
         from ..core.errors import MaterializationError
 
+        causes = "; ".join(
+            f"{product}: {outcomes[product].error or outcomes[product].reason}"
+            for product in failed
+        )
         raise MaterializationError(
             "convergence",
-            reason=f"materialization failed or skipped for {', '.join(failed)}; candidate promotion requires compatible products",
+            reason=f"materialization failed or skipped for {', '.join(failed)}; candidate promotion requires compatible products; {causes}",
         )
     return sorted(ran, key=lambda step: step.product)
 
