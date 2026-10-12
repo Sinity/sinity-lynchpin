@@ -1453,7 +1453,7 @@ def test_unindexed_machine_tables_reuse_history(tmp_path, monkeypatch, src_table
     source = (module.SOURCE_MACHINE_SERVICE_STATE if src_table == "service_state"
               else module.SOURCE_MACHINE_CGROUP_MEMORY)
     target = "machine_" + src_table
-    db = tmp_path / "source.sqlite"
+    db = tmp_path / "source'fixture.sqlite"
     columns, _ = module._machine_projections()[src_table]
     source_columns = ["schema_version" if c == "source_schema_version" else c for c in columns]
     with sqlite3.connect(db) as sqlite:

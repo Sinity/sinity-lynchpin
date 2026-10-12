@@ -501,7 +501,8 @@ def _promote_machine_fast(
     t_total = time.monotonic()
     conn.execute("INSTALL SQLITE")
     conn.execute("LOAD SQLITE")
-    conn.execute(f"ATTACH '{sqlite_path}' AS machine_src (TYPE SQLITE)")
+    escaped_path = str(sqlite_path).replace("'", "''")
+    conn.execute(f"ATTACH '{escaped_path}' AS machine_src (TYPE SQLITE, READ_ONLY)")
 
     from lynchpin.sources.machine import readiness as machine_readiness
 
