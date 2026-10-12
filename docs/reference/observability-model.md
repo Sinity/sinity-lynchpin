@@ -53,3 +53,11 @@ controlled treatment or a design that explicitly justifies it.
 Machine-facing MCP actions expose status, metrics, pressure, services,
 workloads, observations, benchmark runs, diagnostics, and context windows over
 this model.
+
+Machine promotion reuses existing history for every SQLite table when a
+watermark exists. It rereads the watermark's UTC day and later rows in bounded
+batches, preserving earlier facts and pruning only dates outside the requested
+window. Service-state and cgroup-memory sources may still require a SQLite
+scan because they lack timestamp indexes; this does not require rebuilding the
+historical DuckDB target. A first population or explicit full rebuild still
+reads the complete requested history and remains subject to resource limits.

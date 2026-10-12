@@ -536,14 +536,11 @@ def _machine_projections() -> dict[str, tuple[tuple[str, ...], dict[str, str]]]:
     }
 
 
-# Tables with no usable ``observed_at`` SQLite index (confirmed via EXPLAIN
-# QUERY PLAN, sinnix-2g54 design note §3): any predicate-filtered read costs a
-# full table scan regardless of window width, so there is nothing for the
-# incremental watermark to save here and these always take the one-scan
-# ATTACH path. Adding the missing index is deliberately rejected (permanent
-# write amplification for a benefit ``_promote_machine_fast``'s single scan
-# already captures).
-_UNINDEXED_MACHINE_TABLES = frozenset({"service_state", "cgroup_memory_sample"})
+# These tables currently have no timestamp index. Keep their lake bootstrap
+# disabled until its coverage contract is verified, but still reuse existing
+# substrate history: a SQLite tail query scans source rows without rebuilding
+# and indexing the entire historical target.
+_NO_LAKE_BOOTSTRAP_TABLES = frozenset({"service_state", "cgroup_memory_sample"})
 
 
 def _incremental_reader_and_promoter(
@@ -556,8 +553,12 @@ def _incremental_reader_and_promoter(
     SQLite's own SEARCH plan (sub-second for a one-day tail, per the design
     note's pushdown measurements), where DuckDB's ATTACH scan never pushes the
     predicate down and pays a full-table read no matter how narrow the window.
+    Unindexed tables still scan SQLite, but only matching tail rows enter the
+    bounded Python batches and the substrate; existing history stays intact.
     """
     from lynchpin.sources.machine import (
+        cgroup_memory_samples,
+        service_states,
         gpu_samples,
         kill_events,
         metric_samples,
@@ -566,6 +567,8 @@ def _incremental_reader_and_promoter(
         process_memory_samples,
     )
     from lynchpin.substrate.machine import (
+        promote_machine_cgroup_memory_samples,
+        promote_machine_service_states,
         promote_machine_gpu_samples,
         promote_machine_kill_events,
         promote_machine_metric_samples,
@@ -575,6 +578,8 @@ def _incremental_reader_and_promoter(
     )
 
     table_map: dict[str, tuple[Any, Any, str]] = {
+        "service_state": (service_states, promote_machine_service_states, "states"),
+        "cgroup_memory_sample": (cgroup_memory_samples, promote_machine_cgroup_memory_samples, "samples"),
         "metric_sample": (metric_samples, promote_machine_metric_samples, "samples"),
         "gpu_sample": (gpu_samples, promote_machine_gpu_samples, "samples"),
         "network_sample": (network_samples, promote_machine_network_samples, "samples"),
@@ -607,7 +612,7 @@ def _promote_machine_fast(
     statement (no filter pushdown into SQLite), so statement count is the read
     cost driver and window width is free.
 
-    Indexed tables (everything but ``_UNINDEXED_MACHINE_TABLES``) additionally
+    All tables additionally
     check for an existing watermark under this ``refresh_id`` and, when one is
     found (a prior run already populated this refresh_id/window) and
     ``full_repromote`` is not set, take the incremental append path instead —
@@ -646,7 +651,7 @@ def _promote_machine_fast(
             continue
         def promote_table() -> None:
             t0 = time.monotonic()
-            if lake_root is not None and src_table not in _UNINDEXED_MACHINE_TABLES:
+            if lake_root is not None and src_table not in _NO_LAKE_BOOTSTRAP_TABLES:
                 _maybe_bootstrap_from_lake(
                     conn,
                     src_table=src_table,
@@ -659,7 +664,7 @@ def _promote_machine_fast(
                     overrides=projections[src_table][1],
                 )
             watermark = None
-            if not full_repromote and src_table not in _UNINDEXED_MACHINE_TABLES:
+            if not full_repromote:
                 watermark = conn.execute(
                     f"SELECT MAX(observed_at) FROM {dst_table} "
                     f"WHERE refresh_id = ? "
@@ -804,9 +809,9 @@ def _promote_machine_table_incremental(
     window_end: date,
     watermark: datetime,
 ) -> int:
-    """Append only the rows newer than ``watermark``, via the indexed Python reader.
+    """Append only the rows newer than ``watermark``, via the bounded Python reader.
 
-    Re-reads the watermark's own day in full (cheap — one indexed day) rather
+    Re-reads the watermark's own day in full rather
     than trying to resume mid-day, which sidesteps sub-day dedup entirely: the
     tail is deleted before the re-read is inserted, so there is no window in
     which the same row could be both kept and re-inserted under the same

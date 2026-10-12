@@ -761,6 +761,7 @@ def promote_machine_cgroup_memory_samples(
     *,
     refresh_id: str,
     samples: Iterable[Any],
+    delete_existing: bool = True,
 ) -> int:
     """INSERT machine_cgroup_memory_sample rows, idempotent on refresh_id."""
     return promote_rows(
@@ -769,6 +770,7 @@ def promote_machine_cgroup_memory_samples(
         columns=_CGROUP_MEMORY_COLUMNS,
         refresh_id=refresh_id,
         rows=samples,
+        delete_existing=delete_existing,
         extractor=lambda s: (
             s.observed_at, s.host, s.boot_id, int(s.source_schema_version),
             s.label, s.scope, s.control_group, s.memory_current_bytes,
@@ -902,6 +904,7 @@ def promote_machine_service_states(
     *,
     refresh_id: str,
     states: Iterable[Any],
+    delete_existing: bool = True,
 ) -> int:
     """INSERT machine_service_state rows, idempotent on refresh_id."""
     return promote_rows(
@@ -910,6 +913,7 @@ def promote_machine_service_states(
         columns=_SERVICE_STATE_COLUMNS,
         refresh_id=refresh_id,
         rows=states,
+        delete_existing=delete_existing,
         extractor=lambda s: (
             s.observed_at, s.host, s.boot_id, s.unit, s.scope,
             s.active_state, s.sub_state, s.main_pid, s.control_group,

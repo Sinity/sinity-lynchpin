@@ -382,3 +382,10 @@ exec = ["just", "verify-partition-integrity"]
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"
+
+[operations.verify_machine_promotion]
+description = "Verify bounded machine promotion, tail reuse and memory failure handling"
+exec = ["just", "verify-machine-promotion"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"

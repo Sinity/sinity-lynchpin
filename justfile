@@ -92,3 +92,8 @@ verify-partition-integrity *args:
     just lint
     just typecheck
     pytest -q tests/materializers/test_partition_store.py tests/ingest/test_activity_content_materialize.py "$@"
+
+verify-machine-promotion:
+    just lint
+    just typecheck
+    pytest -q tests/substrate/test_machine_promote.py tests/sources/test_source_machine.py tests/substrate/test_promote_rows_transaction.py

@@ -1,6 +1,8 @@
 from datetime import date, datetime, timezone
 from dataclasses import replace
 
+import pytest
+
 
 def test_promote_machine_metric_samples_round_trip(tmp_path):
     from lynchpin.sources.machine import MachineMetricSample
@@ -1475,3 +1477,75 @@ def test_lake_memory_failure_propagates_instead_of_requesting_full_scan(tmp_path
             window_start=date(2026, 5, 1), window_end=date(2026, 5, 2),
             columns=("observed_at",), overrides={},
         )
+
+
+@pytest.mark.parametrize("src_table", ["service_state", "cgroup_memory_sample"])
+def test_unindexed_machine_tables_reuse_history(tmp_path, monkeypatch, src_table):
+    import sqlite3
+    from types import SimpleNamespace
+
+    from lynchpin.analysis.active import substrate_promote_machine as module
+    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.sources import machine
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    source = (module.SOURCE_MACHINE_SERVICE_STATE if src_table == "service_state"
+              else module.SOURCE_MACHINE_CGROUP_MEMORY)
+    target = "machine_" + src_table
+    db = tmp_path / "source.sqlite"
+    columns, _ = module._machine_projections()[src_table]
+    source_columns = ["schema_version" if c == "source_schema_version" else c for c in columns]
+    with sqlite3.connect(db) as sqlite:
+        text_columns = {"observed_at", "host", "boot_id", "unit", "scope", "active_state",
+                        "sub_state", "control_group", "label"}
+        declarations = [f"{c} {'TEXT' if c in text_columns else 'INTEGER'}" for c in source_columns]
+        sqlite.execute(f"CREATE TABLE {src_table} ({', '.join(declarations)})")
+
+    def insert(day, value):
+        row = dict.fromkeys(source_columns)
+        hour = "11" if value == 20 else "10"
+        row.update(observed_at=f"{day}T{hour}:00:00+00:00", host="fixture", boot_id="boot",
+                   scope="user", memory_current_bytes=value)
+        if src_table == "service_state":
+            row.update(unit="fixture.service", active_state="active", sub_state="running")
+        else:
+            row.update(schema_version=1, label="fixture", control_group="/fixture")
+        with sqlite3.connect(db) as sqlite:
+            sqlite.execute(f"INSERT INTO {src_table} VALUES ({', '.join('?' for _ in row)})",
+                           list(row.values()))
+
+    for day in ["2026-05-01", "2026-05-02", "2026-05-03"]:
+        insert(day, 10)
+    monkeypatch.setattr(machine, "readiness", lambda: SimpleNamespace(status="ready", reason=None))
+    monkeypatch.setattr(module, "_machine_lake_root", lambda: None)
+    reader_name = "service_states" if src_table == "service_state" else "cgroup_memory_samples"
+    original_reader = getattr(machine, reader_name)
+    reads = []
+
+    def reader(**kwargs):
+        reads.append(kwargs["start"])
+        yield from original_reader(**kwargs)
+
+    monkeypatch.setattr(machine, reader_name, reader)
+    counts = {}
+    with connect(tmp_path / "target.duckdb") as real:
+        apply_schema(real)
+        conn = _CountingConn(real)
+        for start, end in [(date(2026, 5, 1), date(2026, 5, 3)),
+                           (date(2026, 5, 2), date(2026, 5, 4))]:
+            if reads or counts:
+                # A late arrival on the watermark day must survive the tail reread.
+                insert("2026-05-03", 20)
+                insert("2026-05-04", 30)
+                real.execute("DETACH machine_src")
+                conn.statements.clear()
+            module._promote_machine_fast(
+                conn, refresh_id="fixture", sqlite_path=db, window_start=start,
+                window_end=end, counts=counts,
+                selection=SourceSelection.from_collection([source]),
+            )
+            assert counts[target] == (3 if end.day == 3 else 4)
+        assert reads == [date(2026, 5, 3)]
+        assert counts[target] == 4
+        assert real.execute(f"SELECT memory_current_bytes FROM {target} ORDER BY observed_at, memory_current_bytes").fetchall() == [(10,), (10,), (20,), (30,)]
+        assert not any(f"machine_src.{src_table}" in sql for sql in conn.statements)
