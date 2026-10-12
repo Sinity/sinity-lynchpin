@@ -1460,7 +1460,10 @@ def _manifest_covered_dates(manifest: dict[str, Any]) -> tuple[date, ...]:
 
 
 def _path_high_water(paths: Iterable[Path]) -> tuple[int, str | None]:
-    existing = tuple(path for path in paths if path.exists())
+    from .core.input_snapshot import read_input_path
+
+    frozen = tuple(read_input_path(path) for path in paths)
+    existing = tuple(path for path in frozen if path.exists())
     latest = max((path.stat().st_mtime for path in existing), default=None)
     if latest is None:
         return len(existing), None

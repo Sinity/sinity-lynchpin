@@ -4123,3 +4123,23 @@ def test_polylogue_dataset_normalizes_unavailable_without_claiming_zero(monkeypa
         assert dataset_status_to_substrate_status(row.status) == (
             "error" if expected_status == "error" else "unavailable"
         )
+
+
+
+def test_manifest_highwater_uses_the_same_frozen_inputs_as_versions(tmp_path):
+    from lynchpin.core.cache import input_versions
+    from lynchpin.core.input_snapshot import input_snapshot
+    from lynchpin.core.io import latest_mtime_iso
+    from lynchpin.materialization import _manifest_inputs_current
+
+    path = tmp_path / "input.ndjson"
+    path.write_text("{}\n")
+    with input_snapshot() as snapshot:
+        snapshot.capture((path,))
+        manifest = {"input_file_count": 1, "input_latest_mtime": latest_mtime_iso((path,)),
+                    "input_versions": input_versions((path,))}
+        path.write_text("{}\n{}\n")
+        assert _manifest_inputs_current(manifest, (path,))
+        path.unlink()
+        assert _manifest_inputs_current(manifest, (path,))
+    assert not _manifest_inputs_current(manifest, (path,))

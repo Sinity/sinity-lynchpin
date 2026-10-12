@@ -53,6 +53,9 @@ readiness into a non-zero exit.
 ### 4. DuckDB substrate
 
 The substrate is a coherent analytical snapshot over a selected time window.
+Freshness validation resolves file identities and high-water timestamps from
+the same captured inputs during an operation. After that snapshot closes,
+validation compares against live inputs again.
 
 Substrate connections use a 4 GiB DuckDB memory budget, including serving
 reads, candidate builds, recovery, and publication validation. DuckDB may
