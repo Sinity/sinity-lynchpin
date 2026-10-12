@@ -12,7 +12,7 @@ command = ["nix", "develop", "--command"]
 # source tree). Jobs enter a cached `nix print-dev-env` realization keyed on
 # them instead of evaluating the devShell twice per new tree state.
 cache_inputs = ["flake.nix", "flake.lock"]
-inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LYNCHPIN_REPO_ROOT", "LYNCHPIN_LOCAL_ROOT", "POLYLOGUE_ROOT", "SINEX_ROOT", "RAWLOG_FILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "LYNCHPIN_FILESYSTEM_LAYOUT", "LYNCHPIN_CHISEL_CACHE_ROOT", "LYNCHPIN_CHISEL_SCRATCH_ROOT"]
+inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LYNCHPIN_REPO_ROOT", "LYNCHPIN_LOCAL_ROOT", "POLYLOGUE_ROOT", "SINEX_ROOT", "RAWLOG_FILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "LYNCHPIN_FILESYSTEM_LAYOUT", "LYNCHPIN_CHISEL_CACHE_ROOT", "LYNCHPIN_CHISEL_SCRATCH_ROOT", "LYNCHPIN_DATA_ROOT", "LYNCHPIN_HEALTH_ROOT", "LYNCHPIN_SAMSUNG_GDPR_CLOUD", "LYNCHPIN_SLEEP_JSONL"]
 unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
 
 [workspace]
@@ -261,6 +261,24 @@ pool = "normal"
 result = "json"
 cache = "none"
 timeout_seconds = 1800
+
+[operations.preview_health_exports]
+description = "Read retained health exports and report recomputation counts without publishing"
+exec = ["python", "-m", "lynchpin.cli.process_health", "--dry-run"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+scratch = "nvme"
+timeout_seconds = 3600
+
+[operations.recompute_health_exports]
+description = "Recompute existing health and fused-sleep products from retained exports"
+exec = ["python", "-m", "lynchpin.cli.process_health"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+scratch = "nvme"
+timeout_seconds = 3600
 
 # Codex quota is reserved (operator, 2026-09-29): batch workers, reviewers and
 # every bead model_policy run on Claude Opus 5.5.

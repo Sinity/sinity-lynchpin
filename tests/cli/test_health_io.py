@@ -2,9 +2,38 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
+import subprocess
+import sys
 import pytest
 
 from lynchpin.cli import health_io
+
+
+def test_health_processor_and_readers_share_custom_roots(tmp_path):
+    root = tmp_path / "health"
+    cloud = tmp_path / "cloud"
+    env = os.environ.copy()
+    env.update(LYNCHPIN_HEALTH_ROOT=str(root), LYNCHPIN_SAMSUNG_GDPR_CLOUD=str(cloud))
+    env.pop("LYNCHPIN_SLEEP_JSONL", None)
+    code = "from lynchpin.cli import health_io; from lynchpin.core.config import get_config; import json; print(json.dumps([str(health_io.HEALTH_RAW),str(health_io.SAA_RAW),str(health_io.PROCESSED),str(health_io.GDPR_CLOUD_DIR),str(get_config().sleep_jsonl)]))"
+    result = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True)
+    assert json.loads(result.stdout) == [str(root / "raw/samsung-health"), str(root / "raw/sleep-as-android"), str(root / "processed"), str(cloud), str(root / "processed/sleep_merged.jsonl")]
+    assert not root.exists()
+
+
+def test_process_health_dry_run_does_not_create_output(tmp_path, monkeypatch):
+    from lynchpin.cli import process_health
+    output = tmp_path / "uncreated"
+    calls = []
+    monkeypatch.setattr(process_health, "PROCESSED", output)
+    monkeypatch.setattr(process_health, "MERGED_PROCESSORS", (lambda dry: calls.append(dry),))
+    monkeypatch.setattr(process_health, "GDPR_ONLY_PROCESSORS", ())
+    monkeypatch.setattr(process_health, "process_sleep", lambda dry: calls.append(dry))
+    monkeypatch.setattr(sys, "argv", ["process_health", "--dry-run"])
+    process_health.main()
+    assert calls == [True, True]
+    assert not output.exists()
 
 
 def test_write_jsonl_emits_product_manifest(tmp_path, monkeypatch) -> None:

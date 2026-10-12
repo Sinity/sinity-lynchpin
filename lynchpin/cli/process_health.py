@@ -93,7 +93,8 @@ GDPR_ONLY_PROCESSORS: tuple[Processor, ...] = (
 
 def main():
     dry_run = "--dry-run" in sys.argv
-    PROCESSED.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        PROCESSED.mkdir(parents=True, exist_ok=True)
 
     # Sleep fusion runs last: it consumes the signal products (heart rate,
     # HRV, respiratory, SpO2, skin temperature, snoring, movement) written by

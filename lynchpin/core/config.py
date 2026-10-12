@@ -268,7 +268,7 @@ class LynchpinConfig:
         ))
         webhistory_ndjson = webhistory_ndjson_path
 
-        sleep_jsonl = Path(os.environ.get("LYNCHPIN_SLEEP_JSONL", data_root / "health/processed/sleep_merged.jsonl"))
+        sleep_jsonl = Path(os.environ.get("LYNCHPIN_SLEEP_JSONL", health_root / "processed/sleep_merged.jsonl"))
         codex_sessions_root = Path(os.environ.get("LYNCHPIN_CODEX_ROOT", "~/.codex/sessions")).expanduser()
 
         reddit_export_dir = _resolve_reddit_export(
@@ -319,7 +319,7 @@ class LynchpinConfig:
         themotte_root = Path(os.environ.get("LYNCHPIN_THEMOTTE_ROOT", data_root / "account/themotte/raw"))
         themotte_username = os.environ.get("LYNCHPIN_THEMOTTE_USER", "Sinity")
         samsung_gdpr_cloud_dir = Path(os.environ.get(
-            "LYNCHPIN_SAMSUNG_GDPR_CLOUD", data_root / "health/raw/samsung-gdpr-cloud"
+            "LYNCHPIN_SAMSUNG_GDPR_CLOUD", health_root / "raw/samsung-gdpr-cloud"
         ))
         clipboard_live_file = Path(os.environ.get(
             "LYNCHPIN_CLIPBOARD_LIVE_FILE", "~/.config/clipse/clipboard_history.json"

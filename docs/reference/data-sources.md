@@ -144,6 +144,12 @@ initial full repair; the new hashes do not establish retrospective continuity.
 
 ## Processed Samsung exports
 
+Processors use the configured health root and Samsung GDPR cloud root. The
+default fused-sleep path follows the health root; explicit source overrides
+remain supported. `preview_health_exports` runs the existing processor with
+`--dry-run` without creating its output directory. `recompute_health_exports`
+runs its publication route. Both are declared AgentCTL operations.
+
 The existing health processors publish each JSONL product and its manifest in
 an immutable generation, then atomically switch one `current` pointer. The
 existing filenames remain the entrances. Fused sleep's two entrances and its
