@@ -101,7 +101,7 @@ def run_substrate_promote(
     window_end: date | None = None,
     full_repromote: bool = False,
     partition_window_start: date | None = None,
-    machine_recovery_path: str | None = None,
+    machine_recovery_paths: tuple[str, ...] = (),
 ) -> PromotionRunResult:
     """Promote materialized artifacts and live source families to the substrate.
 
@@ -133,8 +133,8 @@ def run_substrate_promote(
 
             with candidate_generation(
                 receipt_refresh_id=refresh_id,
-                retain_failed=machine_recovery_path is not None,
-                protected_candidate_sources=(Path(machine_recovery_path),) if machine_recovery_path is not None else (),
+                retain_failed=bool(machine_recovery_paths),
+                protected_candidate_sources=tuple(Path(path) for path in machine_recovery_paths),
             ) as generation:
                 result = _do_promote(
                     commit_facts_file=commit_facts_file,
@@ -148,7 +148,7 @@ def run_substrate_promote(
                     window_end=window_end,
                     full_repromote=full_repromote,
                     partition_window_start=partition_window_start,
-                    machine_recovery_path=machine_recovery_path,
+                    machine_recovery_paths=machine_recovery_paths,
                 )
                 bind_candidate_publication(
                     generation,
@@ -176,7 +176,7 @@ def run_substrate_promote(
             window_end=window_end,
             full_repromote=full_repromote,
             partition_window_start=partition_window_start,
-            machine_recovery_path=machine_recovery_path,
+            machine_recovery_paths=machine_recovery_paths,
         )
     except Exception as exc:  # noqa: BLE001 — record before surfacing promotion failure.
         log.warning("substrate_promote: substrate promotion failed: %s", exc)
@@ -207,7 +207,7 @@ def _do_promote(
     window_end: date | None,
     full_repromote: bool = False,
     partition_window_start: date | None = None,
-    machine_recovery_path: str | None = None,
+    machine_recovery_paths: tuple[str, ...] = (),
 ) -> PromotionRunResult:
     from lynchpin.substrate.connection import apply_schema, connect, substrate_path
 
@@ -229,7 +229,7 @@ def _do_promote(
     with connect(substrate_path()) as conn:
         apply_schema(conn)
         recovered_tables = frozenset()
-        if machine_recovery_path is not None:
+        if machine_recovery_paths:
             from pathlib import Path
             from lynchpin.analysis.active.substrate_promote_machine import _machine_sqlite_path
             from lynchpin.substrate.machine_recovery import recover_machine_partitions
@@ -237,11 +237,12 @@ def _do_promote(
             sqlite_path = _machine_sqlite_path()
             if sqlite_path is None:
                 raise ValueError("machine recovery requires a configured SQLite source")
-            recovered_tables = recover_machine_partitions(
-                conn, path=Path(machine_recovery_path), canonical=substrate_path().with_name("substrate.duckdb"),
-                sqlite_path=sqlite_path, window_start=window_start, window_end=window_end,
-                sources=selection,
-            )
+            for path in machine_recovery_paths:
+                recovered_tables |= recover_machine_partitions(
+                    conn, path=Path(path), canonical=substrate_path().with_name("substrate.duckdb"),
+                    sqlite_path=sqlite_path, window_start=window_start, window_end=window_end,
+                    sources=selection,
+                )
 
         orphaned = reconcile_orphaned_running_steps(
             conn, stale_before=started_at - timedelta(hours=1)

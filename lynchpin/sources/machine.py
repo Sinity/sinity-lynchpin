@@ -887,8 +887,10 @@ def cgroup_memory_samples(
             return
         validate_cgroup_memory_schema(conn)
         columns = cgroup_memory_columns(conn)
+        names = {column[1] for column in conn.execute("PRAGMA table_info(cgroup_memory_sample)")}
+        identity = "id" if "id" in names else "NULL"
         where, params = _observed_at_window(start, end)
-        sql = "SELECT " + ", ".join(columns) + " FROM cgroup_memory_sample"
+        sql = "SELECT " + ", ".join(columns) + f", {identity} AS source_row_id FROM cgroup_memory_sample"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY observed_at, label"
@@ -936,6 +938,7 @@ def cgroup_memory_samples(
                 memory_events_oom_kill=row["memory_events_oom_kill"]
                 if "memory_events_oom_kill" in row_keys
                 else None,
+                source_row_id=row["source_row_id"],
             )
 
 

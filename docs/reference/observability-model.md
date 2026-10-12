@@ -90,19 +90,24 @@ identifies placement (path, device observation and inode); it is not a content
 digest or retrospective proof of byte continuity. Incremental promotion relies
 on the capture owner's append-only source contract.
 
-GPU observations retain the native SQLite record ID. Equal timestamps identify
+GPU and cgroup observations retain the native SQLite record ID. Equal timestamps identify
 a sampling instant, not a unique capture: distinct source records remain
 separate facts with their original values. Earlier imported observations keep
 an unknown ID until explicit re-derivation. Native promotion stops after a
 failed machine stage so an already rejected candidate cannot continue scanning
 unrelated historical tables.
 
+Typed machine readers use UTC day bounds, matching native source readers and
+partition windows regardless of the connection's display timezone.
+
 Native promotion checks availability within each selected table's stage instead
 of counting unrelated historical tables as a readiness preflight. A successful
 zero-row read is empty; a missing or inaccessible selected table fails its stage.
 
 An explicit repair may pass `--reuse-machine-candidate` with an owner-retained
-candidate path. Only full partitions with matching source-location and requested
+candidate path; repeat the option to recover completed stages from several
+retained attempts. All selected inputs stay protected during startup cleanup.
+Only full partitions with matching source-location and requested
 window evidence, successful stage receipts, exact schemas and matching row counts
 are admitted. Failed and incomplete tables remain excluded. Their validated rows
 are copied into the new private candidate, then normal tail reads pick up later

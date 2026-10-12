@@ -31,12 +31,21 @@ def validate_machine_keys(conn: Any, physical_table: str, refresh_id: str, *, ta
             (("host", "source", "source_row_id", "refresh_id"), " AND source_row_id IS NOT NULL"),
             (keys, " AND source_row_id IS NULL"),
         ]
+    elif table == "machine_cgroup_memory_sample":
+        variants = [
+            (("host", "source_row_id", "refresh_id"), " AND source_row_id IS NOT NULL"),
+            (keys, " AND source_row_id IS NULL"),
+        ]
     for key_columns, scope in variants:
         nulls = " OR ".join(f"{key} IS NULL" for key in key_columns)
         if conn.execute(f"SELECT 1 FROM {physical_table} WHERE refresh_id = ?{scope} AND ({nulls}) LIMIT 1", [refresh_id]).fetchone():
             raise duckdb.ConstraintException(f"NULL machine fact key in {table}")
+        # The filter fixes this partition identity. Repeating its potentially
+        # long string in every aggregate key adds memory without distinguishing
+        # any rows; retain the full key's null check above.
+        grouping = tuple(key for key in key_columns if key != "refresh_id")
         if conn.execute(
-            f"SELECT 1 FROM {physical_table} WHERE refresh_id = ?{scope} GROUP BY {', '.join(key_columns)} HAVING COUNT(*) > 1 LIMIT 1",
+            f"SELECT 1 FROM {physical_table} WHERE refresh_id = ?{scope} GROUP BY {', '.join(grouping)} HAVING COUNT(*) > 1 LIMIT 1",
             [refresh_id],
         ).fetchone():
             raise duckdb.ConstraintException(f"duplicate machine fact key in {table}")

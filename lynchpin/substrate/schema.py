@@ -962,6 +962,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
         memory_events_max           BIGINT,
         memory_events_oom           BIGINT,
         memory_events_oom_kill      BIGINT,
+        source_row_id               BIGINT,
         refresh_id                  VARCHAR NOT NULL,
         materialized_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )

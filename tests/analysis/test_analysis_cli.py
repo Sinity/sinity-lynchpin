@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from click import unstyle
 from typer.testing import CliRunner
+import pytest
 
 from lynchpin.analysis.cli import _run_dag, build_app
 from lynchpin.analysis.core.dag import DAG, Step
@@ -16,6 +17,24 @@ class _TestHandlers:
 
     def resolve(self, identity):
         return self.handlers.get(identity, lambda *args, **kwargs: None)
+
+
+@pytest.mark.parametrize("status", [0, 1])
+def test_main_preserves_machine_materialization_exit_and_recovery_inputs(monkeypatch, status):
+    from lynchpin.analysis import cli
+
+    captured = {}
+    def fake_dag(**kwargs):
+        captured.update(kwargs)
+        return DAG("test")
+    monkeypatch.setattr(cli, "machine_analysis_dag", fake_dag)
+    monkeypatch.setattr(cli, "_run_dag", lambda *args, **kwargs: status)
+    assert cli.main([
+        "materialize-machine", "--full", "--start", "2026-05-01", "--end", "2026-05-02",
+        "--reuse-machine-candidate", "first.duckdb",
+        "--reuse-machine-candidate", "second.duckdb",
+    ]) == status
+    assert captured["machine_recovery_paths"] == ("first.duckdb", "second.duckdb")
 
 
 

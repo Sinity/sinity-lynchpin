@@ -278,7 +278,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
     """The additive graph-lineage rollout must retain the verified predecessor."""
     from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
 
-    assert SUBSTRATE_VERSION == 52
+    assert SUBSTRATE_VERSION == 53
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
@@ -313,7 +313,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
         ).fetchall() == [("verified", 12, 34, None, None)]
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() == ("52",)
+        ).fetchone() == ("53",)
         migrated_indexes = {
             row[0]
             for row in conn.execute(
@@ -515,7 +515,7 @@ def test_apply_schema_migrates_version_46_work_observation_operation(
     from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
     from lynchpin.substrate.schema import DDL_STATEMENTS
 
-    assert SUBSTRATE_VERSION == 52
+    assert SUBSTRATE_VERSION == 53
     # Reconstruct the pre-47 table shape from the live DDL so the fixture cannot
     # drift away from the real column list.
     create = next(
@@ -555,7 +555,7 @@ def test_apply_schema_migrates_version_46_work_observation_operation(
         ).fetchall() == [("agentctl:9", None)]
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() == ("52",)
+        ).fetchone() == ("53",)
 
 
 def test_migrates_47_dirty_unknown_with_existing_indexes(tmp_path):
@@ -611,7 +611,7 @@ def test_apply_schema_migrates_version_48_adds_work_branch(tmp_path: Path) -> No
         apply_schema(conn)
 
         assert conn.execute("SELECT source_id, git_branch FROM work_observation").fetchall() == [("x:1", None)]
-        assert conn.execute("SELECT value FROM substrate_meta WHERE key = 'version'").fetchone() == ("52",)
+        assert conn.execute("SELECT value FROM substrate_meta WHERE key = 'version'").fetchone() == ("53",)
 
 
 @pytest.mark.parametrize("fail_second", [False, True])
@@ -650,7 +650,7 @@ def test_machine_columnar_migration_preserves_old_partitions_atomically(tmp_path
             assert conn.execute("SELECT COUNT(*) FROM duckdb_constraints() WHERE table_name IN ('machine_metric_sample', 'machine_service_state') AND constraint_type='PRIMARY KEY'").fetchone()[0] == 2
         else:
             apply_schema(conn)
-            assert conn.execute("SELECT value FROM substrate_meta WHERE key='version'").fetchone() == ("52",)
+            assert conn.execute("SELECT value FROM substrate_meta WHERE key='version'").fetchone() == ("53",)
             assert conn.execute("SELECT COUNT(*) FROM duckdb_constraints() WHERE table_name IN ('machine_metric_sample', 'machine_service_state') AND constraint_type='PRIMARY KEY'").fetchone()[0] == 0
         for table in tables:
             assert conn.execute(f"SELECT * FROM {table}").fetchall() == before[table]
@@ -671,4 +671,20 @@ def test_gpu_record_identity_migration_preserves_unknown_legacy_identity(tmp_pat
         apply_schema(conn)
         assert conn.execute("SELECT observed_at,host,source,gpu_power_w,refresh_id FROM machine_gpu_sample").fetchall() == before
         assert load_machine_gpu_samples(conn, refresh_id="old")[0].source_row_id is None
-        assert conn.execute("SELECT value FROM substrate_meta WHERE key='version'").fetchone() == ('52',)
+        assert conn.execute("SELECT value FROM substrate_meta WHERE key='version'").fetchone() == ('53',)
+
+
+def test_cgroup_record_identity_migration_preserves_unknown_legacy_identity(tmp_path):
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_cgroup_memory_samples
+    with connect(tmp_path / "cgroup-legacy.duckdb") as conn:
+        apply_schema(conn)
+        conn.execute("ALTER TABLE machine_cgroup_memory_sample DROP source_row_id")
+        conn.execute("UPDATE substrate_meta SET value='52' WHERE key='version'")
+        conn.execute("INSERT INTO machine_cgroup_memory_sample (observed_at,host,source_schema_version,label,scope,control_group,memory_current_bytes,refresh_id) VALUES (now(),'fixture',1,'fixture','user','/fixture',19,'old')")
+        before = conn.execute("SELECT observed_at,host,label,memory_current_bytes,refresh_id FROM machine_cgroup_memory_sample").fetchall()
+        assert load_machine_cgroup_memory_samples(conn, refresh_id="old")[0].source_row_id is None
+        apply_schema(conn)
+        assert conn.execute("SELECT observed_at,host,label,memory_current_bytes,refresh_id FROM machine_cgroup_memory_sample").fetchall() == before
+        assert load_machine_cgroup_memory_samples(conn, refresh_id="old")[0].source_row_id is None
+        assert conn.execute("SELECT value FROM substrate_meta WHERE key='version'").fetchone() == ('53',)

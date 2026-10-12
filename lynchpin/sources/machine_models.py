@@ -329,6 +329,7 @@ class MachineCgroupMemorySample:
     memory_events_max: int | None = None
     memory_events_oom: int | None = None
     memory_events_oom_kill: int | None = None
+    source_row_id: int | None = None
 
 
 @dataclass(frozen=True)

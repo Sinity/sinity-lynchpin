@@ -436,7 +436,7 @@ def machine_analysis_dag(
     start: date | None = None,
     end: date | None = None,
     full_repromote: bool = False,
-    machine_recovery_path: str | None = None,
+    machine_recovery_paths: tuple[str, ...] = (),
 ) -> DAG:
     """Build the source-selected machine-analysis materialization DAG.
 
@@ -447,7 +447,7 @@ def machine_analysis_dag(
     """
     dag = DAG("machine-analysis-materialization")
     machine_start, machine_end = _rolling_window(start=start, end=end, days=90)
-    dag.add(_step(dag, 'machine_analysis_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'refresh_id': _machine_analysis_refresh_id(start=start, end=end), 'window_start': machine_start, 'window_end': machine_end, 'sources': MACHINE_ANALYSIS_SUBSTRATE_SOURCES, 'write_evidence_graph': False, 'full_repromote': full_repromote, 'machine_recovery_path': machine_recovery_path}, depends_on=[]))
+    dag.add(_step(dag, 'machine_analysis_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'refresh_id': _machine_analysis_refresh_id(start=start, end=end), 'window_start': machine_start, 'window_end': machine_end, 'sources': MACHINE_ANALYSIS_SUBSTRATE_SOURCES, 'write_evidence_graph': False, 'full_repromote': full_repromote, 'machine_recovery_paths': machine_recovery_paths}, depends_on=[]))
     _add_machine_analysis_steps(
         dag,
         start=start,

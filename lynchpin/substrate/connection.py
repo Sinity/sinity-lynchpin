@@ -38,7 +38,7 @@ from lynchpin.substrate.locking import publication_lock
 if TYPE_CHECKING:
     import duckdb
 
-SUBSTRATE_VERSION = 52
+SUBSTRATE_VERSION = 53
 """Current schema contract; incompatible changes rebuild, declared additive changes migrate."""
 
 log = logging.getLogger(__name__)
@@ -1805,10 +1805,11 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
     ).fetchone()
     current = int(row[0]) if row else None
 
-    if current == 51 and SUBSTRATE_VERSION == 52:
+    if current in (51, 52) and SUBSTRATE_VERSION == 53:
         conn.execute("ALTER TABLE machine_gpu_sample ADD COLUMN IF NOT EXISTS source_row_id BIGINT")
+        conn.execute("ALTER TABLE machine_cgroup_memory_sample ADD COLUMN IF NOT EXISTS source_row_id BIGINT")
         conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)", [str(SUBSTRATE_VERSION)])
-    elif current in (43, 44, 45, 46, 47, 48, 49, 50) and SUBSTRATE_VERSION == 52:
+    elif current in (43, 44, 45, 46, 47, 48, 49, 50) and SUBSTRATE_VERSION == 53:
         if current < 50:
             # Additive transitions are idempotent and cumulative: a database at any
             # supported earlier version applies every delta it is missing, so a
@@ -1912,6 +1913,7 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
             conn.execute("ROLLBACK")
             raise
         conn.execute("ALTER TABLE machine_gpu_sample ADD COLUMN IF NOT EXISTS source_row_id BIGINT")
+        conn.execute("ALTER TABLE machine_cgroup_memory_sample ADD COLUMN IF NOT EXISTS source_row_id BIGINT")
         conn.execute(
             "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
             [str(SUBSTRATE_VERSION)],

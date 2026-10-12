@@ -411,7 +411,7 @@ def _machine_projections() -> dict[str, tuple[tuple[str, ...], dict[str, str]]]:
         ),
         "cgroup_memory_sample": (
             _CGROUP_MEMORY_COLUMNS,
-            {"observed_at": ts, "source_schema_version": schema_ver},
+            {"observed_at": ts, "source_schema_version": schema_ver, "source_row_id": "id"},
         ),
         "kill_event": (
             _KILL_EVENT_COLUMNS,
@@ -530,7 +530,7 @@ def _promote_machine_fast(
             # historical tables. A successful zero-row read means this lane is
             # empty; missing/inaccessible tables fail their own stage.
             source_columns = {column[0] for column in conn.execute(f"SELECT * FROM machine_src.{src_table} LIMIT 0").description}
-            if src_table == "gpu_sample":
+            if src_table in {"gpu_sample", "cgroup_memory_sample"}:
                 if "id" not in source_columns:
                     projections[src_table][1]["source_row_id"] = "NULL"
             watermark = None

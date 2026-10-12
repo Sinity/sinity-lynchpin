@@ -55,10 +55,11 @@ def recover_machine_partitions(
             count = conn.execute(f"SELECT COUNT(*) FROM machine_recovery.{table} WHERE refresh_id = ?", [previous]).fetchone()[0]
             if count != expected_count:
                 raise ValueError(f"recovery count mismatch for {table}: {count} != {expected_count}")
-            current_columns = [row[0] for row in conn.execute(f"DESCRIBE {table}").fetchall()]
-            retained_columns = [row[0] for row in conn.execute(f"DESCRIBE machine_recovery.{table}").fetchall()]
-            if current_columns != retained_columns:
+            current_schema = [row[:2] for row in conn.execute(f"DESCRIBE {table}").fetchall()]
+            retained_schema = [row[:2] for row in conn.execute(f"DESCRIBE machine_recovery.{table}").fetchall()]
+            if current_schema != retained_schema:
                 raise ValueError(f"recovery schema mismatch for {table}")
+            current_columns = [row[0] for row in current_schema]
             archive = f"machine-recovery:{path.stem}:{previous}"
             existing = conn.execute(
                 "SELECT input_fingerprint, logical_row_count, mode FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?",

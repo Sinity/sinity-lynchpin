@@ -1014,7 +1014,7 @@ def _register_misc(app: typer.Typer) -> None:
         up_to: str | None,
         start: str | None,
         end: str | None,
-        machine_recovery_path: str | None = None,
+        machine_recovery_paths: tuple[str, ...] = (),
     ) -> None:
         import logging
 
@@ -1024,7 +1024,7 @@ def _register_misc(app: typer.Typer) -> None:
         end_d = _opt_date(end)
         # --full bypasses ordinary watermarks. Explicit candidate recovery may
         # reuse matching completed partitions and refresh their tails.
-        dag = machine_analysis_dag(start=start_d, end=end_d, full_repromote=not incremental, machine_recovery_path=machine_recovery_path)
+        dag = machine_analysis_dag(start=start_d, end=end_d, full_repromote=not incremental, machine_recovery_paths=machine_recovery_paths)
         requested_window = _rolling_window(start=start_d, end=end_d, days=90)
         code = _run_dag(
             dag,
@@ -1048,7 +1048,7 @@ def _register_misc(app: typer.Typer) -> None:
         up_to: str | None = typer.Option(None, "--up-to", help="Stop after this step completes"),
         start: str = typer.Option(None, "--start", help="Window start (ISO date)"),
         end: str = typer.Option(None, "--end", help="Window end (ISO date)"),
-        reuse_machine_candidate: str | None = typer.Option(None, "--reuse-machine-candidate", help="Reuse matching completed partitions from an owner-retained failed candidate"),
+        reuse_machine_candidate: list[str] | None = typer.Option(None, "--reuse-machine-candidate", help="Reuse matching completed partitions from owner-retained failed candidates; may be repeated"),
     ) -> None:
         _run_machine_materialization(
             dry_run=dry_run,
@@ -1057,7 +1057,7 @@ def _register_misc(app: typer.Typer) -> None:
             up_to=up_to,
             start=start,
             end=end,
-            machine_recovery_path=reuse_machine_candidate,
+            machine_recovery_paths=tuple(reuse_machine_candidate or ()),
         )
 
 
@@ -1221,11 +1221,11 @@ app = build_app()
 
 def main(argv: list[str] | None = None) -> int:
     try:
-        app(args=argv, standalone_mode=False)
+        result = app(args=argv, standalone_mode=False)
     except (typer.Exit, SystemExit) as exc:
         code = exc.exit_code if isinstance(exc, typer.Exit) else (exc.code or 0)
         return int(code or 0)
-    return 0
+    return result if isinstance(result, int) else 0
 
 
 if __name__ == '__main__':

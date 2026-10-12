@@ -1519,7 +1519,7 @@ def test_unindexed_machine_tables_reuse_history(tmp_path, monkeypatch, src_table
             assert real.execute(f"SELECT COUNT(*) FROM {target} WHERE refresh_id = ?", [refresh]).fetchone()[0] == 3
             assert real.execute(f"SELECT COUNT(*) FROM {target} WHERE refresh_id = 'fixture'").fetchone()[0] == 3
             assert real.execute(f"SELECT DISTINCT refresh_id FROM {relation}").fetchall() == [(refresh,)]
-        assert not any(f"machine_src.{src_table}" in sql for sql in conn.statements)
+        assert not any(f"machine_src.{src_table}" in sql and "LIMIT 0" not in sql for sql in conn.statements)
 
 
 @pytest.mark.parametrize("table", [
@@ -1549,7 +1549,7 @@ def test_machine_lineage_typed_readers_resolve_new_identity(tmp_path, table):
             values = []
             for name, kind, *_ in columns:
                 if name == "observed_at":
-                    v = datetime(2026, 5, day, 10, tzinfo=timezone.utc)
+                    v = datetime(2026, 5, day, 23, tzinfo=timezone.utc)
                 elif name == "refresh_id":
                     v = refresh
                 elif name == "source_row_id":
@@ -1571,6 +1571,13 @@ def test_machine_lineage_typed_readers_resolve_new_identity(tmp_path, table):
         for day in [1, 2, 3]:
             insert("parent", day, 10)
         record_machine_partition(conn, table=table, refresh_id="parent", window_start=date(2026, 5, 1), window_end=date(2026, 5, 3))
+        # Source day windows are UTC even when the connection displays local
+        # time. The first record displays on May 2 in this timezone.
+        conn.execute("SET TimeZone='Europe/Warsaw'")
+        day_records = readers[table](conn, refresh_id="parent", start=date(2026, 5, 1), end=date(2026, 5, 1))
+        assert len(day_records) == 1
+        assert day_records[0].observed_at.astimezone(timezone.utc).day == 1
+        conn.execute("SET TimeZone='UTC'")
         for day in [3, 4]:
             insert("child", day, 20)
         record_machine_partition(conn, table=table, refresh_id="child", predecessor="parent", replacement_start=date(2026, 5, 3), window_start=date(2026, 5, 2), window_end=date(2026, 5, 4))
@@ -1750,3 +1757,25 @@ def test_failed_native_machine_stage_stops_before_next_table(tmp_path, monkeypat
         with pytest.raises(CandidateGenerationRejected, match="stop before further scans"):
             module._promote_machine_fast(c, refresh_id="fixture", sqlite_path=db, window_start=date(2026, 5, 1), window_end=date(2026, 5, 1), counts={}, selection=SourceSelection.from_collection({"machine_process_io_delta_sample", "machine_cgroup_memory_sample"}))
     assert seen == ["machine_process_io_delta_sample"]
+
+
+def test_cgroup_samples_with_equal_label_and_timestamp_keep_native_ids(tmp_path):
+    import sqlite3
+    from lynchpin.sources.machine import cgroup_memory_samples
+    from lynchpin.analysis.active.substrate_promote_machine import _promote_machine_fast
+    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_cgroup_memory_samples
+
+    source = tmp_path / "source.sqlite"
+    _seed_attach_fixture(source, ["2026-05-01", "2026-05-01"])
+    with sqlite3.connect(source) as native:
+        native.execute("UPDATE cgroup_memory_sample SET host='fixture'")
+        native.execute("UPDATE cgroup_memory_sample SET control_group='/other.slice',memory_current_bytes=8192 WHERE id=2")
+    assert [(r.source_row_id, r.memory_current_bytes) for r in cgroup_memory_samples(path=source)] == [(1, 4096), (2, 8192)]
+    with connect(tmp_path / "facts.duckdb") as c:
+        apply_schema(c)
+        for refresh in ["first", "second"]:
+            _promote_machine_fast(c, refresh_id=refresh, sqlite_path=source, window_start=date(2026, 5, 1), window_end=date(2026, 5, 1), counts={}, selection=SourceSelection.from_collection({"machine_cgroup_memory_sample"}))
+            assert [(r.source_row_id, r.memory_current_bytes) for r in load_machine_cgroup_memory_samples(c, refresh_id=refresh)] == [(1, 4096), (2, 8192)]
+            c.execute("DETACH machine_src")

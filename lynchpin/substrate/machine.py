@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from lynchpin.substrate._filters import add_date_filter, add_in_filter, build_where
+from lynchpin.substrate._filters import add_in_filter, build_where
 from lynchpin.substrate._helpers import promote_rows
 from lynchpin.substrate.machine_lineage import machine_relation, validate_machine_keys
 
@@ -27,19 +27,19 @@ def _add_observed_at_filter(
     start: date | datetime | None = None,
     end: date | datetime | None = None,
 ) -> None:
-    """Append observed_at filters, preserving exact datetime windows."""
+    """Append canonical UTC-day filters, preserving exact datetime windows."""
     if isinstance(start, datetime):
         clauses.append("observed_at >= ?")
         params.append(start)
     elif start is not None:
-        clauses.append("observed_at::DATE >= ?")
-        params.append(start)
+        clauses.append("observed_at >= ?")
+        params.append(datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc))
     if isinstance(end, datetime):
         clauses.append("observed_at <= ?")
         params.append(end)
     elif end is not None:
-        clauses.append("observed_at::DATE <= ?")
-        params.append(end)
+        clauses.append("observed_at < ?")
+        params.append(datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc))
 
 
 def load_machine_metric_samples(
@@ -56,7 +56,7 @@ def load_machine_metric_samples(
     clauses: list[str] = []
     params: list[Any] = []
 
-    add_date_filter("observed_at", start, end, clauses, params)
+    _add_observed_at_filter(clauses, params, start=start, end=end)
     add_in_filter("host", hosts, clauses, params)
     if refresh_id is not None:
         clauses.append("refresh_id = ?")
@@ -181,7 +181,7 @@ def load_machine_gpu_samples(
     clauses: list[str] = []
     params: list[Any] = []
 
-    add_date_filter("observed_at", start, end, clauses, params)
+    _add_observed_at_filter(clauses, params, start=start, end=end)
     add_in_filter("host", hosts, clauses, params)
     if refresh_id is not None:
         clauses.append("refresh_id = ?")
@@ -275,7 +275,7 @@ def load_machine_network_samples(
     clauses: list[str] = []
     params: list[Any] = []
 
-    add_date_filter("observed_at", start, end, clauses, params)
+    _add_observed_at_filter(clauses, params, start=start, end=end)
     add_in_filter("host", hosts, clauses, params)
     if refresh_id is not None:
         clauses.append("refresh_id = ?")
@@ -342,7 +342,7 @@ def load_machine_service_states(
     clauses: list[str] = []
     params: list[Any] = []
 
-    add_date_filter("observed_at", start, end, clauses, params)
+    _add_observed_at_filter(clauses, params, start=start, end=end)
     add_in_filter("host", hosts, clauses, params)
     add_in_filter("unit", units, clauses, params)
     if refresh_id is not None:
@@ -410,7 +410,7 @@ def load_machine_process_io_delta_samples(
     clauses: list[str] = []
     params: list[Any] = []
 
-    add_date_filter("observed_at", start, end, clauses, params)
+    _add_observed_at_filter(clauses, params, start=start, end=end)
     add_in_filter("host", hosts, clauses, params)
     if refresh_id is not None:
         clauses.append("refresh_id = ?")
@@ -544,7 +544,7 @@ def load_machine_cgroup_memory_samples(
     clauses: list[str] = []
     params: list[Any] = []
 
-    add_date_filter("observed_at", start, end, clauses, params)
+    _add_observed_at_filter(clauses, params, start=start, end=end)
     add_in_filter("host", hosts, clauses, params)
     add_in_filter("label", labels, clauses, params)
     if refresh_id is not None:
@@ -552,6 +552,8 @@ def load_machine_cgroup_memory_samples(
         params.append(refresh_id)
 
     where = build_where(clauses, params)
+    fields = {row[0] for row in conn.execute("DESCRIBE machine_cgroup_memory_sample").fetchall()}
+    identity = "source_row_id" if "source_row_id" in fields else "NULL"
     sql = f"""
         SELECT
             observed_at, host, boot_id, source_schema_version, label, scope,
@@ -563,7 +565,7 @@ def load_machine_cgroup_memory_samples(
             memory_zswapped_bytes, cgroup_populated, cgroup_frozen,
             cgroup_freeze,
             memory_events_high, memory_events_max,
-            memory_events_oom, memory_events_oom_kill
+            memory_events_oom, memory_events_oom_kill, {identity} AS source_row_id
         FROM {machine_relation(conn, 'machine_cgroup_memory_sample', refresh_id)}
         {where}
         ORDER BY observed_at, label
@@ -603,6 +605,7 @@ def load_machine_cgroup_memory_samples(
             memory_events_max=row[26],
             memory_events_oom=row[27],
             memory_events_oom_kill=row[28],
+            source_row_id=row[29],
         )
         for row in rows
     ]
@@ -725,7 +728,7 @@ _CGROUP_MEMORY_COLUMNS = (
     "memory_zswapped_bytes", "cgroup_populated", "cgroup_frozen",
     "cgroup_freeze",
     "memory_events_high", "memory_events_max",
-    "memory_events_oom", "memory_events_oom_kill",
+    "memory_events_oom", "memory_events_oom_kill", "source_row_id",
 )
 
 _KILL_EVENT_COLUMNS = (
@@ -790,7 +793,7 @@ def promote_machine_cgroup_memory_samples(
             s.memory_zswapped_bytes, s.cgroup_populated, s.cgroup_frozen,
             s.cgroup_freeze,
             s.memory_events_high, s.memory_events_max,
-            s.memory_events_oom, s.memory_events_oom_kill,
+            s.memory_events_oom, s.memory_events_oom_kill, s.source_row_id,
         ),
         batch_size=10_000,
     )
@@ -838,7 +841,7 @@ def load_machine_kill_events(
     clauses: list[str] = []
     params: list[Any] = []
 
-    add_date_filter("observed_at", start, end, clauses, params)
+    _add_observed_at_filter(clauses, params, start=start, end=end)
     add_in_filter("host", hosts, clauses, params)
     add_in_filter("killer", killers, clauses, params)
     if refresh_id is not None:
