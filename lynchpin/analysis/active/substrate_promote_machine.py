@@ -343,7 +343,8 @@ def _machine_projections() -> dict[str, tuple[tuple[str, ...], dict[str, str]]]:
     """Per-source-table (target_columns, override_exprs) for the ATTACH fast path.
 
     The substrate tables are a *curated transform* of the live SQLite schema,
-    not a mirror: ``id`` and extra sensor columns are dropped, ``*_json`` columns
+    not a mirror: unmapped sensor columns are dropped, GPU/cgroup ``id`` is
+    retained as ``source_row_id``, and ``*_json`` columns
     are renamed to bare names, ``gap_codes_json`` is parsed to ``VARCHAR[]``,
     ``observed_at`` is cast TEXT -> TIMESTAMPTZ, ``source`` is a provenance
     literal, and ``materialized_at`` is left to the table default. The target
