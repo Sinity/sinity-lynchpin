@@ -314,7 +314,7 @@ def test_declared_converge_runs_typed_nodes_without_agentctl_plan_api(
     assert not invocation.exists()
 
 
-def test_product_node_uses_the_scheduled_generation(monkeypatch) -> None:
+def test_product_node_uses_the_scheduled_generation(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization
     from lynchpin.cli import agentctl_plan
 
@@ -343,18 +343,26 @@ def test_product_node_uses_the_scheduled_generation(monkeypatch) -> None:
             )
         ),
     )
+    from lynchpin.core.input_snapshot import current_input_snapshot, read_input_path
+
+    raw = tmp_path / "input.ndjson"
+    raw.write_text("before")
     audit_rows = iter((row, after))
-    monkeypatch.setattr(
-        materialization,
-        "_audit_one",
-        lambda *_args, **_kwargs: next(audit_rows),
-    )
+    def audit(*_args, **_kwargs):
+        result = next(audit_rows)
+        if result.status == "ready":
+            assert read_input_path(raw).read_text() == "before"
+        return result
+    monkeypatch.setattr(materialization, "_audit_one", audit)
     completed = []
-    monkeypatch.setattr(
-        agentctl_plan,
-        "run_materialization_plan",
-        lambda steps, **_kwargs: completed.extend(steps) or list(steps),
-    )
+    def run(steps, **_kwargs):
+        snapshot = current_input_snapshot()
+        assert snapshot is not None
+        snapshot.capture((raw,))
+        raw.write_text("after")
+        completed.extend(steps)
+        return list(steps)
+    monkeypatch.setattr(agentctl_plan, "run_materialization_plan", run)
 
     observed_generation = agentctl_plan._step(
         agentctl_plan.PRODUCT_CATALOG["activitywatch"],

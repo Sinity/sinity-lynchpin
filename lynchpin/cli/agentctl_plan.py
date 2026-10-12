@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from lynchpin.core.config import get_config
+from lynchpin.core.input_snapshot import input_snapshot
 from lynchpin.materializers import canonical_json
 from lynchpin.materializers.catalog import PRODUCT_CATALOG
 from lynchpin.materializers.production import (
@@ -189,6 +190,7 @@ def build_agentctl_plan(*, maintenance_end: date | None = None) -> dict[str, Any
     return result
 
 
+@input_snapshot()
 def run_product_node(
     *,
     product: str,

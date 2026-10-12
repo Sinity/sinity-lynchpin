@@ -56,6 +56,11 @@ The substrate is a coherent analytical snapshot over a selected time window.
 Freshness validation resolves file identities and high-water timestamps from
 the same captured inputs during an operation. After that snapshot closes,
 validation compares against live inputs again.
+Standalone product nodes retain that context through post-build verification.
+Daily-signal materialization captures its selected inputs before parsing;
+current-day keyboard inputs use an append-only prefix and closed files use
+immutable copies. The output identifies the captured inputs even when live
+producers advance during computation.
 
 Substrate connections use a 4 GiB DuckDB memory budget, including serving
 reads, candidate builds, recovery, and publication validation. DuckDB may

@@ -7,12 +7,13 @@ import json
 import sys
 import uuid
 from collections import Counter, defaultdict
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
+from ..core.input_snapshot import current_input_snapshot, input_snapshot
 from ..core.source_contracts import DAILY_SIGNAL_SOURCE_NAMES
 from ..sources.personal_signals import (
     personal_daily_signals_path,
@@ -34,6 +35,7 @@ PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION = 3
 SPOTIFY_DAILY_SCHEMA_VERSION = 1
 
 
+@input_snapshot()
 def materialize_personal_daily_signals(
     *,
     output: Path | None = None,
@@ -327,6 +329,7 @@ def _personal_daily_signal_rows_with_inputs() -> tuple[list[SignalRow], tuple[Pa
         return [], ()
     start = min(first for first, _last in bounds if first is not None)
     end = max(last for _first, last in bounds if last is not None) + timedelta(days=1)
+    _capture_daily_signal_inputs(audit_by_name, start, end)
     rows = _window_personal_daily_signal_rows(start, end, audit_by_name)
     source_counts = Counter(source for source, *_ in rows)
     input_sources = set(source_counts) | _overlapping_input_sources(audit_by_name, start, end)
@@ -340,6 +343,7 @@ def _window_personal_daily_signal_rows_with_inputs(
     from ..materialization import audit_materialization
 
     audit_by_name = {row.name: row for row in audit_materialization()}
+    _capture_daily_signal_inputs(audit_by_name, window_start, window_end)
     rows = _window_personal_daily_signal_rows(window_start, window_end, audit_by_name)
     source_counts = Counter(source for source, *_ in rows)
     input_sources = set(source_counts) | _overlapping_input_sources(
@@ -349,6 +353,22 @@ def _window_personal_daily_signal_rows_with_inputs(
     )
     return rows, _personal_daily_signal_input_files(audit_by_name, input_sources)
 
+
+
+def _capture_daily_signal_inputs(audit_by_name: dict[str, Any], start: date, end: date) -> None:
+    snapshot = current_input_snapshot()
+    if snapshot is None:
+        return
+    inputs = _personal_daily_signal_input_files(
+        audit_by_name, _overlapping_input_sources(audit_by_name, start, end),
+    )
+    roots = tuple(path for path in inputs if path.is_dir())
+    snapshot.capture(tuple(path for path in inputs if path not in roots and path.parent not in roots))
+    open_dates = {snapshot.observed_at.date(), datetime.now(UTC).date()}
+    for root in roots:
+        files = tuple(path for path in inputs if path.parent == root)
+        append_only = tuple(path for path in files if date.fromisoformat(path.stem) in open_dates)
+        snapshot.capture_collection(root, files, append_only=append_only)
 
 def _overlapping_input_sources(
     audit_by_name: dict[str, Any],

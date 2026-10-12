@@ -1284,3 +1284,38 @@ def test_daily_signal_manifest_distinguishes_empty_and_missing_keylog_collection
     assert _manifest_inputs_current(manifest, ())
     root.rmdir()
     assert not _manifest_inputs_current(manifest, ())
+
+
+
+def test_daily_materializer_records_captured_keyboard_bytes_when_source_changes(tmp_path, monkeypatch):
+    from lynchpin.ingest import personal_signals_materialize as materializer
+    from lynchpin import materialization
+    from lynchpin.core.input_snapshot import read_input_path
+
+    root = tmp_path / "keyboard"
+    root.mkdir()
+    raw = root / "2026-05-01.jsonl"
+    raw.write_text("{}\n")
+    original_size = raw.stat().st_size
+    row = materialization.MaterializedDataset(
+        name="keylog", status="ready", authority="fixture", query_surface="fixture",
+        materialized_paths=(), raw_roots=(root,), row_count=1,
+        first_date=date(2026, 5, 1), last_date=date(2026, 5, 1),
+        covered_dates=(date(2026, 5, 1),), materialization_hint="fixture", reason="fixture",
+    )
+    monkeypatch.setattr(materialization, "audit_materialization", lambda: [row])
+    def rows(*_args):
+        assert read_input_path(raw) != raw
+        raw.write_text("{}\n{}\n")
+        assert read_input_path(raw).read_text() == "{}\n"
+        return [("keylog", date(2026, 5, 1), "keypress_count", 1.0, {})]
+    monkeypatch.setattr(materializer, "_window_personal_daily_signal_rows", rows)
+    output = tmp_path / "daily.ndjson"
+    materializer.materialize_personal_daily_signals(output=output)
+    manifest = json.loads(output.with_suffix(".manifest.json").read_text())
+    version = next(item for item in manifest["input_versions"] if item["path"] == str(raw))
+    assert version["stat"][2] == original_size
+    assert json.loads(output.read_text())["value"] == 1.0
+    assert not materialization._manifest_inputs_current(
+        manifest, materialization._manifest_declared_input_files(manifest),
+    )
