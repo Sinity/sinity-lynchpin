@@ -66,6 +66,7 @@ from .machine_sqlite import (
     count_sqlite_rows,
     default_route_interface,
     json_obj,
+    window_select,
 )
 from .machine_package import iter_machine_table_rows, machine_table_available
 
@@ -404,10 +405,11 @@ def service_states(
     with connect_readonly(db) as conn:
         validate_service_state_schema(conn)
         columns = service_state_columns(conn)
-        sql = "SELECT " + ", ".join(columns) + " FROM service_state"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY observed_at, scope, unit"
+        sql = window_select(
+            conn, table="service_state", columns=columns, where=where,
+            order="observed_at, scope, unit", prefix="unit",
+            index="service_state_unit_time",
+        )
         conn.row_factory = sqlite3.Row
         for row in conn.execute(sql, params):
             observed_at = as_utc(row["observed_at"])
@@ -890,10 +892,12 @@ def cgroup_memory_samples(
         names = {column[1] for column in conn.execute("PRAGMA table_info(cgroup_memory_sample)")}
         identity = "id" if "id" in names else "NULL"
         where, params = _observed_at_window(start, end)
-        sql = "SELECT " + ", ".join(columns) + f", {identity} AS source_row_id FROM cgroup_memory_sample"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY observed_at, label"
+        sql = window_select(
+            conn, table="cgroup_memory_sample",
+            columns=[*columns, f"{identity} AS source_row_id"], where=where,
+            order="observed_at, label", prefix="label",
+            index="cgroup_memory_sample_label_time",
+        )
         conn.row_factory = sqlite3.Row
         for row in conn.execute(sql, params):
             observed_at = as_utc(row["observed_at"])

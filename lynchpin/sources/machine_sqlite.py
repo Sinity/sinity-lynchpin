@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,6 +35,52 @@ def as_utc(value: str) -> datetime | None:
 
 def connect_readonly(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+
+
+def window_select(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    columns: Sequence[str],
+    where: list[str],
+    order: str,
+    prefix: str,
+    index: str,
+) -> str:
+    """Seek each indexed prefix for bounded reads without source statistics writes.
+
+    SQLite otherwise scans these histories when the time column is second in
+    the index and ANALYZE statistics are absent. CROSS JOIN keeps the prefix
+    enumeration outside the time-range searches; only matching rows are sorted.
+    Legacy schemas retain the ordinary query.
+    """
+    indexed = any(
+        row[1] == index and not row[4]
+        for row in conn.execute(f"PRAGMA index_list({table})")
+    )
+    nonnull = any(
+        row[1] == prefix and row[3]
+        for row in conn.execute(f"PRAGMA table_info({table})")
+    )
+    index_columns = (
+        [row[2] for row in conn.execute(f"PRAGMA index_info({index})")]
+        if indexed else []
+    )
+    if where and nonnull and index_columns[:2] == [prefix, "observed_at"]:
+        return (
+            f"WITH RECURSIVE prefixes(value) AS ("
+            f"SELECT MIN({prefix}) FROM {table} INDEXED BY {index} UNION ALL "
+            f"SELECT (SELECT MIN({prefix}) FROM {table} INDEXED BY {index} "
+            f"WHERE {prefix}>prefixes.value) FROM prefixes WHERE value IS NOT NULL) "
+            f"SELECT {', '.join(columns)} FROM prefixes CROSS JOIN {table} "
+            f"INDEXED BY {index} WHERE prefixes.value IS NOT NULL "
+            f"AND {table}.{prefix}=prefixes.value AND {' AND '.join(where)} "
+            f"ORDER BY {order}"
+        )
+    sql = f"SELECT {', '.join(columns)} FROM {table}"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    return sql + f" ORDER BY {order}"
 
 
 def default_route_interface() -> str | None:
