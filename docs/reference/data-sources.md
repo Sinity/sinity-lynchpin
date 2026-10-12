@@ -129,6 +129,21 @@ coverage-aware daily counts. All five are registered as capture sources in
 `available_sources()` and `CAPTURE_SOURCES`, so they show up in
 `source_observations()` like any other continuous capture.
 
+## Processed Samsung exports
+
+The existing health processors publish each JSONL product and its manifest in
+an immutable generation, then atomically switch one `current` pointer. The
+existing filenames remain the entrances. Fused sleep's two entrances and its
+statistics, trim log and unmatched-session sidecar share that pointer. Writers
+serialize and sync the complete bundle before publication; manifest counts,
+date bounds and the full SHA-256 digest describe the emitted bytes.
+
+Readers select one generation per product, while an active input snapshot keeps
+its captured identity. Migration preserves original payloads and metadata, and
+previous generations remain retained. They are owner-managed recovery material,
+not age-based cleanup candidates. These publication guarantees do not establish
+raw-export conservation or per-record source-snapshot provenance.
+
 ## Health coverage report
 
 `lynchpin.ingest.health_coverage_materialize` reduces the phone events

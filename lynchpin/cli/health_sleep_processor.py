@@ -925,34 +925,24 @@ def process_sleep(dry_run: bool = False) -> int:
         return len(records)
 
     all_nights = health_io.PROCESSED / "sleep_all_nights.jsonl"
-    for path in (all_nights, health_io.PROCESSED / "sleep_merged.jsonl"):
-        with open(path, "w") as handle:
-            for record in records:
-                handle.write(json.dumps(record) + "\n")
-    health_io._write_product_manifest(all_nights, records, "Sleep (fused)")
-
-    (health_io.PROCESSED / "sleep_merge_stats.json").write_text(
-        json.dumps(stats, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    unmatched_text = "".join(
+        json.dumps({
+            "raw_id": saa["raw_id"],
+            "start_local": saa["start"].isoformat(),
+            "end_local": saa["end"].isoformat(),
+            "duration_minutes": saa["duration_minutes"],
+            "comment": saa["comment"],
+        }) + "\n" for saa in unmatched_saa
     )
-    (health_io.PROCESSED / "sleep_as_android_trim_log.json").write_text(
-        json.dumps(trim_log, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    health_io.write_jsonl(
+        records, all_nights.name, "Sleep (fused)", False,
+        aliases=("sleep_merged.jsonl",),
+        sidecars={
+            "sleep_merge_stats.json": json.dumps(stats, indent=2, sort_keys=True) + "\n",
+            "sleep_as_android_trim_log.json": json.dumps(trim_log, indent=2, sort_keys=True) + "\n",
+            "sleep_as_android_native_unmatched.jsonl": unmatched_text,
+        },
     )
-    with open(
-        health_io.PROCESSED / "sleep_as_android_native_unmatched.jsonl", "w"
-    ) as handle:
-        for saa in unmatched_saa:
-            handle.write(
-                json.dumps(
-                    {
-                        "raw_id": saa["raw_id"],
-                        "start_local": saa["start"].isoformat(),
-                        "end_local": saa["end"].isoformat(),
-                        "duration_minutes": saa["duration_minutes"],
-                        "comment": saa["comment"],
-                    }
-                )
-                + "\n"
-            )
 
     print(
         f"Sleep: {len(records)} records "

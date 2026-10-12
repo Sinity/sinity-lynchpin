@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import csv
+import fcntl
+import hashlib
 import io
 import json
+import os
 import re
+import shutil
 import sys
 import tarfile
 import zipfile
+from uuid import uuid4
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -265,21 +270,19 @@ def merge_by_datauuid(
     return merged
 
 
-def write_jsonl(records: list[dict], filename: str, label: str, dry_run: bool) -> int:
+def write_jsonl(records: list[dict], filename: str, label: str, dry_run: bool, *,
+                aliases: tuple[str, ...] = (), sidecars: dict[str, str] | None = None) -> int:
     """Write records to JSONL file, or report dry-run count."""
     if dry_run:
         print(f"[dry-run] Would write {len(records)} {label} records")
         return len(records)
     out = PROCESSED / filename
-    with open(out, "w") as f:
-        for rec in records:
-            f.write(json.dumps(rec) + "\n")
-    _write_product_manifest(out, records, label)
+    _publish_product(out, records, label, aliases, sidecars or {})
     print(f"{label}: {len(records)} records -> {out}")
     return len(records)
 
 
-def _write_product_manifest(path: Path, records: list[dict[str, Any]], label: str) -> None:
+def _product_manifest(path: Path, records: list[dict[str, Any]], label: str) -> dict[str, Any]:
     first, last = _record_date_bounds(records)
     manifest = {
         "dataset": f"health.{path.stem}",
@@ -290,10 +293,121 @@ def _write_product_manifest(path: Path, records: list[dict[str, Any]], label: st
         "last_date": last,
         "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
     }
-    path.with_suffix(".manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    return manifest
+
+
+def _sync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _write_synced(path: Path, text: str) -> None:
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(text)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _replace_link(path: Path, target: str) -> None:
+    temporary = path.with_name(f".{path.name}-{uuid4().hex}.link")
+    try:
+        temporary.symlink_to(target)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _publish_product(out: Path, records: list[dict[str, Any]], label: str,
+                     aliases: tuple[str, ...], sidecars: dict[str, str]) -> None:
+    store = out.parent / f".{out.stem}.generations"
+    store.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with (store / "writer.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        _publish_product_locked(out, records, label, store, aliases, sidecars)
+
+
+def _publish_product_locked(out: Path, records: list[dict[str, Any]], label: str,
+                            store: Path, aliases: tuple[str, ...], sidecars: dict[str, str]) -> None:
+    products = (out.name, *aliases)
+    manifests = {name: Path(name).with_suffix(".manifest.json").name for name in products}
+    names = (*products, *manifests.values(), *sidecars)
+    if len(set(names)) != len(names) or any(Path(name).name != name or name in {".", ".."} for name in names):
+        raise ValueError("health publication requires distinct local filenames")
+    for name in names:
+        entrance = out.parent / name
+        target = f"{store.name}/current/{name}"
+        if entrance.is_symlink() and os.readlink(entrance) != target:
+            raise ValueError(f"unexpected health product link: {entrance}")
+        if entrance.exists() and not entrance.is_file():
+            raise ValueError(f"health product is not a regular file: {entrance}")
+    current = store / "current"
+    if current.is_symlink() and not re.fullmatch(r"[0-9a-f]{32}", os.readlink(current)):
+        raise ValueError(f"unexpected health generation pointer: {current}")
+    if current.exists() and not current.is_symlink():
+        raise ValueError(f"health generation pointer is not a link: {current}")
+    if current.is_symlink() and not current.exists():
+        raise ValueError(f"health generation pointer is unavailable: {current}")
+
+    # Complete and sync the entire bundle before changing either entrance.
+    generation = store / uuid4().hex
+    generation.mkdir(mode=0o700)
+    data = generation / out.name
+    digest = hashlib.sha256()
+    written = 0
+    first = last = None
+    with data.open("x", encoding="utf-8") as stream:
+        for record in records:
+            line = json.dumps(record) + "\n"
+            stamp = _record_date(json.loads(line))
+            if stamp is not None:
+                first = stamp if first is None else min(first, stamp)
+                last = stamp if last is None else max(last, stamp)
+            stream.write(line)
+            digest.update(line.encode("utf-8"))
+            written += 1
+        stream.flush()
+        os.fsync(stream.fileno())
+    for name in aliases:
+        os.link(data, generation / name)
+    for name, manifest_name in manifests.items():
+        metadata = _product_manifest(out.parent / name, records, label)
+        metadata["path"] = str(generation / name)
+        metadata.update(row_count=written, first_date=first, last_date=last, sha256=digest.hexdigest())
+        _write_synced(generation / manifest_name, json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+    for name, text in sidecars.items():
+        _write_synced(generation / name, text)
+    _sync_directory(generation)
+    _sync_directory(store)
+
+    if not current.exists():
+        # Keep every original payload and original metadata as recovery evidence.
+        # Installing entrances is harmless while current selects this preimage.
+        previous = store / uuid4().hex
+        previous.mkdir(mode=0o700)
+        for name in names:
+            entrance = out.parent / name
+            if entrance.exists():
+                destination = previous / (f".original-{name}" if name in manifests.values() else name)
+                shutil.copy2(entrance, destination)
+                with destination.open("rb") as stream:
+                    os.fsync(stream.fileno())
+        for name, manifest_name in manifests.items():
+            original = previous / f".original-{manifest_name}"
+            metadata = json.loads(original.read_text()) if original.exists() else {}
+            metadata["path"] = str(previous / name)
+            _write_synced(previous / manifest_name, json.dumps(metadata) + "\n")
+        _sync_directory(previous)
+        _sync_directory(store)
+        _replace_link(current, previous.name if out.exists() else generation.name)
+        _sync_directory(store)
+    for name in names:
+        _replace_link(out.parent / name, f"{store.name}/current/{name}")
+    _sync_directory(out.parent)
+    _replace_link(current, generation.name)
+    _sync_directory(store)
 
 
 def _record_date_bounds(records: list[dict[str, Any]]) -> tuple[str | None, str | None]:

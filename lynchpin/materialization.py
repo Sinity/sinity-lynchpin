@@ -3746,13 +3746,18 @@ def _jsonl_file_bounds(path: Path) -> tuple[int | None, date | None, date | None
 
 
 def _jsonl_date_bounds(paths: Iterable[Path]) -> tuple[int, date | None, date | None]:
+    from .core.input_snapshot import read_input_path
+
     count = 0
     first: date | None = None
     last: date | None = None
     for path in paths:
+        pinned = read_input_path(path) != path
+        if not pinned:
+            path = path.resolve()
         if not path.exists():
             continue
-        manifest_bounds = _jsonl_single_file_manifest_bounds(path)
+        manifest_bounds = None if pinned else _jsonl_single_file_manifest_bounds(path)
         if manifest_bounds is None:
             manifest_bounds = _jsonl_date_bounds_cached(
                 (str(path),),

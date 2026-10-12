@@ -8,6 +8,7 @@ from typing import Any, Iterator, Optional
 
 from ..core.parse import parse_datetime as _parse_dt
 from ..core.source import read_jsonl_with
+from ..core.input_snapshot import read_input_path
 from .health_models import (
     ActivityDaySummary,
     CalorieBurn,
@@ -404,7 +405,10 @@ _PROCESSED = Path("/realm/health/processed")
 
 def load_jsonl(filename: str) -> Iterator[dict[str, Any]]:
     """Public, patchable entry point for loading a processed-health JSONL file."""
-    yield from read_jsonl_with(_PROCESSED / filename, lambda p: p, source_name=filename)
+    path = _PROCESSED / filename
+    if read_input_path(path) == path:
+        path = path.resolve()
+    yield from read_jsonl_with(path, lambda p: p, source_name=filename)
 
 
 def _load_jsonl(filename: str) -> Iterator[dict[str, Any]]:
