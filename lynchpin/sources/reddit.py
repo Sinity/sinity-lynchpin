@@ -11,6 +11,7 @@ from typing import Callable, Iterable, Iterator, Optional, Sequence
 
 from ..core.cache import files_signature, persistent_cache
 from ..core.config import get_config
+from ..core.input_snapshot import read_input_path
 from ..core.coverage import CoverageBounds
 from ..core.parse import parse_datetime, month_key as _month_key, in_month_range as _month_in_range, safe_int as _safe_int
 from ..core.primitives import TopN, logical_date
@@ -204,16 +205,21 @@ def summarize_activity(
     )
 
 
+def daily_input_files(*, root: Path) -> tuple[Path, ...]:
+    """The fixed canonical inputs consumed by daily_activity."""
+    return tuple(root / name for name in ("comments.csv", "posts.csv"))
+
+
 def _resolve_paths(paths: Optional[Sequence[Path]], filename: str, *, ensure: bool = True) -> list[Path]:
     if paths is not None:
-        return [Path(path) for path in paths if Path(path).exists()]
+        return [Path(path) for path in paths if read_input_path(Path(path)).exists()]
     if ensure:
         from ..materialization import ensure_materialized
 
         ensure_materialized("reddit")
     cfg = get_config()
     canonical = cfg.accounts_root / "reddit/processed/canonical" / filename
-    if canonical.exists():
+    if read_input_path(canonical).exists():
         return [canonical]
     raise FileNotFoundError(
         f"canonical Reddit materialization is missing: {canonical}. "
@@ -268,7 +274,7 @@ def _posts_sig(paths: Optional[Sequence[Path]] = None) -> object:
 def _load_posts(paths: Optional[Sequence[Path]] = None) -> list[RedditPost]:
     posts: list[RedditPost] = []
     for path in _resolve_paths(paths, "posts.csv", ensure=False):
-        with path.open("r", encoding="utf-8", newline="") as handle:
+        with read_input_path(path).open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
                 created = _parse_datetime(row.get("date"))
@@ -392,7 +398,7 @@ def iter_post_votes(paths: Optional[Sequence[Path]] = None, *, ensure: bool = Tr
 
 def _message_paths(paths: Optional[Sequence[Path]] = None, *, ensure: bool = True) -> list[Path]:
     if paths is not None:
-        return [Path(path) for path in paths if Path(path).exists()]
+        return [Path(path) for path in paths if read_input_path(Path(path)).exists()]
     if ensure:
         from ..materialization import ensure_materialized
 
@@ -434,7 +440,7 @@ def iter_message_headers(paths: Optional[Sequence[Path]] = None, *, ensure: bool
 
 
 def _read_comment_csv(path: Path) -> Iterator[RedditComment]:
-    with path.open("r", encoding="utf-8", newline="") as handle:
+    with read_input_path(path).open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             created = _parse_datetime(row.get("date"))
@@ -457,7 +463,7 @@ def _read_comment_csv(path: Path) -> Iterator[RedditComment]:
 
 
 def _read_saved_csv(path: Path, kind: str) -> Iterator[RedditSavedItem]:
-    with path.open("r", encoding="utf-8", newline="") as handle:
+    with read_input_path(path).open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             permalink = row.get("permalink", "")
@@ -470,7 +476,7 @@ def _read_saved_csv(path: Path, kind: str) -> Iterator[RedditSavedItem]:
 
 
 def _read_vote_csv(path: Path, kind: str) -> Iterator[RedditVote]:
-    with path.open("r", encoding="utf-8", newline="") as handle:
+    with read_input_path(path).open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             permalink = row.get("permalink", "")
@@ -484,7 +490,7 @@ def _read_vote_csv(path: Path, kind: str) -> Iterator[RedditVote]:
 
 
 def _read_message_headers_csv(path: Path) -> Iterator[RedditMessageHeader]:
-    with path.open("r", encoding="utf-8", newline="") as handle:
+    with read_input_path(path).open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             created = _parse_datetime(row.get("date"))

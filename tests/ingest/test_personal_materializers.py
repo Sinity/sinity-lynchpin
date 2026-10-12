@@ -1319,3 +1319,64 @@ def test_daily_materializer_records_captured_keyboard_bytes_when_source_changes(
     assert not materialization._manifest_inputs_current(
         manifest, materialization._manifest_declared_input_files(manifest),
     )
+
+
+@pytest.mark.parametrize("source", ["reddit", "wykop", "themotte"])
+def test_daily_materializer_captures_account_directory_inputs(tmp_path, monkeypatch, source):
+    from lynchpin.ingest import personal_signals_materialize as materializer
+    from lynchpin import materialization
+    from lynchpin.sources import reddit, wykop, themotte
+
+    root = tmp_path / "account"
+    root.mkdir()
+    if source == "reddit":
+        raw = root / "comments.csv"
+        raw.write_text("id,date,subreddit,body,permalink,parent,gildings\nc1,2026-05-01T12:00:00Z,fixture,original,/c1,p1,0\n")
+        def read_rows():
+            return list(reddit._read_comment_csv(raw))
+    elif source == "wykop":
+        raw = root / "wykop_links_commented.jsonl"
+        raw.write_text(json.dumps({"comment_id": 1, "comment_created_at": "2026-05-01 12:00:00", "comment_content": "original"}) + "\n")
+        def read_rows():
+            return list(wykop.iter_comments(root=root))
+    else:
+        raw = root / themotte.MESSAGE_FILENAME
+        raw.write_text(json.dumps({"id": "1", "created_at": "2026-05-01T12:00:00Z", "author": "fixture", "recipient": "peer", "body": "original", "url": "https://example.test/1"}) + "\n")
+        def read_rows():
+            return list(themotte.iter_messages(root=root.parent, username=root.name))
+    original_size = raw.stat().st_size
+    row = materialization.MaterializedDataset(
+        name=source, status="ready", authority="fixture", query_surface="fixture",
+        materialized_paths=(root,), raw_roots=(root,), row_count=1,
+        first_date=date(2026, 5, 1), last_date=date(2026, 5, 1),
+        covered_dates=(date(2026, 5, 1),), materialization_hint="fixture", reason="fixture",
+    )
+    monkeypatch.setattr(materialization, "audit_materialization", lambda: [row])
+    def rows(*_args):
+        raw.write_text("broken live input")
+        assert len(read_rows()) == 1
+        return [(source, date(2026, 5, 1), "count", 1.0, {})]
+    monkeypatch.setattr(materializer, "_window_personal_daily_signal_rows", rows)
+    output = tmp_path / "daily.ndjson"
+    materializer.materialize_personal_daily_signals(output=output)
+    manifest = json.loads(output.with_suffix(".manifest.json").read_text())
+    assert str(root) not in manifest["input_files"]
+    version = next(item for item in manifest["input_versions"] if item["path"] == str(raw))
+    assert version["stat"][2] == original_size
+    assert manifest["absent_input_files"]
+
+
+def test_daily_manifest_invalidates_when_optional_input_appears(tmp_path):
+    from lynchpin.ingest.personal_signals_materialize import _manifest
+    from lynchpin.ingest._manifest import write_manifest
+    from lynchpin.materialization import _manifest_inputs_current
+
+    absent = tmp_path / "optional.jsonl"
+    fields = _manifest(dataset="fixture", output=tmp_path / "daily.ndjson", row_count=0,
+                       first_date=None, last_date=None, input_files=(absent,))
+    target = tmp_path / "daily.manifest.json"
+    write_manifest(target, fields)
+    manifest = json.loads(target.read_text())
+    assert _manifest_inputs_current(manifest, ())
+    absent.write_text("{}\n")
+    assert not _manifest_inputs_current(manifest, ())

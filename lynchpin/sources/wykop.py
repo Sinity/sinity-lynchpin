@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from ..core.errors import SourceUnavailableError
+from ..core.input_snapshot import read_input_path
 
 WYKOP_ROOT = Path("/realm/account/wykop/raw/Sinity")
 
@@ -123,7 +124,7 @@ def iter_comments(
     base = root or WYKOP_ROOT
 
     # links_commented — the main source
-    links_path = base / "wykop_links_commented.jsonl"
+    links_path = read_input_path(base / "wykop_links_commented.jsonl")
     if links_path.exists():
         with open(links_path) as f:
             for line in f:
@@ -155,7 +156,7 @@ def iter_comments(
                 )
 
     # entry_comments — smaller, different parent type
-    entries_path = base / "wykop_entry_comments.jsonl"
+    entries_path = read_input_path(base / "wykop_entry_comments.jsonl")
     if entries_path.exists():
         with open(entries_path) as f:
             for line in f:
@@ -185,7 +186,7 @@ def iter_actions(
 ) -> Iterator[WykopAction]:
     """Iterate operator actions (votes/saves)."""
     base = root or WYKOP_ROOT
-    actions_path = base / "wykop_actions.jsonl"
+    actions_path = read_input_path(base / "wykop_actions.jsonl")
     if not actions_path.exists():
         return
 
@@ -291,6 +292,11 @@ def topic_distribution(
             for tag in c.parent_tags:
                 counts[tag] += 1
     return sorted(counts.items(), key=lambda kv: -kv[1])[:top_n]
+
+
+def daily_input_files(*, root: Path) -> tuple[Path, ...]:
+    """The fixed comment and action inputs consumed by daily_activity."""
+    return (*_comment_files(root), root / "wykop_actions.jsonl")
 
 
 def _comment_files(root: Optional[Path] = None) -> tuple[Path, ...]:

@@ -22,6 +22,7 @@ from typing import Any, Callable, Iterator, TypeVar
 
 from ..core.config import get_config
 from ..core.errors import SourceUnavailableError
+from ..core.input_snapshot import read_input_path
 from ..core.primitives import logical_date
 
 MESSAGE_FILENAME = "themotte_messages.jsonl"
@@ -84,13 +85,13 @@ def sync_manifest_path(root: Path | None = None, username: str | None = None) ->
     return profile_root(root=root, username=username) / SYNC_MANIFEST_FILENAME
 
 
-def input_files(root: Path | None = None, username: str | None = None) -> tuple[Path, ...]:
+def input_files(root: Path | None = None, username: str | None = None, *, include_missing: bool = False) -> tuple[Path, ...]:
     candidates = (
         message_path(root=root, username=username),
         notification_path(root=root, username=username),
         sync_manifest_path(root=root, username=username),
     )
-    return tuple(path for path in candidates if path.exists())
+    return candidates if include_missing else tuple(path for path in candidates if read_input_path(path).exists())
 
 
 def iter_messages(
@@ -193,6 +194,7 @@ def _date_range_cached(root: str, signature: tuple[tuple[str, int, int], ...]) -
 
 
 def _load_jsonl(path: Path, parser: Callable[[dict[str, Any]], T | None]) -> Iterator[T]:
+    path = read_input_path(path)
     if not path.exists():
         return
     with path.open(encoding="utf-8") as handle:

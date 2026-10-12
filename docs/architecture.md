@@ -61,6 +61,9 @@ Daily-signal materialization captures its selected inputs before parsing;
 current-day keyboard inputs use an append-only prefix and closed files use
 immutable copies. The output identifies the captured inputs even when live
 producers advance during computation.
+Reddit, Wykop and TheMotte account directories resolve to the named files
+their daily readers consume. Optional files absent at capture are recorded
+separately; their later appearance makes the product stale.
 
 Substrate connections use a 4 GiB DuckDB memory budget, including serving
 reads, candidate builds, recovery, and publication validation. DuckDB may

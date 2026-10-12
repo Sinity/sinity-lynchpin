@@ -1398,6 +1398,13 @@ def _raindrop_input_files() -> tuple[Path, ...]:
 
 
 def _manifest_inputs_current(manifest: dict[str, Any], paths: Iterable[Path]) -> bool:
+    from .core.input_snapshot import read_input_path
+
+    absent = manifest.get("absent_input_files", [])
+    if not isinstance(absent, list) or any(
+        not isinstance(path, str) or read_input_path(Path(path)).exists() for path in absent
+    ):
+        return False
     collections = manifest.get("input_collections", [])
     if not isinstance(collections, list):
         return False
