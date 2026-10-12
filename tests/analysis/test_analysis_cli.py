@@ -471,3 +471,35 @@ def test_run_dag_reruns_when_fingerprint_changes(monkeypatch, tmp_path):
     dag._steps["memoized"] = replace(dag._steps["memoized"], fingerprint=key["v"])
     assert _run_dag(dag, dry_run=False, up_to=None) == 0
     assert runs["n"] == 2
+
+
+def test_explicit_machine_full_refresh_forces_explanation_plan(monkeypatch, capsys):
+    from lynchpin.analysis import cli
+    captured = {}
+    def run_dag(*args, **kwargs):
+        captured.update(kwargs)
+        return 0
+    monkeypatch.setattr(cli, '_run_dag', run_dag)
+    runner = CliRunner()
+    result = runner.invoke(build_app(), ['materialize-machine', '--full', '--dry-run', '--explain-materialization'])
+    assert result.exit_code == 0
+    assert captured['force'] is True
+    result = runner.invoke(build_app(), ['materialize-machine', '--incremental', '--dry-run'])
+    assert result.exit_code == 0
+    assert captured['force'] is False
+
+
+def test_forced_refresh_runs_and_records_current_memo(monkeypatch, tmp_path):
+    ran, recorded = [], []
+    dag = DAG('machine-analysis-materialization', handlers=_TestHandlers({'test:run': lambda: ran.append(True)}))
+    dag.add(Step('machine_telemetry_analysis', 'test:run', fingerprint='fixture-input'))
+    config = SimpleNamespace(analysis_output_dir=tmp_path / 'analysis', local_root=tmp_path / 'local')
+    config.analysis_output_dir.mkdir()
+    monkeypatch.setattr('lynchpin.analysis.cli.get_config', lambda: config)
+    monkeypatch.setattr('lynchpin.core.io.get_config', lambda: config)
+    monkeypatch.setattr('lynchpin.analysis.cli.resolve_analysis_path', lambda name: str(config.analysis_output_dir / name))
+    monkeypatch.setattr('lynchpin.analysis.core.memo.load_fingerprints', lambda: {'machine_telemetry_analysis': 'fixture-input'})
+    monkeypatch.setattr('lynchpin.analysis.core.memo.record_fingerprints', lambda updates: recorded.append(updates))
+    assert _run_dag(dag, dry_run=False, up_to=None, incremental=True, force=True) == 0
+    assert ran == [True]
+    assert recorded == [{'machine_telemetry_analysis': 'fixture-input'}]

@@ -61,9 +61,10 @@ and its predecessors under one logical refresh identity, excluding replaced
 dates and clipping retained history to the requested window. Raw SQL tables
 contain physical partitions; their rows alone are not a complete generation.
 
-Service-state and cgroup-memory sources may still require a SQLite scan because
-they lack timestamp indexes. That scan does not rebuild or index the historical
-DuckDB facts. Explicit full rebuilds and uncovered historical prefixes require
+Bounded service-state and cgroup-memory reads seek each existing composite
+index prefix and its timestamp range, then sort only matching rows. Legacy
+sources without eligible indexes retain the ordinary read. No source statistics
+maintenance or index build runs on the capture path. Explicit full rebuilds and uncovered historical prefixes require
 a complete population and remain subject to resource limits. Initial population
 reads the canonical SQLite source. Retained Parquet archives remain unchanged;
 they do not establish a current replacement-tail watermark.
@@ -114,3 +115,5 @@ are copied into the new private candidate, then normal tail reads pick up later
 captures under the final logical identity. The rejected database never becomes
 the serving store or the write predecessor; the original retained file remains
 unchanged. This option reuses completed repair work, not an entire failed refresh.
+
+Work-observation promotions record their source observations and implementation digest in the published generation. A completed degraded attempt can satisfy freshness under the same implementation; its degraded status and rejection reason remain visible. Incoming rows follow the existing refresh interval. Changed inputs prevent indefinite reuse of a covered historical window. Changed implementation, missing bindings or unreadable inputs require a new attempt immediately. Source changes during promotion prevent binding publication. Today's growing window remains subject to the refresh interval even when its date bounds match. Explicit `materialize-machine --full` bypasses incremental and memoized skips, including when the plan is explained. Native inputs and rejected receipts remain unchanged.

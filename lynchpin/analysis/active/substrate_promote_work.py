@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
@@ -26,6 +27,11 @@ def promote_work_sources(
 ) -> None:
     if not selection.includes(SOURCE_WORK_OBSERVATIONS):
         return
+    from lynchpin.analysis.core.work_input_binding import binding_key, current_work_input_binding
+
+    key = binding_key(refresh_id)
+    conn.execute("DELETE FROM substrate_meta WHERE key = ?", [key])
+    input_binding = current_work_input_binding()
     try:
         from lynchpin.sources.agentctl import (
             AgentctlObservationError,
@@ -221,6 +227,13 @@ def promote_work_sources(
             window_start=window_start,
             window_end=window_end,
         )
+        # Publish the binding with the candidate, only if inputs stayed stable
+        # across the read. Changed/uninspectable inputs require another attempt.
+        if input_binding is not None and input_binding == current_work_input_binding():
+            conn.execute(
+                "INSERT INTO substrate_meta (key, value) VALUES (?, ?)",
+                [key, json.dumps(input_binding, sort_keys=True)],
+            )
     except Exception as exc:
         log.warning("substrate_promote: work_observation promotion failed: %s", exc)
         record_source_status(

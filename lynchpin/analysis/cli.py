@@ -1033,6 +1033,7 @@ def _register_misc(app: typer.Typer) -> None:
             explain_materialization=explain,
             incremental=incremental,
             requested_window=requested_window,
+            force=not incremental,
         )
         raise typer.Exit(code=code)
 
@@ -1082,6 +1083,7 @@ def _run_dag(
     incremental: bool = False,
     memoize: bool = True,
     requested_window: tuple[date, date] | None = None,
+    force: bool = False,
 ) -> int:
     from .core.dag import StepStatus
     from .core import memo as _memo
@@ -1104,6 +1106,7 @@ def _run_dag(
                     policies=policies,
                     up_to=up_to,
                     requested_window=requested_window,
+                    force=force,
                 )
                 if incremental:
                     print(render_materialization_plan(plan))
@@ -1149,7 +1152,8 @@ def _run_dag(
             memo_current = _memo.compute_fingerprints(
                 {name: dag._steps[name] for name in selected}
             )
-            memo_skip = _memo.memoized_skips(memo_current, _memo.load_fingerprints())
+            if not force:
+                memo_skip = _memo.memoized_skips(memo_current, _memo.load_fingerprints())
             if memo_skip:
                 _emit(
                     "Memoized (unchanged inputs, skipping): "
@@ -1163,6 +1167,7 @@ def _run_dag(
                 policies=policies,
                 up_to=up_to,
                 requested_window=requested_window,
+                force=force,
             )
             materialization_plan = plan
             runnable = executable_steps(plan) - memo_skip

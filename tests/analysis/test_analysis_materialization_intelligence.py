@@ -383,5 +383,44 @@ def test_materialization_plan_runs_expired_substrate_status_when_window_is_not_c
     )
 
     assert rows[0].action == "run"
-    assert rows[0].reason == "substrate source status outside materialization age horizon: machine"
+    assert rows[0].reason == "substrate source statuses do not cover requested window"
     assert executable_steps(rows) == {"promote"}
+
+
+def test_bound_degradation_preserves_freshness_and_growing_window(monkeypatch):
+    dag = DAG('fixture')
+    dag.add(Step('promote', 'test:noop'))
+    status = dict(source='work_observations', state='present', status='degraded',
+                  input_binding_state='unchanged', age_seconds=10,
+                  window_start='2026-06-01', window_end='2026-06-05',
+                  reason='one historical receipt lacks a source revision')
+    monkeypatch.setattr('lynchpin.analysis.core.materialization_intelligence._substrate_source_status',
+                        lambda source, *, now: dict(status))
+    def plan(*, force=False):
+        return materialization_plan_for_dag(
+            dag, policies={'promote': MaterializationStepPolicy('promote',
+                substrate_sources=('work_observations',), max_age_seconds=60)},
+            now=datetime(2026, 6, 5, 12, tzinfo=timezone.utc),
+            requested_window=(date(2026, 6, 1), date(2026, 6, 5)), force=force)[0]
+    row = plan()
+    assert row.action == 'skip'
+    assert 'degraded coverage remains' in row.reason
+    assert row.artifact_statuses[0]['reason'] == status['reason']
+    assert plan(force=True).action == 'run'
+    for binding in ['missing', 'unavailable']:
+        status['input_binding_state'] = binding
+        assert plan().action == 'run'
+    status['input_binding_state'] = 'changed'
+    assert plan().action == 'skip'  # Incoming rows follow the existing cadence.
+    status['implementation_binding_state'] = 'changed'
+    assert plan().action == 'run'
+    status['implementation_binding_state'] = 'unchanged'
+    status['input_binding_state'] = 'unchanged'
+    status['age_seconds'] = 61
+    assert plan().action == 'run'  # Today's covered window still grows.
+    status['window_end'] = '2026-06-04'
+    status['age_seconds'] = 10
+    assert plan().action == 'run'  # Even a recent attempt can have the wrong window.
+    for unavailable in ['error', 'unavailable']:
+        status['status'] = unavailable
+        assert plan().action == 'run'

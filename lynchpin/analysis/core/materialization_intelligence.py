@@ -93,7 +93,7 @@ def materialization_plan_for_dag(
         substrate_sources_cover_window = (
             requested_window is not None
             and bool(substrate_statuses)
-            and all(_substrate_source_covers_window(status, requested_window) for status in substrate_statuses)
+            and all(_substrate_source_covers_window(status, requested_window, now=now) for status in substrate_statuses)
         )
 
         if force:
@@ -107,11 +107,25 @@ def materialization_plan_for_dag(
         ]):
             action = "run"
             reason = f"missing substrate source status: {', '.join(missing_substrate)}"
+        elif changed_inputs := [
+            status["source"] for status in substrate_statuses
+            if status.get("status") in {"ok", "empty", "degraded"}
+            and (status.get("input_binding_state") in {"missing", "unavailable"}
+                 or status.get("implementation_binding_state") not in {None, "unchanged"})
+        ]:
+            action = "run"
+            reason = f"changed implementation or unverified substrate inputs: {', '.join(changed_inputs)}"
         elif policy.substrate_sources and (bad_substrate := [
-            status["source"] for status in substrate_statuses if status.get("status") not in {"ok", "empty"}
+            status["source"] for status in substrate_statuses if not _completed_substrate_status(status)
         ]):
             action = "run"
             reason = f"non-ready substrate source status: {', '.join(bad_substrate)}"
+        elif (
+            requested_window is not None and substrate_statuses
+            and not all(_substrate_window_contains(status, requested_window) for status in substrate_statuses)
+        ):
+            action = "run"
+            reason = "substrate source statuses do not cover requested window"
         elif (
             policy.substrate_sources
             and policy.max_age_seconds is not None
@@ -157,6 +171,10 @@ def materialization_plan_for_dag(
             else:
                 reason = policy.reason or "artifacts are inside materialization age horizon"
 
+        if action == "skip" and (degraded := [
+            status["source"] for status in substrate_statuses if status.get("status") == "degraded"
+        ]):
+            reason += f"; degraded coverage remains: {', '.join(degraded)}"
         decisions[step_name] = action
         rows.append(
             MaterializationPlanRow(
@@ -356,9 +374,31 @@ def _artifact_covers_window(
 def _substrate_source_covers_window(
     status: dict[str, Any],
     requested_window: tuple[date, date],
+    *,
+    now: datetime | None = None,
 ) -> bool:
-    if status.get("status") not in {"ok", "empty"}:
+    if not _completed_substrate_status(status):
         return False
+    if status.get("input_binding_state") == "changed":
+        return False
+    # A date window ending today is still growing. It cannot override the
+    # refresh horizon merely because one earlier attempt had the same bounds.
+    if requested_window[1] >= (now or datetime.now(timezone.utc)).date():
+        return False
+    return _substrate_window_contains(status, requested_window)
+
+
+def _completed_substrate_status(status: dict[str, Any]) -> bool:
+    return status.get("status") in {"ok", "empty"} or (
+        status.get("status") == "degraded"
+        and status.get("input_binding_state") in {"unchanged", "changed"}
+        and status.get("implementation_binding_state", "unchanged") == "unchanged"
+    )
+
+
+def _substrate_window_contains(
+    status: dict[str, Any], requested_window: tuple[date, date],
+) -> bool:
     try:
         start = date.fromisoformat(str(status.get("window_start")))
         end = date.fromisoformat(str(status.get("window_end")))
@@ -384,14 +424,21 @@ def _substrate_source_status(source: str, *, now: datetime) -> dict[str, Any]:
         with connect(substrate_path(), read_only=True) as conn:
             row = conn.execute(
                 """
-                SELECT status, recorded_at, row_count, refresh_id, window_start, window_end
+                SELECT status, recorded_at, row_count, refresh_id, window_start, window_end, reason
                 FROM substrate_source_status
-                WHERE source = ?
+                WHERE source = ? AND kind = 'stage'
                 ORDER BY recorded_at DESC
                 LIMIT 1
                 """,
                 [source],
             ).fetchone()
+            binding_row = None
+            if row is not None and source == "work_observations":
+                from .work_input_binding import binding_key
+
+                binding_row = conn.execute(
+                    "SELECT value FROM substrate_meta WHERE key = ?", [binding_key(row[3])],
+                ).fetchone()
     except Exception as exc:  # noqa: BLE001 - planner should degrade to run.
         return {"source": source, "state": "missing", "status": "error", "reason": str(exc)}
     if row is None:
@@ -405,7 +452,7 @@ def _substrate_source_status(source: str, *, now: datetime) -> dict[str, Any]:
     else:
         age_seconds = None
         recorded = str(recorded_at) if recorded_at is not None else None
-    return {
+    result = {
         "source": source,
         "state": "present",
         "status": row[0],
@@ -415,7 +462,34 @@ def _substrate_source_status(source: str, *, now: datetime) -> dict[str, Any]:
         "refresh_id": row[3],
         "window_start": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]) if row[4] is not None else None,
         "window_end": row[5].isoformat() if hasattr(row[5], "isoformat") else str(row[5]) if row[5] is not None else None,
+        "reason": row[6],
     }
+    if source == "work_observations":
+        from .work_input_binding import current_work_input_binding
+
+        try:
+            stored_binding = json.loads(binding_row[0]) if binding_row else None
+        except (TypeError, json.JSONDecodeError):
+            stored_binding = None
+        if not isinstance(stored_binding, dict) or any(
+            not isinstance(stored_binding.get(key), str)
+            or len(stored_binding[key]) != 64
+            or any(char not in "0123456789abcdef" for char in stored_binding[key])
+            for key in ("inputs", "implementation")
+        ):
+            stored_binding = None
+        current_binding = current_work_input_binding()
+        result["input_binding_state"] = (
+            "unavailable" if current_binding is None else
+            "missing" if stored_binding is None else
+            "unchanged" if stored_binding == current_binding else "changed"
+        )
+        result["implementation_binding_state"] = (
+            "unavailable" if current_binding is None else
+            "missing" if not isinstance(stored_binding, dict) else
+            "unchanged" if stored_binding.get("implementation") == current_binding["implementation"] else "changed"
+        )
+    return result
 
 
 def _machine_max_age_seconds(step: str) -> int:
