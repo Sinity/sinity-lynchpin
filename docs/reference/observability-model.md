@@ -55,9 +55,14 @@ workloads, observations, benchmark runs, diagnostics, and context windows over
 this model.
 
 Machine promotion reuses existing history for every SQLite table when a
-watermark exists. It rereads the watermark's UTC day and later rows in bounded
+watermark exists under the same refresh identity. It rereads the watermark's UTC day and later rows in bounded
 batches, preserving earlier facts and pruning only dates outside the requested
 window. Service-state and cgroup-memory sources may still require a SQLite
 scan because they lack timestamp indexes; this does not require rebuilding the
 historical DuckDB target. A first population or explicit full rebuild still
 reads the complete requested history and remains subject to resource limits.
+
+Normal generation publication assigns a new refresh identity. Machine facts
+currently have no cross-generation inheritance route, so this path still
+requires a complete population. Same-identity tail reuse does not establish
+that nightly generation publication is bounded to recent source rows.

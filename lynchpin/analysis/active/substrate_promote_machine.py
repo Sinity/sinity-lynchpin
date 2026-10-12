@@ -612,16 +612,11 @@ def _promote_machine_fast(
     statement (no filter pushdown into SQLite), so statement count is the read
     cost driver and window width is free.
 
-    All tables additionally
-    check for an existing watermark under this ``refresh_id`` and, when one is
-    found (a prior run already populated this refresh_id/window) and
-    ``full_repromote`` is not set, take the incremental append path instead —
-    see ``_promote_machine_table_incremental``. ``refresh_id`` is a
-    deterministic function of the requested window (see
-    ``materialize._machine_analysis_refresh_id``), so the daily rolling-window
-    call reuses the same refresh_id every day and this is the steady-state
-    path in production; a genuinely new window (first backfill, an ad hoc
-    ``--start``/``--end``) has no watermark yet and takes the full path once.
+    All tables check for an existing watermark under this ``refresh_id`` and,
+    when one is found and ``full_repromote`` is not set, take the incremental
+    append path instead. This reuses history only within the same logical
+    refresh. Callers that assign a new generation identity cannot yet inherit
+    machine history through this route and require a complete population.
     """
     t_total = time.monotonic()
     conn.execute("INSTALL SQLITE")
