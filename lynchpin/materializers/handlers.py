@@ -67,8 +67,8 @@ def _materialize_keylog_analysis(*, start: date | None = None, end: date | None 
     from ..analysis.keylog import DEFAULT_HYPRLAND_BINDINGS
 
     if start is None or end is None:
-        end = date.today()
-        start = end - timedelta(days=13)
+        end = date.today() + timedelta(days=1)
+        start = end - timedelta(days=14)
     inclusive_end = max(start, end - timedelta(days=1))
     analysis = write_keylog_analysis(
         Path(resolve_analysis_path("keylog_analysis.json")),

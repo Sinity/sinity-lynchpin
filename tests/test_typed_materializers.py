@@ -80,6 +80,24 @@ def test_cycle_rejected_and_dependency_closure_is_explicit() -> None:
     assert [step.product for step in non_alphabetic.steps] == ["z-base", "a-target"]
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_keylog_materializer_default_includes_today_and_preserves_explicit_end(monkeypatch, tmp_path, explicit):
+    from lynchpin.materializers import handlers
+
+    calls = {}
+    monkeypatch.setattr(handlers, "date", SimpleNamespace(today=lambda: date(2026, 5, 15)))
+    monkeypatch.setattr(handlers, "resolve_analysis_path", lambda name: str(tmp_path / name))
+
+    def write(path, **kwargs):
+        calls.update(kwargs)
+        return SimpleNamespace(source_event_count=1)
+
+    monkeypatch.setattr(handlers, "write_keylog_analysis", write)
+    kwargs = {"start": date(2026, 5, 2), "end": date(2026, 5, 4)} if explicit else {}
+    assert handlers._materialize_keylog_analysis(**kwargs) == {"row_count": 1}
+    assert calls["start"] == date(2026, 5, 2)
+    assert calls["end"] == date(2026, 5, 3 if explicit else 15)
+
 def test_personal_signals_plan_reconverges_communications_first() -> None:
     plan = ConvergencePlanner(PRODUCT_CATALOG.values()).plan(
         ConvergenceRequest(
