@@ -97,6 +97,10 @@ an unknown ID until explicit re-derivation. Native promotion stops after a
 failed machine stage so an already rejected candidate cannot continue scanning
 unrelated historical tables.
 
+Native promotion checks availability within each selected table's stage instead
+of counting unrelated historical tables as a readiness preflight. A successful
+zero-row read is empty; a missing or inaccessible selected table fails its stage.
+
 An explicit repair may pass `--reuse-machine-candidate` with an owner-retained
 candidate path. Only full partitions with matching source-location and requested
 window evidence, successful stage receipts, exact schemas and matching row counts

@@ -508,9 +508,6 @@ def _promote_machine_fast(
     escaped_path = str(sqlite_path).replace("'", "''")
     conn.execute(f"ATTACH '{escaped_path}' AS machine_src (TYPE SQLITE, READ_ONLY)")
 
-    from lynchpin.sources.machine import readiness as machine_readiness
-
-    machine_ready = machine_readiness()
     projections = _machine_projections()
 
     tables = [
@@ -529,8 +526,11 @@ def _promote_machine_fast(
             continue
         def promote_table() -> None:
             t0 = time.monotonic()
+            # Validate the selected source's presence without scanning unrelated
+            # historical tables. A successful zero-row read means this lane is
+            # empty; missing/inaccessible tables fail their own stage.
+            source_columns = {column[0] for column in conn.execute(f"SELECT * FROM machine_src.{src_table} LIMIT 0").description}
             if src_table == "gpu_sample":
-                source_columns = {column[0] for column in conn.execute("SELECT * FROM machine_src.gpu_sample LIMIT 0").description}
                 if "id" not in source_columns:
                     projections[src_table][1]["source_row_id"] = "NULL"
             watermark = None
@@ -604,8 +604,8 @@ def _promote_machine_fast(
                         conn,
                         refresh_id=refresh_id,
                         source=source,
-                        status="ok" if row_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-                        reason=machine_ready.reason if not row_count else None,
+                        status="ok" if row_count else "empty",
+                        reason=None,
                         row_count=row_count,
                         window_start=window_start,
                         window_end=window_end,
@@ -661,8 +661,8 @@ def _promote_machine_fast(
                     conn,
                     refresh_id=refresh_id,
                     source=source,
-                    status="ok" if row_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-                    reason=machine_ready.reason if not row_count else None,
+                    status="ok" if row_count else "empty",
+                    reason=None,
                     row_count=row_count,
                     window_start=window_start,
                     window_end=window_end,

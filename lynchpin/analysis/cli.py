@@ -1019,11 +1019,11 @@ def _register_misc(app: typer.Typer) -> None:
         import logging
 
         logging.basicConfig(level=logging.INFO, format="%(message)s")
+        logging.getLogger().setLevel(logging.INFO)
         start_d = _opt_date(start)
         end_d = _opt_date(end)
-        # --full also bypasses substrate_promote_machine's incremental
-        # watermark: an operator asking for a full re-run means "no
-        # shortcuts", which for machine tables includes the row-level one.
+        # --full bypasses ordinary watermarks. Explicit candidate recovery may
+        # reuse matching completed partitions and refresh their tails.
         dag = machine_analysis_dag(start=start_d, end=end_d, full_repromote=not incremental, machine_recovery_path=machine_recovery_path)
         requested_window = _rolling_window(start=start_d, end=end_d, days=90)
         code = _run_dag(

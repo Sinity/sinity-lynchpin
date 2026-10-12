@@ -990,7 +990,8 @@ def test_initial_machine_population_uses_canonical_source_with_archive_retained(
         assert remaining_days == {"2026-05-01", "2026-05-02", "2026-05-03"}
 
     attach_scan_inserts = [
-        s for s in conn.statements if "machine_src.process_io_delta_sample" in s
+        s for s in conn.statements
+        if s.startswith("INSERT INTO") and "machine_src.process_io_delta_sample" in s
     ]
     assert len(attach_scan_inserts) == 1
     assert not any("read_parquet" in sql for sql in conn.statements)
@@ -1688,7 +1689,6 @@ def test_machine_predecessor_does_not_borrow_a_different_sqlite_source(tmp_path)
 
 def test_gpu_samples_with_equal_timestamp_keep_native_record_ids(tmp_path, monkeypatch):
     import sqlite3
-    from types import SimpleNamespace
     from lynchpin.sources import machine as source
     from lynchpin.analysis.active import substrate_promote_machine as promoter
     from lynchpin.analysis.active.substrate_promote_status import SourceSelection
@@ -1706,7 +1706,9 @@ def test_gpu_samples_with_equal_timestamp_keep_native_record_ids(tmp_path, monke
             c.execute("INSERT INTO gpu_sample VALUES (" + ",".join("?" for _ in range(len(row)+1)) + ")", [identifier, *row.values()])
     rows = list(source.gpu_samples(path=db))
     assert [(row.source_row_id, row.gpu_power_w) for row in rows] == [(17, 10.0), (18, 20.0)]
-    monkeypatch.setattr(source, "readiness", lambda: SimpleNamespace(status="ready", reason=None))
+    def unrelated_readiness():
+        raise AssertionError("selected promotion must not count unrelated historical tables")
+    monkeypatch.setattr(source, "readiness", unrelated_readiness)
     with connect(tmp_path / "facts.duckdb") as c:
         apply_schema(c)
         counts = {}
@@ -1716,6 +1718,19 @@ def test_gpu_samples_with_equal_timestamp_keep_native_record_ids(tmp_path, monke
         c.execute("DETACH machine_src")
         promoter._promote_machine_fast(c, refresh_id="second", sqlite_path=db, window_start=date(2026, 5, 1), window_end=date(2026, 5, 1), counts=counts, selection=SourceSelection.from_collection({"machine_gpu_sample"}))
         assert [(row.source_row_id, row.gpu_power_w) for row in load_machine_gpu_samples(c, refresh_id="second")] == [(17, 10.0), (18, 20.0)]
+        c.execute("DETACH machine_src")
+        with sqlite3.connect(db) as native:
+            native.execute("DELETE FROM gpu_sample")
+        promoter._promote_machine_fast(c, refresh_id="empty", sqlite_path=db, window_start=date(2026, 5, 1), window_end=date(2026, 5, 1), counts=counts, selection=SourceSelection.from_collection({"machine_gpu_sample"}), full_repromote=True)
+        assert counts["machine_gpu_sample"] == 0
+        assert c.execute("SELECT status FROM substrate_source_status WHERE refresh_id='empty' AND source='machine_gpu_sample' AND kind='stage'").fetchone() == ("empty",)
+        c.execute("DETACH machine_src")
+        with sqlite3.connect(db) as native:
+            native.execute("DROP TABLE gpu_sample")
+        from lynchpin.substrate.connection import CandidateGenerationRejected
+        with pytest.raises(CandidateGenerationRejected):
+            promoter._promote_machine_fast(c, refresh_id="missing", sqlite_path=db, window_start=date(2026, 5, 1), window_end=date(2026, 5, 1), counts=counts, selection=SourceSelection.from_collection({"machine_gpu_sample"}), full_repromote=True)
+        assert c.execute("SELECT status FROM substrate_source_status WHERE refresh_id='missing' AND source='machine_gpu_sample' AND kind='stage'").fetchone() == ("error",)
 
 
 def test_failed_native_machine_stage_stops_before_next_table(tmp_path, monkeypatch):
