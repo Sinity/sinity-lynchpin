@@ -1398,6 +1398,22 @@ def _raindrop_input_files() -> tuple[Path, ...]:
 
 
 def _manifest_inputs_current(manifest: dict[str, Any], paths: Iterable[Path]) -> bool:
+    collections = manifest.get("input_collections", [])
+    if not isinstance(collections, list):
+        return False
+    for collection in collections:
+        if not isinstance(collection, dict) or collection.get("source") != "keylog":
+            return False
+        root_value = collection.get("root")
+        if not isinstance(root_value, str):
+            return False
+        root = Path(root_value)
+        if not root.is_dir():
+            return False
+        from .sources.keylog import log_files
+
+        if collection.get("files") != [str(path) for path in log_files(root=root, ensure=False)]:
+            return False
     current_paths = tuple(paths)
     if not manifest_versions_current(manifest, current_paths):
         return False

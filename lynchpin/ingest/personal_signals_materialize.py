@@ -640,6 +640,12 @@ def _personal_daily_signal_input_files(
                 continue
             if path.suffix == ".json" and "manifest" in path.name:
                 continue
+            if path.is_dir():
+                if source != "keylog":
+                    raise MaterializationError("personal_signals_materialize", reason=f"unsupported directory input for {source}")
+                from ..sources.keylog import log_files
+
+                paths.extend(log_files(root=path, ensure=False))
             paths.append(path)
     return tuple(dict.fromkeys(paths))
 
@@ -710,6 +716,8 @@ def _manifest(
     row_counts: dict[str, int] | None = None,
     refresh_id: str | None = None,
 ) -> dict[str, Any]:
+    directories = tuple(path for path in input_files if path.is_dir())
+    input_files = tuple(path for path in input_files if path not in directories)
     manifest: dict[str, Any] = {
         "dataset": dataset,
         "materialized_path": str(output),
@@ -724,6 +732,12 @@ def _manifest(
         "row_order": "logical_date",
         "refresh_id": refresh_id,
     }
+    if directories:
+        manifest["input_collections"] = [
+            {"source": "keylog", "root": str(root),
+             "files": [str(path) for path in input_files if path.parent == root]}
+            for root in directories
+        ]
     if window_start is not None and window_end is not None:
         manifest["window_start"] = window_start.isoformat()
         manifest["window_end"] = window_end.isoformat()

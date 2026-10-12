@@ -134,10 +134,11 @@ def log_files(
     start: Optional[date] = None,
     end: Optional[date] = None,
     ensure: bool = True,
+    root: Path | None = None,
 ) -> list[Path]:
     if ensure:
         _ensure_keylog_materialized(start=start, end=end)
-    root = _logs_root()
+    root = root or _logs_root()
     files = []
     from ..core.input_snapshot import pinned_collection
 

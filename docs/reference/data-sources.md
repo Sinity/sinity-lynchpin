@@ -238,7 +238,7 @@ four event lanes above made that jump.
 `captures/input-dynamics`, `captures/stability-lab`, and
 `code/tortoisesvn` (moved from `captures/dev/tortoisesvn` 2026-08-17) are deliberately absent from this catalog: the
 operator flagged them as dead/unwanted (2026-08-12) — `input-dynamics` is
-superseded by `activity/keylog` (see `keylog_dynamics`), `stability-lab` is
+superseded by `activity/desktop/keyboard` (see `keylog_dynamics`), `stability-lab` is
 dead or being retired, and the `tortoisesvn` historical import (now at `data/code/tortoisesvn`) is not worth
 tracking. The directories themselves were not touched; only this catalog
 stopped watching them.
@@ -285,11 +285,13 @@ This source is read-only. Materialization has no route to schedule, cancel, wait
 
 `lynchpin_personal(action="phone", start=..., end=..., limit=...)` reads phone event captures. Health views `phone_health`, `xiaomi`, and `coverage` expose Health Connect records, the latest Xiaomi revision per measurement day, and the materialized coverage artifact respectively. These reads do not trigger materialization. Phone date filters select capture dates, including backfills; Xiaomi filters select measurement days. Coverage is a whole-history artifact with an explicit modification timestamp and does not accept date filters.
 
-For bounded recovery, `agentctl job start lynchpin promote_incremental -- --only activitywatch_derived activity_content health_coverage personal_daily_signals temporal_signals` selects those products and their dependencies. The planner retains each product's incremental date window; unrelated writers are excluded and existing substrate history is retained through candidate publication. Add `--plan-json` to inspect the selected scope before execution.
+For bounded recovery, `agentctl job start lynchpin promote_incremental -- --only activitywatch_derived activity_content health_coverage personal_daily_signals temporal_signals` selects those products and their dependencies. The planner retains each product's incremental date window and excludes unrelated canonical-product writers. Typed snapshot promotion may still refresh other source families. Existing substrate history is retained through candidate publication. Add `--plan-json` to inspect the selected scope before execution.
 
 
 Managed capture placement is resolved from Sinnix's exported filesystem-layout registry. `LYNCHPIN_FILESYSTEM_LAYOUT` selects a registry for standalone deployments; its `activity_lanes` map contains relative paths beneath the configured data root's `activity` home. Explicit source roots retain precedence. Event readers raise `SourceUnavailableError` for missing or inaccessible configured directories; an accessible empty directory yields no events. Shallow inventory uses unknown counts and an availability reason for unavailable sources.
 
+
+Daily-signal manifests record regular keyboard capture identities and collection membership separately. Appends, removals and newly discovered captures invalidate the product; unrelated temporary files do not. An existing empty collection is distinct from a missing root. Older manifests that recorded a directory as a regular-file input require regeneration.
 
 ### Temporal calculations and retained products
 

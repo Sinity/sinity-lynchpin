@@ -1234,3 +1234,53 @@ def test_retired_personal_temporal_schema_preserves_selected_generation(monkeypa
     assert (output.read_bytes(), manifest_path.read_bytes()) == before
     result = materialize_personal_daily_signals(output=output)
     assert result["schema_version"] == PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize("change, expected", [("append", False), ("add", False), ("remove", False), ("temporary", True)])
+def test_daily_signal_manifest_tracks_keylog_files_and_membership(tmp_path, change, expected):
+    from lynchpin.ingest.personal_signals_materialize import _manifest, _personal_daily_signal_input_files
+    from lynchpin.ingest._manifest import write_manifest
+    from lynchpin.materialization import _manifest_declared_input_files, _manifest_inputs_current
+
+    root = tmp_path / "custom-keyboard" / "logs"
+    root.mkdir(parents=True)
+    capture = root / "2026-05-01.jsonl"
+    capture.write_text("{}\n")
+    inputs = _personal_daily_signal_input_files(
+        {"keylog": SimpleNamespace(materialized_paths=(), raw_roots=(root,))}, {"keylog"},
+    )
+    fields = _manifest(dataset="fixture", output=tmp_path / "daily.ndjson", row_count=0,
+                       first_date=None, last_date=None, input_files=inputs)
+    target = tmp_path / "daily.manifest.json"
+    write_manifest(target, fields)
+    manifest = json.loads(target.read_text())
+    paths = _manifest_declared_input_files(manifest)
+    assert paths == (capture,)
+    assert _manifest_inputs_current(manifest, paths)
+    if change == "append":
+        with capture.open("a") as handle:
+            handle.write("{}\n")
+    elif change == "add":
+        (root / "2026-05-02.jsonl").write_text("{}\n")
+    elif change == "remove":
+        capture.unlink()
+    else:
+        (root / "unrelated.tmp").write_text("temporary")
+    assert _manifest_inputs_current(manifest, paths) is expected
+
+
+def test_daily_signal_manifest_distinguishes_empty_and_missing_keylog_collection(tmp_path):
+    from lynchpin.ingest.personal_signals_materialize import _manifest
+    from lynchpin.ingest._manifest import write_manifest
+    from lynchpin.materialization import _manifest_inputs_current
+
+    root = tmp_path / "empty-keyboard"
+    root.mkdir()
+    fields = _manifest(dataset="fixture", output=tmp_path / "daily.ndjson", row_count=0,
+                       first_date=None, last_date=None, input_files=(root,))
+    target = tmp_path / "daily.manifest.json"
+    write_manifest(target, fields)
+    manifest = json.loads(target.read_text())
+    assert _manifest_inputs_current(manifest, ())
+    root.rmdir()
+    assert not _manifest_inputs_current(manifest, ())
