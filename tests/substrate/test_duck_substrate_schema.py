@@ -278,7 +278,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
     """The additive graph-lineage rollout must retain the verified predecessor."""
     from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
 
-    assert SUBSTRATE_VERSION == 50
+    assert SUBSTRATE_VERSION == 51
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
@@ -313,7 +313,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
         ).fetchall() == [("verified", 12, 34, None, None)]
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() == ("50",)
+        ).fetchone() == ("51",)
         migrated_indexes = {
             row[0]
             for row in conn.execute(
@@ -515,7 +515,7 @@ def test_apply_schema_migrates_version_46_work_observation_operation(
     from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
     from lynchpin.substrate.schema import DDL_STATEMENTS
 
-    assert SUBSTRATE_VERSION == 50
+    assert SUBSTRATE_VERSION == 51
     # Reconstruct the pre-47 table shape from the live DDL so the fixture cannot
     # drift away from the real column list.
     create = next(
@@ -555,7 +555,7 @@ def test_apply_schema_migrates_version_46_work_observation_operation(
         ).fetchall() == [("agentctl:9", None)]
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() == ("50",)
+        ).fetchone() == ("51",)
 
 
 def test_migrates_47_dirty_unknown_with_existing_indexes(tmp_path):
@@ -611,4 +611,47 @@ def test_apply_schema_migrates_version_48_adds_work_branch(tmp_path: Path) -> No
         apply_schema(conn)
 
         assert conn.execute("SELECT source_id, git_branch FROM work_observation").fetchall() == [("x:1", None)]
-        assert conn.execute("SELECT value FROM substrate_meta WHERE key = 'version'").fetchone() == ("50",)
+        assert conn.execute("SELECT value FROM substrate_meta WHERE key = 'version'").fetchone() == ("51",)
+
+
+@pytest.mark.parametrize("fail_second", [False, True])
+def test_machine_columnar_migration_preserves_old_partitions_atomically(tmp_path, fail_second):
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine_lineage import MACHINE_KEYS
+    from lynchpin.substrate.schema import DDL_STATEMENTS
+
+    with connect(tmp_path / "machine-migration.duckdb") as conn:
+        apply_schema(conn)
+        tables = ["machine_metric_sample", "machine_service_state"]
+        for table in tables:
+            conn.execute(f"DROP TABLE {table}")
+            ddl = next(stmt for stmt in DDL_STATEMENTS if f"CREATE TABLE {table} (" in stmt)
+            head, tail = ddl.rsplit(")", 1)
+            conn.execute(head + f", PRIMARY KEY ({', '.join(MACHINE_KEYS[table])})" + ")" + tail)
+        conn.execute("INSERT INTO machine_metric_sample (observed_at, host, source, source_schema_version, refresh_id) VALUES (now(), 'fixture', 'fixture', 1, 'parent')")
+        conn.execute("INSERT INTO machine_service_state (observed_at, host, scope, unit, cpu_usage_nsec, refresh_id) VALUES (now(), 'fixture', 'user', 'fixture.service', 9223372036854775807, 'parent')")
+        before = {table: conn.execute(f"SELECT * FROM {table}").fetchall() for table in tables}
+        conn.execute("INSERT INTO work_observation (source, source_id, project, work_kind, started_at, status, host, git_dirty, refresh_id) VALUES ('agentctl', 'fixture', 'fixture', 'fixture', now(), 'succeeded', 'fixture', true, 'parent')")
+        conn.execute("UPDATE substrate_meta SET value='50' WHERE key='version'")
+        class FailingMigration:
+            def __init__(self, inner):
+                self.inner = inner
+                self.copies = 0
+            def execute(self, sql, *args):
+                if sql.startswith("INSERT INTO machine_migration_"):
+                    self.copies += 1
+                    if self.copies == 2:
+                        raise RuntimeError("injected migration failure")
+                return self.inner.execute(sql, *args)
+        if fail_second:
+            with pytest.raises(RuntimeError, match="injected migration failure"):
+                apply_schema(FailingMigration(conn))
+            assert conn.execute("SELECT value FROM substrate_meta WHERE key='version'").fetchone() == ("50",)
+            assert conn.execute("SELECT COUNT(*) FROM duckdb_constraints() WHERE table_name IN ('machine_metric_sample', 'machine_service_state') AND constraint_type='PRIMARY KEY'").fetchone()[0] == 2
+        else:
+            apply_schema(conn)
+            assert conn.execute("SELECT value FROM substrate_meta WHERE key='version'").fetchone() == ("51",)
+            assert conn.execute("SELECT COUNT(*) FROM duckdb_constraints() WHERE table_name IN ('machine_metric_sample', 'machine_service_state') AND constraint_type='PRIMARY KEY'").fetchone()[0] == 0
+        for table in tables:
+            assert conn.execute(f"SELECT * FROM {table}").fetchall() == before[table]
+        assert conn.execute("SELECT git_dirty FROM work_observation WHERE source_id='fixture'").fetchone() == (True,)

@@ -480,6 +480,14 @@ def _fallback_order_expr(conn: Any, table: str) -> str:
 #: at a refresh is resolved through its predecessors (and, for personal
 #: products, tombstones) by the typed readers.
 LINEAGE_PARTITION_TABLES: dict[str, str] = {
+    "machine_cgroup_memory_sample": "substrate_product_lineage:machine_cgroup_memory_sample",
+    "machine_gpu_sample": "substrate_product_lineage:machine_gpu_sample",
+    "machine_kill_event": "substrate_product_lineage:machine_kill_event",
+    "machine_metric_sample": "substrate_product_lineage:machine_metric_sample",
+    "machine_network_sample": "substrate_product_lineage:machine_network_sample",
+    "machine_process_io_delta_sample": "substrate_product_lineage:machine_process_io_delta_sample",
+    "machine_process_memory_sample": "substrate_product_lineage:machine_process_memory_sample",
+    "machine_service_state": "substrate_product_lineage:machine_service_state",
     "personal_daily_signal": "substrate_product_lineage:personal_daily_signals",
     "title_classification": "substrate_product_lineage:title_metadata",
     "activity_content_day": "substrate_product_lineage:activity_content_day",

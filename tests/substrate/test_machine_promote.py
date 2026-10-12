@@ -1480,7 +1480,8 @@ def test_lake_memory_failure_propagates_instead_of_requesting_full_scan(tmp_path
 
 
 @pytest.mark.parametrize("src_table", ["service_state", "cgroup_memory_sample"])
-def test_unindexed_machine_tables_reuse_history(tmp_path, monkeypatch, src_table):
+@pytest.mark.parametrize("new_identity", [False, True])
+def test_unindexed_machine_tables_reuse_history(tmp_path, monkeypatch, src_table, new_identity):
     import sqlite3
     from types import SimpleNamespace
 
@@ -1531,8 +1532,9 @@ def test_unindexed_machine_tables_reuse_history(tmp_path, monkeypatch, src_table
     with connect(tmp_path / "target.duckdb") as real:
         apply_schema(real)
         conn = _CountingConn(real)
-        for start, end in [(date(2026, 5, 1), date(2026, 5, 3)),
-                           (date(2026, 5, 2), date(2026, 5, 4))]:
+        for index, (start, end) in enumerate([(date(2026, 5, 1), date(2026, 5, 3)),
+                           (date(2026, 5, 2), date(2026, 5, 4))]):
+            refresh = "next'fixture" if new_identity and index else "fixture"
             if reads or counts:
                 # A late arrival on the watermark day must survive the tail reread.
                 insert("2026-05-03", 20)
@@ -1540,12 +1542,163 @@ def test_unindexed_machine_tables_reuse_history(tmp_path, monkeypatch, src_table
                 real.execute("DETACH machine_src")
                 conn.statements.clear()
             module._promote_machine_fast(
-                conn, refresh_id="fixture", sqlite_path=db, window_start=start,
+                conn, refresh_id=refresh, sqlite_path=db, window_start=start,
                 window_end=end, counts=counts,
                 selection=SourceSelection.from_collection([source]),
             )
             assert counts[target] == (3 if end.day == 3 else 4)
         assert reads == [date(2026, 5, 3)]
         assert counts[target] == 4
-        assert real.execute(f"SELECT memory_current_bytes FROM {target} ORDER BY observed_at, memory_current_bytes").fetchall() == [(10,), (10,), (20,), (30,)]
+        from lynchpin.substrate.machine_lineage import machine_relation
+        from lynchpin.substrate.snapshots import best_materialized_refresh_id
+
+        relation = machine_relation(real, target, refresh)
+        assert real.execute(f"SELECT memory_current_bytes FROM {relation} ORDER BY observed_at, memory_current_bytes").fetchall() == [(10,), (10,), (20,), (30,)]
+        assert best_materialized_refresh_id(real, target, caller="fixture") == refresh
+        if new_identity:
+            assert real.execute(f"SELECT COUNT(*) FROM {target} WHERE refresh_id = ?", [refresh]).fetchone()[0] == 3
+            assert real.execute(f"SELECT COUNT(*) FROM {target} WHERE refresh_id = 'fixture'").fetchone()[0] == 3
+            assert real.execute(f"SELECT DISTINCT refresh_id FROM {relation}").fetchall() == [(refresh,)]
         assert not any(f"machine_src.{src_table}" in sql for sql in conn.statements)
+
+
+@pytest.mark.parametrize("table", [
+    "machine_metric_sample", "machine_service_state", "machine_gpu_sample",
+    "machine_network_sample", "machine_process_io_delta_sample",
+    "machine_process_memory_sample", "machine_cgroup_memory_sample", "machine_kill_event",
+])
+def test_machine_lineage_typed_readers_resolve_new_identity(tmp_path, table):
+    from lynchpin.substrate import machine
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine_lineage import record_machine_partition, machine_relation
+
+    readers = {
+        "machine_metric_sample": machine.load_machine_metric_samples,
+        "machine_service_state": machine.load_machine_service_states,
+        "machine_gpu_sample": machine.load_machine_gpu_samples,
+        "machine_network_sample": machine.load_machine_network_samples,
+        "machine_process_io_delta_sample": machine.load_machine_process_io_delta_samples,
+        "machine_process_memory_sample": machine.load_machine_process_memory_samples,
+        "machine_cgroup_memory_sample": machine.load_machine_cgroup_memory_samples,
+        "machine_kill_event": machine.load_machine_kill_events,
+    }
+    with connect(tmp_path / "lineage.duckdb") as conn:
+        apply_schema(conn)
+        columns = conn.execute(f"DESCRIBE {table}").fetchall()
+        def insert(refresh, day, value):
+            values = []
+            for name, kind, *_ in columns:
+                if name == "observed_at":
+                    v = datetime(2026, 5, day, 10, tzinfo=timezone.utc)
+                elif name == "refresh_id":
+                    v = refresh
+                elif name == "source_row_id":
+                    v = day
+                elif kind in {"TIMESTAMP", "TIMESTAMP WITH TIME ZONE"}:
+                    v = datetime(2026, 5, day, 10, tzinfo=timezone.utc)
+                elif kind == "JSON":
+                    v = "{}"
+                elif kind.endswith("[]"):
+                    v = []
+                elif kind == "VARCHAR":
+                    v = "fixture"
+                elif kind == "BOOLEAN":
+                    v = False
+                else:
+                    v = value
+                values.append(v)
+            conn.execute(f"INSERT INTO {table} VALUES ({', '.join('?' for _ in values)})", values)
+        for day in [1, 2, 3]:
+            insert("parent", day, 10)
+        record_machine_partition(conn, table=table, refresh_id="parent", window_start=date(2026, 5, 1), window_end=date(2026, 5, 3))
+        for day in [3, 4]:
+            insert("child", day, 20)
+        record_machine_partition(conn, table=table, refresh_id="child", predecessor="parent", replacement_start=date(2026, 5, 3), window_start=date(2026, 5, 2), window_end=date(2026, 5, 4))
+        records = readers[table](conn, refresh_id="child")
+        assert [record.observed_at.day for record in records] == [2, 3, 4]
+        assert len(readers[table](conn, refresh_id="parent")) == 3
+        if table == "machine_metric_sample":
+            daily = machine.load_machine_metric_daily(conn, refresh_id="child")
+            assert [row[0].day for row in daily] == [2, 3, 4]
+        if table == "machine_service_state":
+            summary = machine.load_machine_service_state_summary(conn, refresh_id="child")
+            assert summary[0][3] == 3
+        insert("grandchild", 4, 30)
+        record_machine_partition(conn, table=table, refresh_id="grandchild", predecessor="child", replacement_start=date(2026, 5, 4), window_start=date(2026, 5, 2), window_end=date(2026, 5, 4))
+        assert [record.observed_at.day for record in readers[table](conn, refresh_id="grandchild")] == [2, 3, 4]
+        relation = machine_relation(conn, table, "grandchild")
+        assert conn.execute(f"SELECT DISTINCT refresh_id FROM {relation}").fetchall() == [("grandchild",)]
+
+
+def test_machine_predecessor_rejects_unscanned_prefix(tmp_path):
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine_lineage import machine_predecessor
+    from lynchpin.analysis.active.substrate_promote_status import record_source_status
+
+    with connect(tmp_path / "prefix.duckdb") as conn:
+        apply_schema(conn)
+        record_source_status(conn, refresh_id="parent", source="machine", status="ok", reason=None, row_count=3,
+                             window_start=date(2026, 5, 2), window_end=date(2026, 5, 4))
+        assert machine_predecessor(conn, table="machine_metric_sample", source="machine", refresh_id="child",
+                                   window_start=date(2026, 5, 1), window_end=date(2026, 5, 5)) is None
+
+
+@pytest.mark.parametrize("append", [False, True])
+def test_columnar_machine_promoter_rejects_duplicates_without_losing_previous_rows(tmp_path, append):
+    import duckdb
+    from lynchpin.sources.machine import MachineServiceState
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import promote_machine_service_states
+
+    state = MachineServiceState(
+        observed_at=datetime(2026, 5, 1, 10, tzinfo=timezone.utc), host="fixture", boot_id="boot",
+        unit="fixture.service", scope="user", active_state="active", sub_state="running",
+        main_pid=1, control_group="/fixture", memory_current_bytes=17,
+        cpu_usage_nsec=None, io_read_bytes=1, io_write_bytes=1,
+    )
+    with connect(tmp_path / "duplicates.duckdb") as conn:
+        apply_schema(conn)
+        promote_machine_service_states(conn, refresh_id="fixture", states=[state])
+        with pytest.raises(duckdb.ConstraintException, match="duplicate machine fact key"):
+            promote_machine_service_states(conn, refresh_id="fixture", states=[state, state], delete_existing=not append)
+        assert conn.execute("SELECT memory_current_bytes, cpu_usage_nsec FROM machine_service_state").fetchall() == [(17, None)]
+
+
+def test_machine_columnar_bulk_load_under_small_memory_budget(tmp_path):
+    import duckdb
+    from lynchpin.substrate.connection import apply_schema
+    from lynchpin.substrate.machine_lineage import validate_machine_keys
+
+    db = tmp_path / "bulk.duckdb"
+    with duckdb.connect(str(db)) as conn:
+        apply_schema(conn)
+        conn.execute("SET memory_limit='64MiB'")
+        conn.execute("SET threads=1")
+        conn.execute("SET preserve_insertion_order=false")
+        conn.execute("INSERT INTO machine_service_state (observed_at, host, unit, scope, refresh_id) "
+                     "SELECT TIMESTAMPTZ '2026-05-01T00:00:00+00:00', 'fixture', md5(i::VARCHAR), 'user', 'bulk' FROM range(500000) t(i)")
+        validate_machine_keys(conn, "machine_service_state", "bulk", table="machine_service_state")
+        assert conn.execute("SELECT COUNT(*) FROM machine_service_state").fetchone()[0] == 500000
+        assert conn.execute("SELECT COUNT(*) FROM duckdb_indexes() WHERE table_name = 'machine_service_state'").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM duckdb_constraints() WHERE table_name = 'machine_service_state' AND constraint_type='PRIMARY KEY'").fetchone()[0] == 0
+    with duckdb.connect(str(db), read_only=True) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM machine_service_state").fetchone()[0] == 500000
+
+
+
+def test_machine_readers_support_retained_pre_partition_generation(tmp_path):
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_service_states
+
+    with connect(tmp_path / "retained.duckdb") as conn:
+        apply_schema(conn)
+        conn.execute("CREATE TABLE retained_lineage AS SELECT * EXCLUDE (window_start, window_end) FROM substrate_product_lineage")
+        conn.execute("DROP TABLE substrate_product_lineage")
+        conn.execute("ALTER TABLE retained_lineage RENAME TO substrate_product_lineage")
+        conn.execute("UPDATE substrate_meta SET value='50' WHERE key='version'")
+        conn.execute("INSERT INTO machine_service_state (observed_at, host, scope, unit, cpu_usage_nsec, refresh_id) "
+                     "VALUES (TIMESTAMPTZ '2026-05-01T00:00:00+00:00', 'fixture', 'user', 'fixture.service', NULL, 'parent')")
+        records = load_machine_service_states(conn, refresh_id="parent")
+        assert len(records) == 1
+        assert records[0].cpu_usage_nsec is None
+        assert conn.execute("SELECT value FROM substrate_meta WHERE key='version'").fetchone() == ("50",)

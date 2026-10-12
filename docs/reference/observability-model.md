@@ -54,15 +54,31 @@ Machine-facing MCP actions expose status, metrics, pressure, services,
 workloads, observations, benchmark runs, diagnostics, and context windows over
 this model.
 
-Machine promotion reuses existing history for every SQLite table when a
-watermark exists under the same refresh identity. It rereads the watermark's UTC day and later rows in bounded
-batches, preserving earlier facts and pruning only dates outside the requested
-window. Service-state and cgroup-memory sources may still require a SQLite
-scan because they lack timestamp indexes; this does not require rebuilding the
-historical DuckDB target. A first population or explicit full rebuild still
-reads the complete requested history and remains subject to resource limits.
+Machine promotion keeps earlier fact partitions when publishing a new generation.
+It reads the previous watermark's UTC day and later source rows in bounded
+batches. Typed readers and machine aggregates resolve the current partition
+and its predecessors under one logical refresh identity, excluding replaced
+dates and clipping retained history to the requested window. Raw SQL tables
+contain physical partitions; their rows alone are not a complete generation.
 
-Normal generation publication assigns a new refresh identity. Machine facts
-currently have no cross-generation inheritance route, so this path still
-requires a complete population. Same-identity tail reuse does not establish
-that nightly generation publication is bounded to recent source rows.
+Service-state and cgroup-memory sources may still require a SQLite scan because
+they lack timestamp indexes. That scan does not rebuild or index the historical
+DuckDB facts. Explicit full rebuilds and uncovered historical prefixes require
+a complete population and remain subject to resource limits. An incomplete
+Parquet prefix cannot establish a safe tail watermark.
+
+Machine fact tables use columnar storage without ART primary-key or secondary
+indexes. Their full historical indexes cannot be evicted by DuckDB's buffer
+manager, so they can prevent a bounded initial population. Promoters instead
+validate non-null, unique fact keys through spillable SQL before accepting a
+partition. A failed append rolls back and a failed staged replacement preserves
+the earlier partition. The additive migration copies existing machine rows
+exactly inside a transaction; it does not change owner-native captures.
+See [DuckDB's indexing guide](https://duckdb.org/docs/guides/performance/indexing).
+
+For explicit typed-fact restoration, run the declared `repair_machine_facts`
+operation with `--start`, `--end` and, for an initial repair, `--full`.
+It stops the existing `materialize-machine` DAG after source-selected
+promotion. It preserves the other retained products and does not run the
+Polylogue archive campaign. Publication records its separate machine refresh;
+the evidence graph retains its own refresh and coverage until rebuilt.

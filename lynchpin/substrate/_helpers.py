@@ -45,6 +45,7 @@ def promote_rows(
     refresh_id_position: RefreshIdPosition = "last",
     delete_existing: bool = True,
     wrap_transaction: bool = True,
+    validator: Callable[[Any, str, str], None] | None = None,
 ) -> int:
     """INSERT rows into ``table``, idempotent on refresh_id.
 
@@ -77,6 +78,10 @@ def promote_rows(
     (see ``docs/`` history: this was an observed real-world data-loss mode on
     machine telemetry tables, where the daily promotion job intermittently died
     mid-run under host memory pressure).
+
+    ``validator`` may enforce domain keys on the completed write table before
+    committing. A rejected append rolls back; a rejected replacement leaves
+    the previous target partition untouched.
 
     Returns the number of rows inserted (zero if ``rows`` was empty).
     """
@@ -190,6 +195,8 @@ def promote_rows(
             if batch_size is not None and len(buffer) >= batch_size:
                 flush()
         flush()
+        if validator is not None:
+            validator(conn, write_table, refresh_id)
         if wrap_transaction:
             conn.execute("COMMIT")
     except Exception:

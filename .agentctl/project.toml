@@ -389,3 +389,14 @@ exec = ["just", "verify-machine-promotion"]
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"
+
+[operations.repair_machine_facts]
+description = "Restore machine typed facts through the existing source-selected promotion route"
+exec = ["python", "-m", "lynchpin.analysis", "materialize-machine", "--up-to", "machine_analysis_substrate_promote"]
+arguments = "required"
+pool = "bulk"
+result = "exit"
+cache = "none"
+scratch = "nvme"
+timeout_seconds = 7200
+admission = { memory_mib = 5120 }

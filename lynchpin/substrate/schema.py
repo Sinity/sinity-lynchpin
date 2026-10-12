@@ -514,6 +514,8 @@ DDL_STATEMENTS: tuple[str, ...] = (
         materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         replacement_end         DATE,
         logical_row_count       BIGINT,
+        window_start            DATE,
+        window_end              DATE,
         PRIMARY KEY (product, refresh_id)
     )
     """,
@@ -778,13 +780,9 @@ DDL_STATEMENTS: tuple[str, ...] = (
         vmstat_allocstall_movable         BIGINT,
         vmstat_oom_kill                   BIGINT,
         refresh_id              VARCHAR NOT NULL,
-        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (observed_at, host, source, refresh_id)
+        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
-    "CREATE INDEX machine_metric_sample_observed_at ON machine_metric_sample(observed_at)",
-    "CREATE INDEX machine_metric_sample_host ON machine_metric_sample(host)",
-    "CREATE INDEX machine_metric_sample_refresh_id ON machine_metric_sample(refresh_id)",
     # ────────────────────────────────────────────────────────────────────
     # machine_gpu_sample — 1 Hz GPU telemetry promoted from Sinnix capture
     # ────────────────────────────────────────────────────────────────────
@@ -806,13 +804,9 @@ DDL_STATEMENTS: tuple[str, ...] = (
         gpu_pcie_gen            INTEGER,
         gpu_pcie_width          INTEGER,
         refresh_id              VARCHAR NOT NULL,
-        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (observed_at, host, source, refresh_id)
+        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
-    "CREATE INDEX machine_gpu_sample_observed_at ON machine_gpu_sample(observed_at)",
-    "CREATE INDEX machine_gpu_sample_host ON machine_gpu_sample(host)",
-    "CREATE INDEX machine_gpu_sample_refresh_id ON machine_gpu_sample(refresh_id)",
     # ────────────────────────────────────────────────────────────────────
     # machine_service_state — sampled systemd/user-unit state
     # ────────────────────────────────────────────────────────────────────
@@ -841,13 +835,9 @@ DDL_STATEMENTS: tuple[str, ...] = (
         io_read_bytes           BIGINT,
         io_write_bytes          BIGINT,
         refresh_id              VARCHAR NOT NULL,
-        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (observed_at, host, scope, unit, refresh_id)
+        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
-    "CREATE INDEX machine_service_state_unit_time ON machine_service_state(unit, observed_at)",
-    "CREATE INDEX machine_service_state_host_time ON machine_service_state(host, observed_at)",
-    "CREATE INDEX machine_service_state_refresh_id ON machine_service_state(refresh_id)",
     # ────────────────────────────────────────────────────────────────────
     # machine_network_sample — integrated network probes in machine telemetry
     # ────────────────────────────────────────────────────────────────────
@@ -869,13 +859,9 @@ DDL_STATEMENTS: tuple[str, ...] = (
         conntrack               JSON NOT NULL DEFAULT '{}',
         gap_codes               VARCHAR[] NOT NULL DEFAULT [],
         refresh_id              VARCHAR NOT NULL,
-        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (observed_at, host, interface, refresh_id)
+        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
-    "CREATE INDEX machine_network_sample_observed_at ON machine_network_sample(observed_at)",
-    "CREATE INDEX machine_network_sample_host_time ON machine_network_sample(host, observed_at)",
-    "CREATE INDEX machine_network_sample_refresh_id ON machine_network_sample(refresh_id)",
     # ────────────────────────────────────────────────────────────────────
     # machine_process_io_delta_sample — bounded per-process I/O deltas
     # ────────────────────────────────────────────────────────────────────
@@ -904,14 +890,9 @@ DDL_STATEMENTS: tuple[str, ...] = (
         total_bytes_delta           BIGINT NOT NULL,
         total_syscalls_delta        BIGINT NOT NULL,
         refresh_id                  VARCHAR NOT NULL,
-        materialized_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (observed_at, host, pid, process_start_time_ticks, refresh_id)
+        materialized_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
-    "CREATE INDEX machine_process_io_delta_sample_observed_at ON machine_process_io_delta_sample(observed_at)",
-    "CREATE INDEX machine_process_io_delta_sample_unit_time ON machine_process_io_delta_sample(unit, observed_at)",
-    "CREATE INDEX machine_process_io_delta_sample_comm_time ON machine_process_io_delta_sample(comm, observed_at)",
-    "CREATE INDEX machine_process_io_delta_sample_refresh_id ON machine_process_io_delta_sample(refresh_id)",
     # ────────────────────────────────────────────────────────────────────
     # machine_process_memory_sample — bounded per-process PSS/private memory
     # ────────────────────────────────────────────────────────────────────
@@ -940,14 +921,9 @@ DDL_STATEMENTS: tuple[str, ...] = (
         shared_dirty_kb             BIGINT NOT NULL,
         swap_kb                     BIGINT NOT NULL,
         refresh_id                  VARCHAR NOT NULL,
-        materialized_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (observed_at, host, pid, process_start_time_ticks, refresh_id)
+        materialized_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
-    "CREATE INDEX machine_process_memory_sample_observed_at ON machine_process_memory_sample(observed_at)",
-    "CREATE INDEX machine_process_memory_sample_unit_time ON machine_process_memory_sample(unit, observed_at)",
-    "CREATE INDEX machine_process_memory_sample_comm_time ON machine_process_memory_sample(comm, observed_at)",
-    "CREATE INDEX machine_process_memory_sample_refresh_id ON machine_process_memory_sample(refresh_id)",
     # ────────────────────────────────────────────────────────────────────
     # machine_cgroup_memory_sample — aggregate workload slice memory
     # ────────────────────────────────────────────────────────────────────
@@ -986,13 +962,9 @@ DDL_STATEMENTS: tuple[str, ...] = (
         memory_events_oom           BIGINT,
         memory_events_oom_kill      BIGINT,
         refresh_id                  VARCHAR NOT NULL,
-        materialized_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (observed_at, host, label, refresh_id)
+        materialized_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
-    "CREATE INDEX machine_cgroup_memory_sample_label_time ON machine_cgroup_memory_sample(label, observed_at)",
-    "CREATE INDEX machine_cgroup_memory_sample_scope_time ON machine_cgroup_memory_sample(scope, observed_at)",
-    "CREATE INDEX machine_cgroup_memory_sample_refresh_id ON machine_cgroup_memory_sample(refresh_id)",
     # ────────────────────────────────────────────────────────────────────
     # machine_kill_event — earlyoom / kernel-oom / memcg-oom / systemd-oomd
     # kill events observed via journal (sinnix-fjq, schema v5)
@@ -1020,13 +992,9 @@ DDL_STATEMENTS: tuple[str, ...] = (
         source_row_id           BIGINT NOT NULL,
         journal_cursor          VARCHAR,
         refresh_id              VARCHAR NOT NULL,
-        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (host, source_row_id, refresh_id)
+        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
-    "CREATE INDEX machine_kill_event_observed_at ON machine_kill_event(observed_at)",
-    "CREATE INDEX machine_kill_event_killer_time ON machine_kill_event(killer, observed_at)",
-    "CREATE INDEX machine_kill_event_refresh_id ON machine_kill_event(refresh_id)",
     # ────────────────────────────────────────────────────────────────────
     # machine_experiment_run — immutable benchmark/stress-run manifests
     # ────────────────────────────────────────────────────────────────────

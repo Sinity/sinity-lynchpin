@@ -120,8 +120,14 @@ def _software_revision(conn: Any, *, at: datetime, host: str) -> SoftwareRevisio
 
 def _nearest_metric_sample(conn: Any, *, at: datetime, host: str) -> tuple[Any, ...] | None:
     """Return the metric_sample row closest in time to ``at`` (either side)."""
+    from lynchpin.substrate.machine_lineage import machine_relation
+    from lynchpin.substrate.snapshots import best_materialized_refresh_id
+
+    refresh_id = best_materialized_refresh_id(conn, "machine_metric_sample", caller="machine-context")
+    if refresh_id is None:
+        return None
     return conn.execute(
-        """
+        f"""
         SELECT
             observed_at, boot_id, gpu_pcie_gen, gpu_pcie_width, gpu_pstate,
             cpu_package_w,
@@ -129,12 +135,12 @@ def _nearest_metric_sample(conn: Any, *, at: datetime, host: str) -> tuple[Any, 
             io_psi_some_avg60, io_psi_full_avg60,
             memory_psi_some_avg60, memory_psi_full_avg60,
             abs(epoch(observed_at) - epoch(CAST(? AS TIMESTAMPTZ))) AS age_s
-        FROM machine_metric_sample
-        WHERE host = ?
+        FROM {machine_relation(conn, "machine_metric_sample", refresh_id)}
+        WHERE host = ? AND refresh_id = ?
         ORDER BY age_s ASC
         LIMIT 1
         """,
-        [at, host],
+        [at, host, refresh_id],
     ).fetchone()
 
 

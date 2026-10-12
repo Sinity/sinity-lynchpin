@@ -403,6 +403,14 @@ def _maybe_bootstrap_from_lake(
     if dt_start > dt_end:
         return
 
+    if lake_min > window_start.isoformat():
+        return  # A tail watermark cannot recover a missing historical prefix.
+    day = window_start
+    while day.isoformat() <= dt_end:
+        if not any((lake_root / src_table / f"dt={day.isoformat()}").glob("*.parquet")):
+            return  # Never skip a hole merely because a later partition exists.
+        day += timedelta(days=1)
+
     existing = conn.execute(
         f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?", [refresh_id]
     ).fetchone()[0]
@@ -423,6 +431,9 @@ def _maybe_bootstrap_from_lake(
             f"WHERE dt >= CAST(? AS DATE) AND dt <= CAST(? AS DATE)",
             [refresh_id, glob, dt_start, dt_end],
         )
+        from lynchpin.substrate.machine_lineage import validate_machine_keys
+
+        validate_machine_keys(conn, staging_table, refresh_id, table=dst_table)
         conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [refresh_id])
         conn.execute(
             f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
@@ -612,12 +623,13 @@ def _promote_machine_fast(
     statement (no filter pushdown into SQLite), so statement count is the read
     cost driver and window width is free.
 
-    All tables check for an existing watermark under this ``refresh_id`` and,
-    when one is found and ``full_repromote`` is not set, take the incremental
-    append path instead. This reuses history only within the same logical
-    refresh. Callers that assign a new generation identity cannot yet inherit
-    machine history through this route and require a complete population.
+    All tables reuse the requested refresh's watermark or inherit a ready
+    predecessor with a covering source window. Only the UTC tail is stored
+    under a new generation; typed readers resolve its retained predecessor
+    partitions. Explicit full rebuilds and uncovered prefixes use full scans.
     """
+    from lynchpin.substrate.machine_lineage import machine_predecessor, machine_relation, record_machine_partition, validate_machine_keys
+
     t_total = time.monotonic()
     conn.execute("INSTALL SQLITE")
     conn.execute("LOAD SQLITE")
@@ -646,31 +658,40 @@ def _promote_machine_fast(
             continue
         def promote_table() -> None:
             t0 = time.monotonic()
-            if lake_root is not None and src_table not in _NO_LAKE_BOOTSTRAP_TABLES:
-                _maybe_bootstrap_from_lake(
-                    conn,
-                    src_table=src_table,
-                    dst_table=dst_table,
-                    refresh_id=refresh_id,
-                    lake_root=lake_root,
-                    window_start=window_start,
-                    window_end=window_end,
-                    columns=projections[src_table][0],
-                    overrides=projections[src_table][1],
-                )
             watermark = None
+            predecessor = None
             if not full_repromote:
+                current_rows = conn.execute(
+                    f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?", [refresh_id]
+                ).fetchone()[0]
+                existing_lineage = conn.execute(
+                    "SELECT predecessor_refresh_id, window_start FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?",
+                    [dst_table, refresh_id],
+                ).fetchone()
+                if not current_rows and existing_lineage is None:
+                    predecessor = machine_predecessor(
+                        conn, table=dst_table, source=source, refresh_id=refresh_id,
+                        window_start=window_start, window_end=window_end,
+                    )
+                if predecessor is None and lake_root is not None and src_table not in _NO_LAKE_BOOTSTRAP_TABLES:
+                    _maybe_bootstrap_from_lake(
+                        conn, src_table=src_table, dst_table=dst_table, refresh_id=refresh_id,
+                        lake_root=lake_root, window_start=window_start, window_end=window_end,
+                        columns=projections[src_table][0], overrides=projections[src_table][1],
+                    )
+                relation = machine_relation(conn, dst_table, predecessor or refresh_id)
+                covers_prefix = existing_lineage is None or existing_lineage[1] is None or existing_lineage[1] <= window_start
                 watermark = conn.execute(
-                    f"SELECT MAX(observed_at) FROM {dst_table} "
+                    f"SELECT MAX(observed_at) FROM {relation} "
                     f"WHERE refresh_id = ? "
                     f"AND observed_at >= CAST(? AS TIMESTAMPTZ) "
                     f"AND observed_at < CAST(? AS TIMESTAMPTZ)",
                     [
-                        refresh_id,
+                        predecessor or refresh_id,
                         _utc_midnight(window_start),
                         _utc_midnight(window_end + timedelta(days=1)),
                     ],
-                ).fetchone()[0]
+                ).fetchone()[0] if covers_prefix else None
             if watermark is not None:
                 try:
                     row_count = _promote_machine_table_incremental(
@@ -682,11 +703,12 @@ def _promote_machine_fast(
                         window_start=window_start,
                         window_end=window_end,
                         watermark=watermark,
+                        predecessor=predecessor,
                     )
                 except Exception as exc:
                     if _is_memory_exhaustion(exc):
                         raise
-                    if _is_fatal_duckdb_error(exc):
+                    if _is_fatal_duckdb_error(exc) or predecessor is not None or existing_lineage is not None:
                         raise
                     log.warning(
                         "substrate_promote: %s incremental promotion failed, "
@@ -717,9 +739,9 @@ def _promote_machine_fast(
                     )
                     return
 
-            # Stage a complete replacement outside the indexed target. The
-            # target therefore never indexes a synthetic refresh_id or updates
-            # a primary-key value during the final swap.
+            # Validate a complete private replacement before changing the
+            # target partition. The outer generation publishes only after
+            # every selected source has passed.
             staging_table = _staging_table_name()
             try:
                 columns, overrides = projections[src_table]
@@ -736,10 +758,10 @@ def _promote_machine_fast(
                     f"FROM machine_src.{src_table} {date_filter}",
                     [refresh_id, *date_params],
                 )
+                validate_machine_keys(conn, staging_table, refresh_id, table=dst_table)
                 gc.collect()
-                # DuckDB's primary-key index does not reflect an in-transaction
-                # DELETE, so target delete and insert remain separate autocommit
-                # statements. The temporary table eliminates the indexed UPDATE.
+                # These writes remain private to the candidate generation;
+                # its atomic publication preserves the earlier serving store.
                 conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [refresh_id])
                 conn.execute(
                     f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
@@ -749,6 +771,11 @@ def _promote_machine_fast(
                     f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?",
                     [refresh_id],
                 ).fetchone()[0]
+                record_machine_partition(
+                    conn, table=dst_table, refresh_id=refresh_id,
+                    window_start=window_start, window_end=window_end,
+                    logical_row_count=row_count,
+                )
                 counts[dst_table] = row_count
                 log.info(
                     "substrate_promote: %s ← machine_src.%s: %s rows in %.1fs",
@@ -803,6 +830,7 @@ def _promote_machine_table_incremental(
     window_start: date,
     window_end: date,
     watermark: datetime,
+    predecessor: str | None = None,
 ) -> int:
     """Append only the rows newer than ``watermark``, via the bounded Python reader.
 
@@ -831,10 +859,33 @@ def _promote_machine_table_incremental(
     )
     kwargs = {sample_kwarg: reader(start=tail_start, end=window_end, path=sqlite_path)}
     promoter(conn, refresh_id=refresh_id, delete_existing=False, **kwargs)
-    return int(conn.execute(
-        f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?",
-        [refresh_id],
+    from lynchpin.substrate.machine_lineage import MACHINE_TABLES, machine_relation, record_machine_partition
+
+    relation = dst_table
+    if dst_table in MACHINE_TABLES:
+        existing = conn.execute(
+            "SELECT predecessor_refresh_id, replacement_start FROM substrate_product_lineage "
+            "WHERE product = ? AND refresh_id = ?", [dst_table, refresh_id],
+        ).fetchone()
+        if predecessor is None and existing is not None:
+            predecessor = existing[0]
+            if existing[1] is not None:
+                tail_start = min(tail_start, existing[1])
+        record_machine_partition(
+            conn, table=dst_table, refresh_id=refresh_id,
+            window_start=window_start, window_end=window_end,
+            predecessor=predecessor, replacement_start=tail_start if predecessor else None,
+        )
+        relation = machine_relation(conn, dst_table, refresh_id)
+    count = int(conn.execute(
+        f"SELECT COUNT(*) FROM {relation} WHERE refresh_id = ?", [refresh_id],
     ).fetchone()[0])
+    if dst_table in MACHINE_TABLES:
+        conn.execute(
+            "UPDATE substrate_product_lineage SET logical_row_count = ? WHERE product = ? AND refresh_id = ?",
+            [count, dst_table, refresh_id],
+        )
+    return count
 
 
 def _source_window_filter(window_start: date, window_end: date) -> tuple[str, list[str]]:

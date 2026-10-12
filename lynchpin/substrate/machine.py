@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from functools import partial
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from lynchpin.substrate._filters import add_date_filter, add_in_filter, build_where
 from lynchpin.substrate._helpers import promote_rows
+from lynchpin.substrate.machine_lineage import machine_relation, validate_machine_keys
 
 if TYPE_CHECKING:
     import duckdb
@@ -88,7 +90,7 @@ def load_machine_metric_samples(
             vmstat_allocstall_normal, vmstat_allocstall_movable,
             vmstat_oom_kill,
             memory_psi_some_avg10, memory_psi_full_avg10
-        FROM machine_metric_sample
+        FROM {machine_relation(conn, 'machine_metric_sample', refresh_id)}
         {where}
         ORDER BY observed_at
         """,
@@ -193,7 +195,7 @@ def load_machine_gpu_samples(
             gpu_power_w, gpu_power_limit_w, gpu_temp_c, gpu_fan_pct,
             gpu_util_pct, gpu_mem_util_pct, gpu_clock_mhz, gpu_mem_clock_mhz,
             gpu_pstate, gpu_pcie_gen, gpu_pcie_width
-        FROM machine_gpu_sample
+        FROM {machine_relation(conn, 'machine_gpu_sample', refresh_id)}
         {where}
         ORDER BY observed_at
         """,
@@ -283,7 +285,7 @@ def load_machine_network_samples(
             observed_at, host, boot_id, source_schema_version,
             interface, gateway_ip, ping, bloat, iface, nic, tcp,
             dns_ms, pmtu_1492, conntrack, gap_codes
-        FROM machine_network_sample
+        FROM {machine_relation(conn, 'machine_network_sample', refresh_id)}
         {where}
         ORDER BY observed_at
         """,
@@ -354,7 +356,7 @@ def load_machine_service_states(
             memory_kernel_bytes, memory_slab_bytes, memory_sock_bytes,
             memory_shmem_bytes, memory_swapcached_bytes, memory_zswap_bytes,
             memory_zswapped_bytes, cpu_usage_nsec, io_read_bytes, io_write_bytes
-        FROM machine_service_state
+        FROM {machine_relation(conn, 'machine_service_state', refresh_id)}
         {where}
         ORDER BY observed_at, scope, unit
         """,
@@ -420,7 +422,7 @@ def load_machine_process_io_delta_samples(
             cancelled_write_bytes_delta, read_chars_delta, write_chars_delta,
             read_syscalls_delta, write_syscalls_delta, total_bytes_delta,
             total_syscalls_delta
-        FROM machine_process_io_delta_sample
+        FROM {machine_relation(conn, 'machine_process_io_delta_sample', refresh_id)}
         {where}
         ORDER BY observed_at, total_bytes_delta DESC, total_syscalls_delta DESC
     """
@@ -486,7 +488,7 @@ def load_machine_process_memory_samples(
             command_line, rss_kb, pss_kb, pss_anon_kb, pss_file_kb,
             pss_shmem_kb, private_clean_kb, private_dirty_kb,
             shared_clean_kb, shared_dirty_kb, swap_kb
-        FROM machine_process_memory_sample
+        FROM {machine_relation(conn, 'machine_process_memory_sample', refresh_id)}
         {where}
         ORDER BY observed_at, pss_kb DESC
     """
@@ -559,7 +561,7 @@ def load_machine_cgroup_memory_samples(
             cgroup_freeze,
             memory_events_high, memory_events_max,
             memory_events_oom, memory_events_oom_kill
-        FROM machine_cgroup_memory_sample
+        FROM {machine_relation(conn, 'machine_cgroup_memory_sample', refresh_id)}
         {where}
         ORDER BY observed_at, label
     """
@@ -647,6 +649,7 @@ def promote_machine_metric_samples(
     return promote_rows(
         conn,
         table="machine_metric_sample",
+        validator=partial(validate_machine_keys, table="machine_metric_sample"),
         columns=_METRIC_SAMPLE_COLUMNS,
         refresh_id=refresh_id,
         rows=samples,
@@ -740,6 +743,7 @@ def promote_machine_process_memory_samples(
     return promote_rows(
         conn,
         table="machine_process_memory_sample",
+        validator=partial(validate_machine_keys, table="machine_process_memory_sample"),
         columns=_PROCESS_MEMORY_COLUMNS,
         refresh_id=refresh_id,
         rows=samples,
@@ -767,6 +771,7 @@ def promote_machine_cgroup_memory_samples(
     return promote_rows(
         conn,
         table="machine_cgroup_memory_sample",
+        validator=partial(validate_machine_keys, table="machine_cgroup_memory_sample"),
         columns=_CGROUP_MEMORY_COLUMNS,
         refresh_id=refresh_id,
         rows=samples,
@@ -799,6 +804,7 @@ def promote_machine_kill_events(
     return promote_rows(
         conn,
         table="machine_kill_event",
+        validator=partial(validate_machine_keys, table="machine_kill_event"),
         columns=_KILL_EVENT_COLUMNS,
         refresh_id=refresh_id,
         rows=events,
@@ -842,7 +848,7 @@ def load_machine_kill_events(
             observed_at, host, boot_id, source_schema_version, killer,
             victim_comm, victim_pid, victim_rss_mib, cgroup_path,
             oom_score, raw_line, source_row_id, journal_cursor
-        FROM machine_kill_event
+        FROM {machine_relation(conn, 'machine_kill_event', refresh_id)}
         {where}
         ORDER BY observed_at
     """
@@ -881,6 +887,7 @@ def promote_machine_process_io_delta_samples(
     return promote_rows(
         conn,
         table="machine_process_io_delta_sample",
+        validator=partial(validate_machine_keys, table="machine_process_io_delta_sample"),
         columns=_PROCESS_IO_DELTA_COLUMNS,
         refresh_id=refresh_id,
         rows=samples,
@@ -910,6 +917,7 @@ def promote_machine_service_states(
     return promote_rows(
         conn,
         table="machine_service_state",
+        validator=partial(validate_machine_keys, table="machine_service_state"),
         columns=_SERVICE_STATE_COLUMNS,
         refresh_id=refresh_id,
         rows=states,
@@ -946,6 +954,7 @@ def promote_machine_gpu_samples(
     return promote_rows(
         conn,
         table="machine_gpu_sample",
+        validator=partial(validate_machine_keys, table="machine_gpu_sample"),
         columns=_GPU_SAMPLE_COLUMNS,
         refresh_id=refresh_id,
         rows=samples,
@@ -978,6 +987,7 @@ def promote_machine_network_samples(
     return promote_rows(
         conn,
         table="machine_network_sample",
+        validator=partial(validate_machine_keys, table="machine_network_sample"),
         columns=_NETWORK_SAMPLE_COLUMNS,
         refresh_id=refresh_id,
         rows=samples,
@@ -1051,7 +1061,7 @@ def load_machine_metric_daily(
     max_io_psi_some_avg10, avg_latency_oversleep_ms,
     max_latency_oversleep_ms, max_dstate_task_count) tuples.
     """
-    sql = """
+    sql = f"""
         SELECT
             observed_at::DATE AS day,
             host,
@@ -1065,7 +1075,7 @@ def load_machine_metric_daily(
             AVG(latency_oversleep_ms) AS avg_latency_oversleep_ms,
             MAX(latency_oversleep_ms) AS max_latency_oversleep_ms,
             MAX(dstate_task_count) AS max_dstate_task_count
-        FROM machine_metric_sample
+        FROM {machine_relation(conn, 'machine_metric_sample', refresh_id)}
         WHERE refresh_id = ?
     """
     params: list[Any] = [refresh_id]
@@ -1131,7 +1141,7 @@ def load_machine_metric_series_by_context(
             AVG(m.io_psi_full_avg10) AS avg_io_psi_full_avg10,
             MAX(m.io_psi_full_avg10) AS max_io_psi_full_avg10,
             AVG(m.cpu_psi_some_avg60) AS avg_cpu_psi_some_avg60
-        FROM machine_metric_sample m
+        FROM {machine_relation(conn, 'machine_metric_sample', refresh_id)} m
         ASOF LEFT JOIN gens g
             ON m.host = g.host AND m.observed_at >= g.activated_at
         WHERE m.refresh_id = ?
@@ -1174,7 +1184,7 @@ def load_machine_memory_breakdown(
     rows rather than a single "used" number so callers can distinguish pressure
     from reclaimable cache.
     """
-    sql = """
+    sql = f"""
         SELECT
             observed_at, host, source_schema_version,
             mem_total_mb, mem_used_mb, mem_avail_mb,
@@ -1182,7 +1192,7 @@ def load_machine_memory_breakdown(
             mem_slab_reclaimable_mb, mem_slab_unreclaimable_mb,
             mem_shmem_mb, mem_dirty_mb, mem_writeback_mb,
             swap_used_mb, memory_psi_some_avg60, memory_psi_full_avg60
-        FROM machine_metric_sample
+        FROM {machine_relation(conn, 'machine_metric_sample', refresh_id)}
         WHERE refresh_id = ?
     """
     params: list[Any] = [refresh_id]
@@ -1265,7 +1275,7 @@ def load_machine_pressure_explainer(
     top_n: int = 8,
 ) -> list[dict[str, Any]]:
     """Join memory, PSI, service RSS split, and process I/O around pressure windows."""
-    metric_sql = """
+    metric_sql = f"""
         SELECT
             observed_at, host, source_schema_version,
             mem_total_mb, mem_used_mb, mem_avail_mb,
@@ -1277,7 +1287,7 @@ def load_machine_pressure_explainer(
             memory_psi_full_avg60,
             io_psi_some_avg10, io_psi_some_avg60,
             io_psi_full_avg10, io_psi_full_avg60
-        FROM machine_metric_sample
+        FROM {machine_relation(conn, 'machine_metric_sample', refresh_id)}
         WHERE refresh_id = ?
     """
     params: list[Any] = [refresh_id]
@@ -1304,7 +1314,7 @@ def load_machine_pressure_explainer(
         window_start = observed_at - half_window
         window_end = observed_at + half_window
 
-        service_sql = """
+        service_sql = f"""
             SELECT
                 unit, scope,
                 COUNT(*) AS samples,
@@ -1314,7 +1324,7 @@ def load_machine_pressure_explainer(
                 MAX(memory_kernel_bytes) / 1048576.0 AS max_kernel_mib,
                 MIN(observed_at) AS first_observed_at,
                 MAX(observed_at) AS last_observed_at
-            FROM machine_service_state
+            FROM {machine_relation(conn, 'machine_service_state', refresh_id)}
             WHERE refresh_id = ?
               AND host = ?
               AND observed_at >= ?
@@ -1329,7 +1339,7 @@ def load_machine_pressure_explainer(
         )
         services = _rows_as_dicts(conn)
 
-        process_sql = """
+        process_sql = f"""
             SELECT
                 observed_at, pid, comm, unit, scope,
                 total_bytes_delta / 1048576.0 AS total_mib_delta,
@@ -1337,7 +1347,7 @@ def load_machine_pressure_explainer(
                 write_bytes_delta / 1048576.0 AS write_mib_delta,
                 total_syscalls_delta,
                 LEFT(command_line, 180) AS command_line
-            FROM machine_process_io_delta_sample
+            FROM {machine_relation(conn, 'machine_process_io_delta_sample', refresh_id)}
             WHERE refresh_id = ?
               AND host = ?
               AND observed_at >= ?
@@ -1351,7 +1361,7 @@ def load_machine_pressure_explainer(
         )
         processes = _rows_as_dicts(conn)
 
-        memory_sql = """
+        memory_sql = f"""
             SELECT
                 observed_at, pid, comm, unit, scope,
                 pss_kb / 1024.0 AS pss_mib,
@@ -1362,7 +1372,7 @@ def load_machine_pressure_explainer(
                 pss_shmem_kb / 1024.0 AS pss_shmem_mib,
                 swap_kb / 1024.0 AS swap_mib,
                 LEFT(command_line, 180) AS command_line
-            FROM machine_process_memory_sample
+            FROM {machine_relation(conn, 'machine_process_memory_sample', refresh_id)}
             WHERE refresh_id = ?
               AND host = ?
               AND observed_at >= ?
@@ -1409,7 +1419,7 @@ def load_machine_service_state_summary(
     io_write_delta_bytes, first_observed_at, last_observed_at,
     last_cpu_usage_nsec, last_io_read_bytes, last_io_write_bytes) tuples.
     """
-    sql = """
+    sql = f"""
         SELECT
             host,
             unit,
@@ -1437,7 +1447,7 @@ def load_machine_service_state_summary(
             MAX(cpu_usage_nsec) AS last_cpu_usage_nsec,
             MAX(io_read_bytes) AS last_io_read_bytes,
             MAX(io_write_bytes) AS last_io_write_bytes
-        FROM machine_service_state
+        FROM {machine_relation(conn, 'machine_service_state', refresh_id)}
         WHERE refresh_id = ?
     """
     params: list[Any] = [refresh_id]
@@ -1573,7 +1583,7 @@ def load_bufferbloat_daily(
                 CAST(json_extract_string(bloat, '$.min_ms') AS DOUBLE) AS min_ms,
                 CAST(json_extract_string(bloat, '$.max_ms') AS DOUBLE) AS max_ms,
                 CAST(json_extract_string(bloat, '$.loss')   AS DOUBLE) AS loss
-            FROM machine_network_sample
+            FROM {machine_relation(conn, 'machine_network_sample', refresh_id)}
             WHERE {where_sql}
         )
         SELECT

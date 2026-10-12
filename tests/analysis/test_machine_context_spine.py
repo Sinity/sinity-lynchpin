@@ -17,37 +17,22 @@ from lynchpin.analysis.machine.context_spine import resolve_machine_context
 
 
 def _fixture_conn() -> duckdb.DuckDBPyConnection:
+    from lynchpin.substrate.connection import apply_schema
+
     conn = duckdb.connect()
+    apply_schema(conn)
     conn.execute(
-        """
-        CREATE TABLE sinnix_generation (
-            host VARCHAR, generation VARCHAR, activated_at TIMESTAMPTZ,
-            store_path VARCHAR, sinnix_revision VARCHAR, nixos_label VARCHAR
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE machine_metric_sample (
-            host VARCHAR, observed_at TIMESTAMPTZ, boot_id VARCHAR,
-            gpu_pcie_gen INTEGER, gpu_pcie_width INTEGER, gpu_pstate VARCHAR,
-            cpu_package_w DOUBLE, cpu_psi_some_avg60 DOUBLE,
-            io_psi_some_avg10 DOUBLE, io_psi_full_avg10 DOUBLE,
-            io_psi_some_avg60 DOUBLE, io_psi_full_avg60 DOUBLE,
-            memory_psi_some_avg60 DOUBLE, memory_psi_full_avg60 DOUBLE
-        )
-        """
-    )
-    conn.execute(
-        "INSERT INTO sinnix_generation VALUES "
-        "('h','50','2026-05-18 17:00:00+00','/nix/store/g50','rev50','label50'),"
-        "('h','51','2026-05-19 14:00:00+00','/nix/store/g51','rev51','label51')"
+        "INSERT INTO sinnix_generation (host, generation, activated_at, store_path, sinnix_revision, nixos_label, refresh_id) VALUES "
+        "('h','50','2026-05-18 17:00:00+00','/nix/store/g50','rev50','label50','fixture'),"
+        "('h','51','2026-05-19 14:00:00+00','/nix/store/g51','rev51','label51','fixture')"
     )
     # one sample at 2026-05-20 12:00:05Z (5s after the query instant below)
     conn.execute(
-        "INSERT INTO machine_metric_sample VALUES "
+        "INSERT INTO machine_metric_sample (host, observed_at, boot_id, gpu_pcie_gen, gpu_pcie_width, gpu_pstate, "
+        "cpu_package_w, cpu_psi_some_avg60, io_psi_some_avg10, io_psi_full_avg10, io_psi_some_avg60, "
+        "io_psi_full_avg60, memory_psi_some_avg60, memory_psi_full_avg60, source, source_schema_version, refresh_id) VALUES "
         "('h','2026-05-20 12:00:05+00','boot-a',1,16,'P8',23.0,0.7,"
-        "1.1,3.8,0.9,2.2,0.3,0.05)"
+        "1.1,3.8,0.9,2.2,0.3,0.05,'fixture',1,'fixture')"
     )
     return conn
 

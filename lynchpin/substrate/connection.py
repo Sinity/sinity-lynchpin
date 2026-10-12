@@ -38,7 +38,7 @@ from lynchpin.substrate.locking import publication_lock
 if TYPE_CHECKING:
     import duckdb
 
-SUBSTRATE_VERSION = 50
+SUBSTRATE_VERSION = 51
 """Current schema contract; incompatible changes rebuild, declared additive changes migrate."""
 
 log = logging.getLogger(__name__)
@@ -1801,75 +1801,107 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
     ).fetchone()
     current = int(row[0]) if row else None
 
-    if current in (43, 44, 45, 46, 47, 48, 49) and SUBSTRATE_VERSION == 50:
-        # Additive transitions are idempotent and cumulative: a database at any
-        # supported earlier version applies every delta it is missing, so a
-        # multi-step upgrade (43 -> 47) never skips a later column.
-        conn.execute(
-            "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
-            "predecessor_refresh_id VARCHAR"
-        )
-        conn.execute(
-            "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
-            "predecessor_tail_start DATE"
-        )
-        conn.execute(
-            "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
-            "input_fingerprint VARCHAR"
-        )
-        conn.execute("""CREATE TABLE IF NOT EXISTS substrate_product_lineage (
-            product VARCHAR NOT NULL, refresh_id VARCHAR NOT NULL,
-            predecessor_refresh_id VARCHAR, replacement_start DATE,
-            input_fingerprint VARCHAR, mode VARCHAR NOT NULL,
-            materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (product, refresh_id))""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS substrate_product_tombstone (
-            product VARCHAR NOT NULL, refresh_id VARCHAR NOT NULL,
-            natural_key VARCHAR NOT NULL,
-            materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (product, refresh_id, natural_key))""")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS substrate_product_lineage_predecessor "
-            "ON substrate_product_lineage(predecessor_refresh_id)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS substrate_product_tombstone_key "
-            "ON substrate_product_tombstone(product, natural_key)"
-        )
-        dirty_column = conn.execute("SELECT is_nullable, column_default FROM information_schema.columns WHERE table_name = 'work_observation' AND column_name = 'git_dirty'").fetchone()
-        if dirty_column and (dirty_column[0] == "NO" or dirty_column[1] is not None):
-            indexes = conn.execute("SELECT index_name, sql FROM duckdb_indexes() WHERE table_name = 'work_observation'").fetchall()
-            for name, _sql in indexes:
-                conn.execute('DROP INDEX "' + name.replace('"', '""') + '"')
-            conn.execute("ALTER TABLE work_observation ALTER COLUMN git_dirty DROP NOT NULL")
-            conn.execute("ALTER TABLE work_observation ALTER COLUMN git_dirty DROP DEFAULT")
-            for _name, sql in indexes:
-                conn.execute(sql)
-        conn.execute("UPDATE work_observation SET git_dirty = NULL WHERE source = 'agentctl'")
-        # 47: the declared AgentCTL operation name is carried as evidence rather
-        # than only folded into source_revision. Existing rows keep NULL until
-        # the live route re-promotes them.
-        conn.execute(
-            "ALTER TABLE work_observation ADD COLUMN IF NOT EXISTS operation VARCHAR"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS work_observation_project_operation "
-            "ON work_observation(project, operation, started_at)"
-        )
-        # 49: the branch a run was made on separates a default-branch run from
-        # a change run. Existing rows keep NULL until their source re-promotes.
-        conn.execute(
-            "ALTER TABLE work_observation ADD COLUMN IF NOT EXISTS git_branch VARCHAR"
-        )
-        # 50: bounded personal-product replacement and inherited logical counts.
-        # Existing lineage keeps a NULL end, which readers treat as the open
-        # tail it was written as.
-        conn.execute(
-            "ALTER TABLE substrate_product_lineage ADD COLUMN IF NOT EXISTS replacement_end DATE"
-        )
-        conn.execute(
-            "ALTER TABLE substrate_product_lineage ADD COLUMN IF NOT EXISTS logical_row_count BIGINT"
-        )
+    if current in (43, 44, 45, 46, 47, 48, 49, 50) and SUBSTRATE_VERSION == 51:
+        if current < 50:
+            # Additive transitions are idempotent and cumulative: a database at any
+            # supported earlier version applies every delta it is missing, so a
+            # multi-step upgrade (43 -> 47) never skips a later column.
+            conn.execute(
+                "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
+                "predecessor_refresh_id VARCHAR"
+            )
+            conn.execute(
+                "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
+                "predecessor_tail_start DATE"
+            )
+            conn.execute(
+                "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
+                "input_fingerprint VARCHAR"
+            )
+            conn.execute("""CREATE TABLE IF NOT EXISTS substrate_product_lineage (
+                product VARCHAR NOT NULL, refresh_id VARCHAR NOT NULL,
+                predecessor_refresh_id VARCHAR, replacement_start DATE,
+                input_fingerprint VARCHAR, mode VARCHAR NOT NULL,
+                materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (product, refresh_id))""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS substrate_product_tombstone (
+                product VARCHAR NOT NULL, refresh_id VARCHAR NOT NULL,
+                natural_key VARCHAR NOT NULL,
+                materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (product, refresh_id, natural_key))""")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS substrate_product_lineage_predecessor "
+                "ON substrate_product_lineage(predecessor_refresh_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS substrate_product_tombstone_key "
+                "ON substrate_product_tombstone(product, natural_key)"
+            )
+            dirty_column = conn.execute("SELECT is_nullable, column_default FROM information_schema.columns WHERE table_name = 'work_observation' AND column_name = 'git_dirty'").fetchone()
+            if dirty_column and (dirty_column[0] == "NO" or dirty_column[1] is not None):
+                indexes = conn.execute("SELECT index_name, sql FROM duckdb_indexes() WHERE table_name = 'work_observation'").fetchall()
+                for name, _sql in indexes:
+                    conn.execute('DROP INDEX "' + name.replace('"', '""') + '"')
+                conn.execute("ALTER TABLE work_observation ALTER COLUMN git_dirty DROP NOT NULL")
+                conn.execute("ALTER TABLE work_observation ALTER COLUMN git_dirty DROP DEFAULT")
+                for _name, sql in indexes:
+                    conn.execute(sql)
+            conn.execute("UPDATE work_observation SET git_dirty = NULL WHERE source = 'agentctl'")
+            # 47: the declared AgentCTL operation name is carried as evidence rather
+            # than only folded into source_revision. Existing rows keep NULL until
+            # the live route re-promotes them.
+            conn.execute(
+                "ALTER TABLE work_observation ADD COLUMN IF NOT EXISTS operation VARCHAR"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS work_observation_project_operation "
+                "ON work_observation(project, operation, started_at)"
+            )
+            # 49: the branch a run was made on separates a default-branch run from
+            # a change run. Existing rows keep NULL until their source re-promotes.
+            conn.execute(
+                "ALTER TABLE work_observation ADD COLUMN IF NOT EXISTS git_branch VARCHAR"
+            )
+            # 50: bounded personal-product replacement and inherited logical counts.
+            # Existing lineage keeps a NULL end, which readers treat as the open
+            # tail it was written as.
+            conn.execute(
+                "ALTER TABLE substrate_product_lineage ADD COLUMN IF NOT EXISTS replacement_end DATE"
+            )
+            conn.execute(
+                "ALTER TABLE substrate_product_lineage ADD COLUMN IF NOT EXISTS logical_row_count BIGINT"
+            )
+        # 51: machine partitions clip inherited rows to their logical window.
+        conn.execute("ALTER TABLE substrate_product_lineage ADD COLUMN IF NOT EXISTS window_start DATE")
+        conn.execute("ALTER TABLE substrate_product_lineage ADD COLUMN IF NOT EXISTS window_end DATE")
+        # Machine fact indexes cannot spill. Recreate only these derived
+        # tables without ART storage, preserving every field and old partition.
+        from lynchpin.substrate.machine_lineage import MACHINE_TABLES
+
+        conn.execute("BEGIN TRANSACTION")
+        try:
+            for table in sorted(MACHINE_TABLES):
+                constrained = conn.execute(
+                    "SELECT 1 FROM duckdb_constraints() WHERE table_name = ? AND constraint_type = 'PRIMARY KEY'",
+                    [table],
+                ).fetchone()
+                indexed = conn.execute("SELECT 1 FROM duckdb_indexes() WHERE table_name = ?", [table]).fetchone()
+                if constrained is None and indexed is None:
+                    continue
+                replacement = f"machine_migration_{uuid4().hex}"
+                ddl = next(statement for statement in DDL_STATEMENTS if f"CREATE TABLE {table} (" in statement)
+                conn.execute(ddl.replace(f"CREATE TABLE {table}", f"CREATE TABLE {replacement}", 1))
+                conn.execute(f"INSERT INTO {replacement} SELECT * FROM {table}")
+                before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                after = conn.execute(f"SELECT COUNT(*) FROM {replacement}").fetchone()[0]
+                if before != after:
+                    raise ValueError(f"machine migration lost rows in {table}: {before} != {after}")
+                conn.execute(f"DROP TABLE {table}")
+                conn.execute(f"ALTER TABLE {replacement} RENAME TO {table}")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
         conn.execute(
             "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
             [str(SUBSTRATE_VERSION)],
