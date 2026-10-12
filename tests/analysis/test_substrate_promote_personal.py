@@ -4,8 +4,11 @@ from dataclasses import dataclass
 from datetime import date
 from types import SimpleNamespace
 
+import pytest
 
-def test_promote_personal_sources_bounds_activity_content_reads(monkeypatch, tmp_path) -> None:
+
+@pytest.mark.parametrize("partition_start", [None, date(2026, 5, 2)])
+def test_promote_personal_sources_bounds_activity_content_reads(monkeypatch, tmp_path, partition_start) -> None:
     pinned = (tmp_path / "generation" / "daily.ndjson", tmp_path / "generation" / "title_usage.ndjson")
     next_selection = (tmp_path / "later" / "daily.ndjson", tmp_path / "later" / "title_usage.ndjson")
     selection = [pinned]
@@ -30,7 +33,7 @@ def test_promote_personal_sources_bounds_activity_content_reads(monkeypatch, tmp
 
     def fake_ensure_materialized(name: str, *, window=None):
         assert name == "activity_content"
-        assert window == (date(2026, 5, 1), date(2026, 5, 4))
+        assert window == (partition_start or date(2026, 5, 1), date(2026, 5, 4))
         return SimpleNamespace(status="ready", reason="ready")
 
     def fake_iter_activity_content_days(*, path=None, start=None, end=None, ensure=True):
@@ -82,9 +85,10 @@ def test_promote_personal_sources_bounds_activity_content_reads(monkeypatch, tmp
         window_end=date(2026, 5, 4),
         counts=counts,
         selection=SourceSelection.from_collection({SOURCE_ACTIVITY_CONTENT}),
+        partition_window_start=partition_start,
     )
 
-    assert content_windows == [(date(2026, 5, 1), date(2026, 5, 4), False)]
+    assert content_windows == [(partition_start or date(2026, 5, 1), date(2026, 5, 4), False)]
     assert usage_windows == [(None, None, False)]
     assert counts["activity_content_day"] == 1
     assert counts["activity_content_bucket"] == 1

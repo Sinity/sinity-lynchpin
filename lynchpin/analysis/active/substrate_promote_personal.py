@@ -40,6 +40,7 @@ def promote_personal_sources(
     window_end: date,
     counts: dict[str, int],
     selection: SourceSelection,
+    partition_window_start: date | None = None,
 ) -> None:
     if not selection.includes(
         SOURCE_SINNIX_GENERATION,
@@ -65,7 +66,10 @@ def promote_personal_sources(
     def ensure_input_product(name: str) -> None:
         from lynchpin.materialization import ensure_materialized
 
-        result = ensure_materialized(name, window=(window_start, window_end))
+        product_start = window_start
+        if name in {"activity_content", "personal_daily_signals"}:
+            product_start = partition_window_start or window_start
+        result = ensure_materialized(name, window=(product_start, window_end))
         if result.status not in {"ready", "updated"}:
             raise RuntimeError(
                 f"{name} materialization unavailable for promotion: "
@@ -313,13 +317,15 @@ def promote_personal_sources(
                 window_end=window_end,
             )
 
+    partition_start = partition_window_start or window_start
+
     if selection.includes(SOURCE_ACTIVITY_CONTENT):
         try:
             ensure_input_product("activity_content")
             from lynchpin.sources.activity_content import activity_content_bundle_paths, iter_activity_content_days, iter_activity_title_usage
 
             content_daily, content_usage = activity_content_bundle_paths()
-            content_rows = list(iter_activity_content_days(path=content_daily, start=window_start, end=window_end, ensure=False))
+            content_rows = list(iter_activity_content_days(path=content_daily, start=partition_start, end=window_end, ensure=False))
             usage_rows = [
                 row
                 for row in iter_activity_title_usage(path=content_usage, ensure=False)
@@ -340,7 +346,7 @@ def promote_personal_sources(
                 refresh_id=refresh_id,
                 rows=content_rows,
                 previous_refresh_id=day_predecessor,
-                replacement_start=window_start if day_predecessor else None,
+                replacement_start=partition_start if day_predecessor else None,
                 replacement_end=window_end if day_predecessor else None,
             )
             counts["activity_content_bucket"] = promote_activity_content_buckets(
@@ -348,7 +354,7 @@ def promote_personal_sources(
                 refresh_id=refresh_id,
                 rows=content_rows,
                 previous_refresh_id=bucket_predecessor,
-                replacement_start=window_start if bucket_predecessor else None,
+                replacement_start=partition_start if bucket_predecessor else None,
                 replacement_end=window_end if bucket_predecessor else None,
             )
             counts["activity_title_usage"] = promote_activity_title_usage(
@@ -365,7 +371,7 @@ def promote_personal_sources(
                 status="ok" if row_count else "empty",
                 reason=None if row_count else "no activity-content rows in window",
                 row_count=row_count,
-                window_start=window_start,
+                window_start=partition_start,
                 window_end=window_end,
             )
         except Exception as exc:
@@ -377,7 +383,7 @@ def promote_personal_sources(
                 status="error",
                 reason=str(exc),
                 row_count=0,
-                window_start=window_start,
+                window_start=partition_start,
                 window_end=window_end,
             )
 
@@ -389,7 +395,7 @@ def promote_personal_sources(
 
             signal_rows = [
                 (row.source, row.date, row.metric, row.value, row.dimensions)
-                for row in iter_personal_daily_signals(start=window_start, end=window_end, ensure=False)
+                for row in iter_personal_daily_signals(start=partition_start, end=window_end, ensure=False)
             ]
             signal_predecessor = _latest_product_refresh(
                 conn, "personal_daily_signals", refresh_id
@@ -399,7 +405,7 @@ def promote_personal_sources(
                 refresh_id=refresh_id,
                 rows=signal_rows,
                 previous_refresh_id=signal_predecessor,
-                replacement_start=window_start if signal_predecessor else None,
+                replacement_start=partition_start if signal_predecessor else None,
                 replacement_end=window_end if signal_predecessor else None,
             )
             record_source_status(
@@ -409,7 +415,7 @@ def promote_personal_sources(
                 status="ok" if signal_rows else "empty",
                 reason=None if signal_rows else "no daily personal-source signals in window",
                 row_count=counts["personal_daily_signal"],
-                window_start=window_start,
+                window_start=partition_start,
                 window_end=window_end,
             )
         except Exception as exc:
@@ -424,6 +430,6 @@ def promote_personal_sources(
                 status="error",
                 reason=str(exc),
                 row_count=0,
-                window_start=window_start,
+                window_start=partition_start,
                 window_end=window_end,
             )

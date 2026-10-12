@@ -314,9 +314,10 @@ def main(argv: list[str] | None = None) -> int:
                             symbol_changes_file=resolve_analysis_path("active_symbol_changes.json"),
                             ai_attribution_file=resolve_analysis_path("active_ai_attribution.json"),
                             refresh_id=publication_refresh_id,
-                            # Match the graph replacement window; typed promoters
-                            # retain predecessor facts outside this interval.
-                            window_start=incremental_tail_start or date.fromisoformat(args.start),
+                            window_start=date.fromisoformat(args.start),
+                            # Only partitioned personal products inherit facts
+                            # outside the graph's replacement window.
+                            partition_window_start=incremental_tail_start,
                             window_end=date.fromisoformat(args.end),
                             write_evidence_graph=False,
                         )

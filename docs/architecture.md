@@ -116,6 +116,12 @@ snapshot, and serving observations report the file DuckDB actually opened.
 Unknown query fields and public action filters are rejected. Mutation is not
 exposed through query tools.
 
+Incremental promotion keeps its full window for complete snapshot families.
+Activity-content and daily-signal partitions receive a separate replacement
+tail because they inherit predecessor rows outside that range. A source error
+rejects the candidate before expensive telemetry promotion; the serving
+generation remains available.
+
 ### 5. Evidence graph
 
 The graph represents facts and qualified relationships such as:

@@ -32,12 +32,16 @@ def test_malformed_fact_artifact_cannot_publish_as_empty(tmp_path, monkeypatch, 
     _reload_config(monkeypatch)
     serving = substrate_path()
     before = serving.read_bytes()
+    monkeypatch.setattr(
+        "lynchpin.analysis.active.substrate_promote.promote_machine_tables",
+        lambda *_args, **_kwargs: pytest.fail("failed candidate must not start telemetry scans"),
+    )
     malformed = tmp_path / "malformed.json"
     malformed.write_text('{"incomplete":')
     with pytest.raises(CandidateGenerationRejected, match="error result"):
         run_substrate_promote(
             commit_facts_file=str(malformed), file_changes_file=str(malformed),
-            symbol_changes_file=str(tmp_path / "absent.json"), sources={source},
+            symbol_changes_file=str(tmp_path / "absent.json"), sources={source, "machine"},
             write_evidence_graph=False, refresh_id="fixture:malformed",
         )
     assert serving.read_bytes() == before

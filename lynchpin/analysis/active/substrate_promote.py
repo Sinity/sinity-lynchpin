@@ -100,6 +100,7 @@ def run_substrate_promote(
     window_start: date | None = None,
     window_end: date | None = None,
     full_repromote: bool = False,
+    partition_window_start: date | None = None,
 ) -> PromotionRunResult:
     """Promote materialized artifacts and live source families to the substrate.
 
@@ -139,6 +140,7 @@ def run_substrate_promote(
                     window_start=window_start,
                     window_end=window_end,
                     full_repromote=full_repromote,
+                    partition_window_start=partition_window_start,
                 )
                 bind_candidate_publication(
                     generation,
@@ -165,6 +167,7 @@ def run_substrate_promote(
             window_start=window_start,
             window_end=window_end,
             full_repromote=full_repromote,
+            partition_window_start=partition_window_start,
         )
     except Exception as exc:  # noqa: BLE001 — record before surfacing promotion failure.
         log.warning("substrate_promote: substrate promotion failed: %s", exc)
@@ -194,6 +197,7 @@ def _do_promote(
     window_start: date | None,
     window_end: date | None,
     full_repromote: bool = False,
+    partition_window_start: date | None = None,
 ) -> PromotionRunResult:
     from lynchpin.substrate.connection import apply_schema, connect, substrate_path
 
@@ -208,6 +212,9 @@ def _do_promote(
             prev_month_start = today.replace(month=today.month - 1, day=1)
         window_start = window_start or prev_month_start
         window_end = window_end or today
+
+    if partition_window_start is not None and not window_start <= partition_window_start <= window_end:
+        raise ValueError("partition replacement start must lie inside the promotion window")
 
     with connect(substrate_path()) as conn:
         apply_schema(conn)
@@ -312,10 +319,13 @@ def _do_promote(
                 window_end=window_end,
                 counts=counts,
                 selection=selection,
+                partition_window_start=partition_window_start,
             ),
         )
 
-        if selection.includes(*MACHINE_SOURCE_IDS):
+        # An earlier source error already rejects this candidate. Do not
+        # start expensive telemetry scans that cannot make it publishable.
+        if selection.includes(*MACHINE_SOURCE_IDS) and _run_status(_source_statuses(conn, refresh_id)) != "error":
             _run_stage(
                 conn,
                 refresh_id=refresh_id or "",

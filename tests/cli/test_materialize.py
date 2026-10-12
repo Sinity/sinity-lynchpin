@@ -764,7 +764,8 @@ def test_incremental_candidate_identity_is_shared_by_sources_graph_and_publicati
     )
     assert observed["source"] == generation.receipt_refresh_id == observed["typed"]["refresh_id"] == expected
     assert observed["typed"]["write_evidence_graph"] is False
-    assert observed["typed"]["window_start"] == date(2026, 1, 2)
+    assert observed["typed"]["window_start"] == date(2026, 1, 1)
+    assert observed["typed"]["partition_window_start"] == date(2026, 1, 2)
     assert observed["typed"]["window_end"] == date(2026, 1, 3)
     assert generation.expected_refresh_id == (expected if typed_status == "ok" else None)
 
