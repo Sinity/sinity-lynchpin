@@ -13,6 +13,7 @@ from typing import Any, Iterable
 
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
+from ..core.source_contracts import DAILY_SIGNAL_SOURCE_NAMES
 from ..sources.personal_signals import (
     personal_daily_signals_path,
     spotify_daily_path,
@@ -319,8 +320,8 @@ def _personal_daily_signal_rows_with_inputs() -> tuple[list[SignalRow], tuple[Pa
     audit_by_name = {row.name: row for row in audit_materialization()}
     bounds = [
         (row.first_date, row.last_date)
-        for row in audit_by_name.values()
-        if row.status == "ready" and row.first_date is not None and row.last_date is not None
+        for name, row in audit_by_name.items()
+        if name in DAILY_SIGNAL_SOURCE_NAMES and row.status == "ready" and row.first_date is not None and row.last_date is not None
     ]
     if not bounds:
         return [], ()
@@ -328,7 +329,8 @@ def _personal_daily_signal_rows_with_inputs() -> tuple[list[SignalRow], tuple[Pa
     end = max(last for _first, last in bounds if last is not None) + timedelta(days=1)
     rows = _window_personal_daily_signal_rows(start, end, audit_by_name)
     source_counts = Counter(source for source, *_ in rows)
-    return rows, _personal_daily_signal_input_files(audit_by_name, source_counts.keys())
+    input_sources = set(source_counts) | _overlapping_input_sources(audit_by_name, start, end)
+    return rows, _personal_daily_signal_input_files(audit_by_name, input_sources)
 
 
 def _window_personal_daily_signal_rows_with_inputs(
@@ -355,9 +357,8 @@ def _overlapping_input_sources(
 ) -> set[str]:
     return {
         name
-        for name in audit_by_name
-        if name != "personal_daily_signals"
-        and _overlaps(audit_by_name, name, window_start, window_end)
+        for name in DAILY_SIGNAL_SOURCE_NAMES
+        if _overlaps(audit_by_name, name, window_start, window_end)
     }
 
 

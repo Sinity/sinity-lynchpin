@@ -797,12 +797,18 @@ def test_personal_daily_signal_inputs_prefer_materialized_paths(tmp_path) -> Non
     assert inputs == (product,)
 
 
-def test_window_personal_daily_signal_inputs_include_overlapping_zero_row_sources(tmp_path, monkeypatch) -> None:
-    from lynchpin.ingest.personal_signals_materialize import _window_personal_daily_signal_rows_with_inputs
+@pytest.mark.parametrize("bounded", [True, False])
+def test_window_personal_daily_signal_inputs_include_overlapping_zero_row_sources(tmp_path, monkeypatch, bounded) -> None:
+    from lynchpin.ingest.personal_signals_materialize import (
+        _personal_daily_signal_rows_with_inputs,
+        _window_personal_daily_signal_rows_with_inputs,
+    )
     from lynchpin.materialization import MaterializedDataset
 
     product = tmp_path / "keylog_daily.ndjson"
     product.write_text("", encoding="utf-8")
+    unrelated = tmp_path / "temporal_signals.ndjson"
+    unrelated.write_text("", encoding="utf-8")
 
     monkeypatch.setattr("lynchpin.sources.keylog.daily_activity", lambda *, start, end: [])
     monkeypatch.setattr(
@@ -820,15 +826,31 @@ def test_window_personal_daily_signal_inputs_include_overlapping_zero_row_source
                 last_date=date(2026, 5, 1),
                 materialization_hint="fixture",
                 reason="fixture",
-            )
+            ),
+            MaterializedDataset(
+                name="temporal_signals",
+                status="ready",
+                authority="fixture",
+                query_surface="fixture",
+                materialized_paths=(unrelated,),
+                raw_roots=(),
+                row_count=0,
+                first_date=date(2026, 5, 1),
+                last_date=date(2026, 5, 1),
+                materialization_hint="fixture",
+                reason="fixture",
+            ),
         ],
         raising=False,
     )
 
-    rows, inputs = _window_personal_daily_signal_rows_with_inputs(
-        date(2026, 5, 1),
-        date(2026, 5, 2),
-    )
+    if bounded:
+        rows, inputs = _window_personal_daily_signal_rows_with_inputs(
+            date(2026, 5, 1),
+            date(2026, 5, 2),
+        )
+    else:
+        rows, inputs = _personal_daily_signal_rows_with_inputs()
 
     assert rows == []
     assert inputs == (product,)
