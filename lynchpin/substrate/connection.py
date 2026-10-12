@@ -38,7 +38,7 @@ from lynchpin.substrate.locking import publication_lock
 if TYPE_CHECKING:
     import duckdb
 
-SUBSTRATE_VERSION = 51
+SUBSTRATE_VERSION = 52
 """Current schema contract; incompatible changes rebuild, declared additive changes migrate."""
 
 log = logging.getLogger(__name__)
@@ -427,11 +427,11 @@ def _recover_interrupted_candidate(canonical: Path, candidate: Path) -> None:
         log.exception("could not clean interrupted candidate: %s", candidate)
 
 
-def _archive_interrupted_candidates(canonical: Path) -> None:
+def _archive_interrupted_candidates(canonical: Path, *, protected_sources: frozenset[Path] = frozenset()) -> None:
     """Bound candidates left behind when a process exits without unwinding."""
     pattern = f"{canonical.stem}.candidate-*{canonical.suffix}"
     for candidate in canonical.parent.glob(pattern):
-        if _valid_candidate_path(canonical, candidate):
+        if _valid_candidate_path(canonical, candidate) and candidate.resolve() not in protected_sources:
             _recover_interrupted_candidate(canonical, candidate)
             log.warning("removed interrupted candidate while retaining canonical generation: %s", canonical)
 
@@ -1398,6 +1398,7 @@ def candidate_generation(
     receipt_refresh_id: str | None = None,
     retain_failed: bool = False,
     changed_products: tuple[str, ...] = (),
+    protected_candidate_sources: tuple[Path, ...] = (),
 ) -> Iterator[CandidateGeneration]:
     """Stage a complete materialization before replacing the serving generation.
 
@@ -1412,6 +1413,9 @@ def candidate_generation(
     archive only the candidate until the serving triple is published.
     """
     canonical = _substrate_path_value()
+    protected_sources = frozenset(path.resolve(strict=True) for path in protected_candidate_sources)
+    if any(not _valid_candidate_path(canonical, path) for path in protected_sources):
+        raise CandidateGenerationRejected("protected recovery source is not an owner-retained candidate")
     refresh_id = uuid4().hex
     candidate = _candidate_path(canonical, refresh_id)
     token = None
@@ -1421,7 +1425,7 @@ def candidate_generation(
         try:
             with _publication_write_lock(canonical):
                 _reconcile_publication(canonical)
-            _archive_interrupted_candidates(canonical)
+            _archive_interrupted_candidates(canonical, protected_sources=protected_sources)
             from lynchpin.substrate.run_steps import log_phase_evidence, measure_phase
 
             if rebuild_indexes and bootstrap:
@@ -1801,7 +1805,10 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
     ).fetchone()
     current = int(row[0]) if row else None
 
-    if current in (43, 44, 45, 46, 47, 48, 49, 50) and SUBSTRATE_VERSION == 51:
+    if current == 51 and SUBSTRATE_VERSION == 52:
+        conn.execute("ALTER TABLE machine_gpu_sample ADD COLUMN IF NOT EXISTS source_row_id BIGINT")
+        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)", [str(SUBSTRATE_VERSION)])
+    elif current in (43, 44, 45, 46, 47, 48, 49, 50) and SUBSTRATE_VERSION == 52:
         if current < 50:
             # Additive transitions are idempotent and cumulative: a database at any
             # supported earlier version applies every delta it is missing, so a
@@ -1891,7 +1898,9 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
                 replacement = f"machine_migration_{uuid4().hex}"
                 ddl = next(statement for statement in DDL_STATEMENTS if f"CREATE TABLE {table} (" in statement)
                 conn.execute(ddl.replace(f"CREATE TABLE {table}", f"CREATE TABLE {replacement}", 1))
-                conn.execute(f"INSERT INTO {replacement} SELECT * FROM {table}")
+                columns = [column[0] for column in conn.execute(f"DESCRIBE {table}").fetchall()]
+                column_list = ", ".join(columns)
+                conn.execute(f"INSERT INTO {replacement} ({column_list}) SELECT {column_list} FROM {table}")
                 before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 after = conn.execute(f"SELECT COUNT(*) FROM {replacement}").fetchone()[0]
                 if before != after:
@@ -1902,6 +1911,7 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
         except Exception:
             conn.execute("ROLLBACK")
             raise
+        conn.execute("ALTER TABLE machine_gpu_sample ADD COLUMN IF NOT EXISTS source_row_id BIGINT")
         conn.execute(
             "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
             [str(SUBSTRATE_VERSION)],

@@ -178,6 +178,7 @@ def _run_machine_stage(
 
     started_at = datetime.now(timezone.utc)
     before = dict(counts)
+    log.info("substrate_promote: starting %s", stage)
     record_run_step(
         conn,
         refresh_id=refresh_id,
@@ -239,6 +240,7 @@ def promote_machine_tables(
     counts: dict[str, int],
     selection: SourceSelection,
     full_repromote: bool = False,
+    recovered_tables: frozenset[str] = frozenset(),
 ) -> None:
     if not selection.includes(*(
         SOURCE_MACHINE,
@@ -274,6 +276,7 @@ def promote_machine_tables(
                 counts=counts,
                 selection=selection,
                 full_repromote=full_repromote,
+                recovered_tables=recovered_tables,
             )
             fast_ok = True
         except Exception as exc:
@@ -381,7 +384,7 @@ def _machine_projections() -> dict[str, tuple[tuple[str, ...], dict[str, str]]]:
         ),
         "gpu_sample": (
             _GPU_SAMPLE_COLUMNS,
-            {"observed_at": ts, "source": "'machine.telemetry.gpu'"},
+            {"observed_at": ts, "source": "'machine.telemetry.gpu'", "source_row_id": "id"},
         ),
         "network_sample": (
             _NETWORK_SAMPLE_COLUMNS,
@@ -482,6 +485,7 @@ def _promote_machine_fast(
     counts: dict[str, int],
     selection: SourceSelection,
     full_repromote: bool = False,
+    recovered_tables: frozenset[str] = frozenset(),
 ) -> None:
     """Bulk-transfer every sqlite-backed machine table via DuckDB SQLite ATTACH.
 
@@ -525,9 +529,13 @@ def _promote_machine_fast(
             continue
         def promote_table() -> None:
             t0 = time.monotonic()
+            if src_table == "gpu_sample":
+                source_columns = {column[0] for column in conn.execute("SELECT * FROM machine_src.gpu_sample LIMIT 0").description}
+                if "id" not in source_columns:
+                    projections[src_table][1]["source_row_id"] = "NULL"
             watermark = None
             predecessor = None
-            if not full_repromote:
+            if not full_repromote or dst_table in recovered_tables:
                 current_rows = conn.execute(
                     f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?", [refresh_id]
                 ).fetchone()[0]
@@ -665,7 +673,7 @@ def _promote_machine_fast(
                 except Exception:
                     log.debug("could not drop machine promotion staging table", exc_info=True)
 
-        _run_machine_stage(
+        succeeded = _run_machine_stage(
             conn,
             refresh_id=refresh_id,
             stage=_MACHINE_STAGE_NAMES[source],
@@ -675,6 +683,10 @@ def _promote_machine_fast(
             window_end=window_end,
             fn=promote_table,
         )
+        if not succeeded:
+            from lynchpin.substrate.connection import CandidateGenerationRejected
+
+            raise CandidateGenerationRejected(f"machine stage {_MACHINE_STAGE_NAMES[source]} failed; stop before further scans")
 
     total_elapsed = time.monotonic() - t_total
     log.info("substrate_promote: machine tables done in %.1fs", total_elapsed)

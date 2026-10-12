@@ -1014,13 +1014,17 @@ def _register_misc(app: typer.Typer) -> None:
         up_to: str | None,
         start: str | None,
         end: str | None,
+        machine_recovery_path: str | None = None,
     ) -> None:
+        import logging
+
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
         start_d = _opt_date(start)
         end_d = _opt_date(end)
         # --full also bypasses substrate_promote_machine's incremental
         # watermark: an operator asking for a full re-run means "no
         # shortcuts", which for machine tables includes the row-level one.
-        dag = machine_analysis_dag(start=start_d, end=end_d, full_repromote=not incremental)
+        dag = machine_analysis_dag(start=start_d, end=end_d, full_repromote=not incremental, machine_recovery_path=machine_recovery_path)
         requested_window = _rolling_window(start=start_d, end=end_d, days=90)
         code = _run_dag(
             dag,
@@ -1044,6 +1048,7 @@ def _register_misc(app: typer.Typer) -> None:
         up_to: str | None = typer.Option(None, "--up-to", help="Stop after this step completes"),
         start: str = typer.Option(None, "--start", help="Window start (ISO date)"),
         end: str = typer.Option(None, "--end", help="Window end (ISO date)"),
+        reuse_machine_candidate: str | None = typer.Option(None, "--reuse-machine-candidate", help="Reuse matching completed partitions from an owner-retained failed candidate"),
     ) -> None:
         _run_machine_materialization(
             dry_run=dry_run,
@@ -1052,6 +1057,7 @@ def _register_misc(app: typer.Typer) -> None:
             up_to=up_to,
             start=start,
             end=end,
+            machine_recovery_path=reuse_machine_candidate,
         )
 
 

@@ -188,13 +188,15 @@ def load_machine_gpu_samples(
         params.append(refresh_id)
 
     where = build_where(clauses, params)
+    fields = {row[0] for row in conn.execute("DESCRIBE machine_gpu_sample").fetchall()}
+    identity = "source_row_id" if "source_row_id" in fields else "NULL"
     rows = conn.execute(
         f"""
         SELECT
             observed_at, host, boot_id, source,
             gpu_power_w, gpu_power_limit_w, gpu_temp_c, gpu_fan_pct,
             gpu_util_pct, gpu_mem_util_pct, gpu_clock_mhz, gpu_mem_clock_mhz,
-            gpu_pstate, gpu_pcie_gen, gpu_pcie_width
+            gpu_pstate, gpu_pcie_gen, gpu_pcie_width, {identity} AS source_row_id
         FROM {machine_relation(conn, 'machine_gpu_sample', refresh_id)}
         {where}
         ORDER BY observed_at
@@ -219,6 +221,7 @@ def load_machine_gpu_samples(
             gpu_pstate=row[12],
             gpu_pcie_gen=row[13],
             gpu_pcie_width=row[14],
+            source_row_id=row[15],
         )
         for row in rows
     ]
@@ -939,7 +942,7 @@ _GPU_SAMPLE_COLUMNS = (
     "observed_at", "host", "boot_id", "source",
     "gpu_power_w", "gpu_power_limit_w", "gpu_temp_c", "gpu_fan_pct",
     "gpu_util_pct", "gpu_mem_util_pct", "gpu_clock_mhz", "gpu_mem_clock_mhz",
-    "gpu_pstate", "gpu_pcie_gen", "gpu_pcie_width",
+    "gpu_pstate", "gpu_pcie_gen", "gpu_pcie_width", "source_row_id",
 )
 
 
@@ -963,7 +966,7 @@ def promote_machine_gpu_samples(
             s.observed_at, s.host, s.boot_id, s.source,
             s.gpu_power_w, s.gpu_power_limit_w, s.gpu_temp_c, s.gpu_fan_pct,
             s.gpu_util_pct, s.gpu_mem_util_pct, s.gpu_clock_mhz, s.gpu_mem_clock_mhz,
-            s.gpu_pstate, s.gpu_pcie_gen, s.gpu_pcie_width,
+            s.gpu_pstate, s.gpu_pcie_gen, s.gpu_pcie_width, s.source_row_id,
         ),
         batch_size=50_000,
     )

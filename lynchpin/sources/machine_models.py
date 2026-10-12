@@ -113,6 +113,8 @@ class MachineGpuSample:
     gpu_pcie_gen: int | None = None
     gpu_pcie_width: int | None = None
 
+    source_row_id: int | None = None
+
 
 @dataclass(frozen=True)
 class MachineServiceState:

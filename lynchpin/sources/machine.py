@@ -1163,7 +1163,7 @@ def gpu_samples(
     if not db.exists():
         return
     where, params = _observed_at_window(start, end)
-    sql = "SELECT " + ", ".join(EXPECTED_GPU_COLUMNS) + " FROM gpu_sample"
+    sql = "SELECT " + ", ".join(EXPECTED_GPU_COLUMNS) + ", {identity} AS source_row_id FROM gpu_sample"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY observed_at"
@@ -1171,6 +1171,8 @@ def gpu_samples(
         if not table_exists(conn, "gpu_sample"):
             return
         validate_gpu_schema(conn)
+        names = {column[1] for column in conn.execute("PRAGMA table_info(gpu_sample)")}
+        sql = sql.format(identity="id" if "id" in names else "NULL")
         conn.row_factory = sqlite3.Row
         for row in conn.execute(sql, params):
             observed_at = as_utc(row["observed_at"])
@@ -1192,6 +1194,7 @@ def gpu_samples(
                 gpu_pstate=row["gpu_pstate"],
                 gpu_pcie_gen=row["gpu_pcie_gen"],
                 gpu_pcie_width=row["gpu_pcie_width"],
+                source_row_id=row["source_row_id"],
             )
 
 

@@ -25,14 +25,21 @@ def validate_machine_keys(conn: Any, physical_table: str, refresh_id: str, *, ta
     import duckdb
 
     keys = MACHINE_KEYS[table]
-    nulls = " OR ".join(f"{key} IS NULL" for key in keys)
-    if conn.execute(f"SELECT 1 FROM {physical_table} WHERE refresh_id = ? AND ({nulls}) LIMIT 1", [refresh_id]).fetchone():
-        raise duckdb.ConstraintException(f"NULL machine fact key in {table}")
-    if conn.execute(
-        f"SELECT 1 FROM {physical_table} WHERE refresh_id = ? GROUP BY {', '.join(keys)} HAVING COUNT(*) > 1 LIMIT 1",
-        [refresh_id],
-    ).fetchone():
-        raise duckdb.ConstraintException(f"duplicate machine fact key in {table}")
+    variants = [(keys, "")]
+    if table == "machine_gpu_sample":
+        variants = [
+            (("host", "source", "source_row_id", "refresh_id"), " AND source_row_id IS NOT NULL"),
+            (keys, " AND source_row_id IS NULL"),
+        ]
+    for key_columns, scope in variants:
+        nulls = " OR ".join(f"{key} IS NULL" for key in key_columns)
+        if conn.execute(f"SELECT 1 FROM {physical_table} WHERE refresh_id = ?{scope} AND ({nulls}) LIMIT 1", [refresh_id]).fetchone():
+            raise duckdb.ConstraintException(f"NULL machine fact key in {table}")
+        if conn.execute(
+            f"SELECT 1 FROM {physical_table} WHERE refresh_id = ?{scope} GROUP BY {', '.join(key_columns)} HAVING COUNT(*) > 1 LIMIT 1",
+            [refresh_id],
+        ).fetchone():
+            raise duckdb.ConstraintException(f"duplicate machine fact key in {table}")
 
 
 def sqlite_location_identity(path: Path) -> str:

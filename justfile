@@ -97,4 +97,4 @@ verify-partition-integrity *args:
 verify-machine-promotion *args:
     just lint
     just typecheck
-    pytest -q tests/substrate/test_machine_promote.py tests/sources/test_source_machine.py tests/substrate/test_promote_rows_transaction.py tests/substrate/test_duck_substrate_schema.py tests/substrate/test_product_lineage.py tests/substrate/test_read_snapshot.py tests/analysis/test_machine_context_spine.py tests/substrate/test_machine_metric_series_by_context.py tests/graph/test_machine_promotion_staleness.py tests/mcp/test_mcp_machine_explain.py tests/analysis/test_operator_daily_machine_pressure.py "$@"
+    pytest -q tests/substrate/test_machine_promote.py tests/substrate/test_machine_recovery.py tests/sources/test_source_machine.py tests/substrate/test_promote_rows_transaction.py tests/substrate/test_duck_substrate_schema.py tests/substrate/test_product_lineage.py tests/substrate/test_read_snapshot.py tests/analysis/test_machine_context_spine.py tests/substrate/test_machine_metric_series_by_context.py tests/graph/test_machine_promotion_staleness.py tests/mcp/test_mcp_machine_explain.py tests/analysis/test_operator_daily_machine_pressure.py "$@"

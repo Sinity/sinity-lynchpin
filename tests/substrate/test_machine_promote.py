@@ -910,7 +910,7 @@ def test_attach_fast_path_promotes_process_io_and_cgroup_memory_in_one_statement
             window_start=date(2026, 5, 1),
             window_end=date(2026, 5, 3),
             counts=counts,
-            selection=SourceSelection.from_collection(None),
+            selection=SourceSelection.from_collection({"machine_process_io_delta_sample", "machine_cgroup_memory_sample"}),
         )
 
         assert counts["machine_cgroup_memory_sample"] == 3
@@ -976,7 +976,7 @@ def test_initial_machine_population_uses_canonical_source_with_archive_retained(
             window_start=date(2026, 5, 1),
             window_end=date(2026, 5, 3),
             counts=counts,
-            selection=SourceSelection.from_collection(None),
+            selection=SourceSelection.from_collection({"machine_process_io_delta_sample", "machine_cgroup_memory_sample"}),
         )
 
         assert counts["machine_process_io_delta_sample"] == 3
@@ -1058,7 +1058,7 @@ def test_incremental_watermark_appends_new_day_without_full_rescan(
             window_start=date(2026, 5, 1),
             window_end=date(2026, 5, 3),
             counts=counts,
-            selection=SourceSelection.from_collection(None),
+            selection=SourceSelection.from_collection({"machine_process_io_delta_sample", "machine_cgroup_memory_sample"}),
         )
         assert counts["machine_process_io_delta_sample"] == 3
         first_run_inserts = [
@@ -1080,7 +1080,7 @@ def test_incremental_watermark_appends_new_day_without_full_rescan(
             window_start=date(2026, 5, 2),
             window_end=date(2026, 5, 4),
             counts=counts,
-            selection=SourceSelection.from_collection(None),
+            selection=SourceSelection.from_collection({"machine_process_io_delta_sample", "machine_cgroup_memory_sample"}),
         )
 
         # Still 3 rows in the (now-shifted) window: 05-02, 05-03, 05-04 —
@@ -1683,3 +1683,55 @@ def test_machine_predecessor_does_not_borrow_a_different_sqlite_source(tmp_path)
         assert machine_predecessor(conn, **kwargs, input_fingerprint=first) == "parent"
         assert machine_predecessor(conn, **kwargs, input_fingerprint=second) is None
         assert machine_predecessor(conn, **kwargs) is None
+
+
+
+def test_gpu_samples_with_equal_timestamp_keep_native_record_ids(tmp_path, monkeypatch):
+    import sqlite3
+    from types import SimpleNamespace
+    from lynchpin.sources import machine as source
+    from lynchpin.analysis.active import substrate_promote_machine as promoter
+    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_gpu_samples
+
+    db = tmp_path / "gpu.sqlite"
+    fields = source.EXPECTED_GPU_COLUMNS
+    with sqlite3.connect(db) as c:
+        declarations = [f"{name} {'TEXT' if name in {'observed_at','host','boot_id','gpu_pstate'} else 'REAL'}" for name in fields]
+        c.execute("CREATE TABLE gpu_sample (id INTEGER PRIMARY KEY, " + ", ".join(declarations) + ")")
+        for identifier, power in [(17, 10.0), (18, 20.0)]:
+            row = dict.fromkeys(fields)
+            row.update(observed_at="2026-05-01T10:00:00+00:00", host="fixture", boot_id="boot", gpu_power_w=power)
+            c.execute("INSERT INTO gpu_sample VALUES (" + ",".join("?" for _ in range(len(row)+1)) + ")", [identifier, *row.values()])
+    rows = list(source.gpu_samples(path=db))
+    assert [(row.source_row_id, row.gpu_power_w) for row in rows] == [(17, 10.0), (18, 20.0)]
+    monkeypatch.setattr(source, "readiness", lambda: SimpleNamespace(status="ready", reason=None))
+    with connect(tmp_path / "facts.duckdb") as c:
+        apply_schema(c)
+        counts = {}
+        promoter._promote_machine_fast(c, refresh_id="first", sqlite_path=db, window_start=date(2026, 5, 1), window_end=date(2026, 5, 1), counts=counts, selection=SourceSelection.from_collection({"machine_gpu_sample"}))
+        assert counts["machine_gpu_sample"] == 2
+        assert [(row.source_row_id, row.gpu_power_w) for row in load_machine_gpu_samples(c, refresh_id="first")] == [(17, 10.0), (18, 20.0)]
+        c.execute("DETACH machine_src")
+        promoter._promote_machine_fast(c, refresh_id="second", sqlite_path=db, window_start=date(2026, 5, 1), window_end=date(2026, 5, 1), counts=counts, selection=SourceSelection.from_collection({"machine_gpu_sample"}))
+        assert [(row.source_row_id, row.gpu_power_w) for row in load_machine_gpu_samples(c, refresh_id="second")] == [(17, 10.0), (18, 20.0)]
+
+
+def test_failed_native_machine_stage_stops_before_next_table(tmp_path, monkeypatch):
+    from lynchpin.analysis.active import substrate_promote_machine as module
+    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.connection import CandidateGenerationRejected, apply_schema, connect
+
+    db = tmp_path / "source.sqlite"
+    _seed_attach_fixture(db, ["2026-05-01"])
+    seen = []
+    def failed_stage(*args, **kwargs):
+        seen.append(kwargs["source"])
+        return False
+    monkeypatch.setattr(module, "_run_machine_stage", failed_stage)
+    with connect(tmp_path / "facts.duckdb") as c:
+        apply_schema(c)
+        with pytest.raises(CandidateGenerationRejected, match="stop before further scans"):
+            module._promote_machine_fast(c, refresh_id="fixture", sqlite_path=db, window_start=date(2026, 5, 1), window_end=date(2026, 5, 1), counts={}, selection=SourceSelection.from_collection({"machine_process_io_delta_sample", "machine_cgroup_memory_sample"}))
+    assert seen == ["machine_process_io_delta_sample"]

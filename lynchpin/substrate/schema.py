@@ -803,6 +803,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
         gpu_pstate              VARCHAR,
         gpu_pcie_gen            INTEGER,
         gpu_pcie_width          INTEGER,
+        source_row_id           BIGINT,
         refresh_id              VARCHAR NOT NULL,
         materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )

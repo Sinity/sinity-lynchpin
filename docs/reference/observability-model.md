@@ -89,3 +89,19 @@ legacy locations and changed source files require fresh population. This marker
 identifies placement (path, device observation and inode); it is not a content
 digest or retrospective proof of byte continuity. Incremental promotion relies
 on the capture owner's append-only source contract.
+
+GPU observations retain the native SQLite record ID. Equal timestamps identify
+a sampling instant, not a unique capture: distinct source records remain
+separate facts with their original values. Earlier imported observations keep
+an unknown ID until explicit re-derivation. Native promotion stops after a
+failed machine stage so an already rejected candidate cannot continue scanning
+unrelated historical tables.
+
+An explicit repair may pass `--reuse-machine-candidate` with an owner-retained
+candidate path. Only full partitions with matching source-location and requested
+window evidence, successful stage receipts, exact schemas and matching row counts
+are admitted. Failed and incomplete tables remain excluded. Their validated rows
+are copied into the new private candidate, then normal tail reads pick up later
+captures under the final logical identity. The rejected database never becomes
+the serving store or the write predecessor; the original retained file remains
+unchanged. This option reuses completed repair work, not an entire failed refresh.
