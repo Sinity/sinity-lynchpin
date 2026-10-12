@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import sys
+from functools import lru_cache
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -16,6 +18,7 @@ from ..core.input_snapshot import input_snapshot, read_input_path, snapshot_toda
 from ..core.config import get_config
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
+from ..core import parse as time_parse, primitives
 from ..core.parse import as_local
 from ..core.primitives import date_to_dt_range, logical_date
 from ..sources.activitywatch import (
@@ -394,6 +397,11 @@ def activitywatch_repair_input_versions(*, closed_only: bool = False) -> list[di
     for source, paths in (("sleep", (get_config().sleep_jsonl,)),
                           ("atuin", (canonical_atuin_history_path(),)),
                           ("keylog", keyboard)):
+        if source == "atuin":
+            path = paths[0]
+            signature = json.dumps(input_versions(paths), sort_keys=True) + f":{time_parse.local_tz()}:{primitives.DAY_BOUNDARY_HOUR}"
+            result.extend(_atuin_day_versions(path, signature))
+            continue
         for item in input_versions(paths):
             item["source"] = source
             if source == "keylog":
@@ -402,7 +410,32 @@ def activitywatch_repair_input_versions(*, closed_only: bool = False) -> list[di
                 except ValueError:
                     item["date"] = None
             result.append(item)
-    return sorted(result, key=lambda item: item["path"])
+    return sorted(result, key=lambda item: (item["path"], item.get("date") or ""))
+
+
+@lru_cache(maxsize=4)
+def _atuin_day_versions(path: Path, signature: str) -> tuple[dict[str, Any], ...]:
+    del signature
+    selected = read_input_path(path)
+    if not selected.exists():
+        return ({"path": str(path), "source": "atuin", "date": None, "available": False, "stat": None},)
+    if not selected.is_file():
+        raise MaterializationError("activitywatch_derived", reason="Atuin repair input is not a regular file")
+    days: dict[str, list[bytes]] = {}
+    with selected.open(encoding="utf-8") as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            stamp = datetime.fromisoformat(str(row["timestamp"]).replace("Z", "+00:00"))
+            day = logical_date(stamp).isoformat()
+            normalized = json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+            days.setdefault(day, []).append(hashlib.sha256(normalized).digest())
+    marker = {"path": str(path), "source": "atuin", "date": None, "available": True}
+    return (marker, *tuple({"path": str(path), "source": "atuin", "date": day, "available": True,
+                  "sha256": hashlib.sha256(b"".join(sorted(rows))).hexdigest(), "row_count": len(rows),
+                  "digest_scope": "normalized_logical_day_records"}
+                 for day, rows in sorted(days.items())))
 
 
 def _repair_reuse_is_proven(previous: dict[str, Any], current: list[dict[str, Any]], start: date, end: date) -> bool:
@@ -415,13 +448,18 @@ def _repair_reuse_is_proven(previous: dict[str, Any], current: list[dict[str, An
     expected = previous.get("repair_input_versions")
     if expected is None:
         return previous.get("closed_repair_input_versions") == current
-    old = {item["path"]: item for item in expected}
-    new = {item["path"]: item for item in current}
+    old = {(item["path"], item.get("date")): item for item in expected}
+    new = {(item["path"], item.get("date")): item for item in current}
     for path in old.keys() | new.keys():
         before, after = old.get(path), new.get(path)
         item = after or before
         assert item is not None
-        if item.get("source") == "keylog" and item.get("date"):
+        if item.get("source") == "atuin" and item.get("date"):
+            if before != after:
+                affected = _atuin_affected_dates(date.fromisoformat(item["date"]), outside)
+                if affected is None or outside.intersection(affected):
+                    return False
+        elif item.get("source") == "keylog" and item.get("date"):
             day = date.fromisoformat(item["date"])
             if day >= (snapshot_today() or datetime.now(UTC).date()):
                 continue  # still-open inputs are observed, not stability gates
@@ -432,11 +470,45 @@ def _repair_reuse_is_proven(previous: dict[str, Any], current: list[dict[str, An
     return True
 
 
+def _atuin_affected_dates(day: date, retained: set[date]) -> set[date] | None:
+    # Repair reads complete AFK/window intervals before clipping to a requested
+    # day. A terminal event can rescue a long interval far beyond its own day.
+    from ..sources.activitywatch_raw import afk_events, window_events
+    start, end = date_to_dt_range(day, day)
+    result = {day}
+    try:
+        for events in (afk_events(start=start, end=end, ensure=False),
+                       window_events(start=start, end=end, ensure=False)):
+            for event in events:
+                first = logical_date(event.start)
+                last = logical_date(event.end - timedelta(microseconds=1))
+                result.update(value for value in retained if first <= value <= last)
+    except Exception:
+        return None  # Unknown influence cannot justify retaining older dates.
+    return result
+
+
 def activitywatch_derived_refresh_window(window: tuple[date, date]) -> tuple[date, date]:
     """Include retained suffixes affected by changed canonical partitions."""
     previous = _load_json(activitywatch_derived_manifest_path())
     current = input_versions(activitywatch_derived_input_files())
     start, end = window
+    old_repair = previous.get("repair_input_versions", [])
+    if (isinstance(old_repair, list)
+            and any(item.get("source") == "atuin" and "available" in item for item in old_repair)
+            and not any(item.get("source") == "atuin" and "available" not in item for item in old_repair)):
+        old_days = {(item["path"], item.get("date")): item for item in old_repair if item.get("source") == "atuin"}
+        new_days = {(item["path"], item.get("date")): item for item in activitywatch_repair_input_versions(closed_only=True)
+                    if item.get("source") == "atuin"}
+        retained_days = {date.fromisoformat(day) for day in previous.get("covered_dates", [])}
+        for key in old_days.keys() | new_days.keys():
+            item = new_days.get(key) or old_days[key]
+            if item.get("date") and old_days.get(key) != new_days.get(key):
+                affected = _atuin_affected_dates(date.fromisoformat(item["date"]), retained_days)
+                if affected:
+                    start = min(start, min(affected))
+                    end = max(end, max(affected) + timedelta(days=1))
+        window = start, end
     if _canonical_reuse_is_proven(previous, current, start, end):
         return window
     expected = previous.get("input_versions")

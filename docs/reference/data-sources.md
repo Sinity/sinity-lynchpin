@@ -129,6 +129,19 @@ coverage-aware daily counts. All five are registered as capture sources in
 `available_sources()` and `CAPTURE_SOURCES`, so they show up in
 `source_observations()` like any other continuous capture.
 
+## Atuin repair inputs
+
+Atuin exports keep their existing file identity when the complete serialized
+output is byte-identical. Source manifests still record fresh source observations.
+ActivityWatch repair fingerprints every normalized Atuin record by logical day,
+including duplicates; these hashes describe day records, not the whole raw file.
+Metadata-only rewrites therefore do not invalidate historical repair evidence.
+
+Changed days also invalidate retained dates covered by overlapping raw AFK or
+window intervals. Incremental refresh expands to those dates before publishing.
+Unknown influence refuses reuse. Older stat-only repair manifests require an
+initial full repair; the new hashes do not establish retrospective continuity.
+
 ## Processed Samsung exports
 
 The existing health processors publish each JSONL product and its manifest in

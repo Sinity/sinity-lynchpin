@@ -158,7 +158,7 @@ def _read_existing_rows(path: Path) -> list[CommandRow]:
 
 
 def _write_ndjson(path: Path, rows: list[CommandRow]) -> None:
-    atomic_write_ndjson(path, rows)
+    atomic_write_ndjson(path, rows, preserve_unchanged=True)
 
 
 def _row_timestamp(row: CommandRow) -> datetime:

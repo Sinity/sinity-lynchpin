@@ -82,7 +82,7 @@ def _fsync_parent_directory(path: Path) -> None:
 
 
 @contextmanager
-def atomic_text_writer(path: Path) -> Iterator[TextIO]:
+def atomic_text_writer(path: Path, *, preserve_unchanged: bool = False) -> Iterator[TextIO]:
     """Yield a streaming writer and durably publish it only on clean exit."""
     fd, tmp_path = _open_temp(path)
     owned_fd: int | None = fd
@@ -93,6 +93,9 @@ def atomic_text_writer(path: Path) -> Iterator[TextIO]:
             _preserve_existing_mode(path, tmp_path)
             handle.flush()
             os.fsync(handle.fileno())
+        if preserve_unchanged and _same_file_bytes(path, tmp_path):
+            tmp_path.unlink()
+            return
         os.replace(tmp_path, path)
         _fsync_parent_directory(path.parent)
     except BaseException:
@@ -105,9 +108,27 @@ def atomic_text_writer(path: Path) -> Iterator[TextIO]:
         raise
 
 
-def _atomic_write(path: Path, write: Callable[[TextIO], None]) -> None:
+def _same_file_bytes(first: Path, second: Path) -> bool:
+    try:
+        fd = os.open(first, os.O_RDONLY | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as old, second.open("rb") as new:
+            if not stat.S_ISREG(os.fstat(old.fileno()).st_mode):
+                raise ValueError(f"unchanged-product comparison requires a regular file: {first}")
+            if os.fstat(old.fileno()).st_size != os.fstat(new.fileno()).st_size:
+                return False
+            while True:
+                left, right = old.read(1024 * 1024), new.read(1024 * 1024)
+                if left != right:
+                    return False
+                if not left:
+                    return True
+    except FileNotFoundError:
+        return False
+
+
+def _atomic_write(path: Path, write: Callable[[TextIO], None], *, preserve_unchanged: bool = False) -> None:
     """Write a temp file, then publish it with durable same-filesystem replace."""
-    with atomic_text_writer(path) as handle:
+    with atomic_text_writer(path, preserve_unchanged=preserve_unchanged) as handle:
         write(handle)
 
 
@@ -175,7 +196,7 @@ def atomic_write_text(path: Path, text: str) -> None:
     _atomic_write(path, write_text)
 
 
-def atomic_write_ndjson(path: Path, rows: Iterable[Any], *, dumps: Any = None) -> None:
+def atomic_write_ndjson(path: Path, rows: Iterable[Any], *, dumps: Any = None, preserve_unchanged: bool = False) -> None:
     """Write ``rows`` as newline-delimited JSON to ``path`` atomically.
 
     Each row is serialized with ``dumps`` (default: ``json.dumps`` with
@@ -191,7 +212,7 @@ def atomic_write_ndjson(path: Path, rows: Iterable[Any], *, dumps: Any = None) -
             handle.write(serialize(row))
             handle.write("\n")
 
-    _atomic_write(path, write_rows)
+    _atomic_write(path, write_rows, preserve_unchanged=preserve_unchanged)
 
 
 def atomic_write_indexed_ndjson(

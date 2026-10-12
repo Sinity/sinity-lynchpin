@@ -9,6 +9,19 @@ from types import SimpleNamespace
 from lynchpin.sources.terminal import AtuinCommand
 
 
+def test_identical_atuin_publication_preserves_file_identity(tmp_path):
+    from lynchpin.ingest.terminal_materialize import _write_ndjson
+    path = tmp_path / "history.ndjson"
+    rows = [{"timestamp": "2026-01-04T10:00:00+00:00", "command": "fixture"}]
+    _write_ndjson(path, rows)
+    before = path.stat()
+    _write_ndjson(path, rows)
+    after = path.stat()
+    assert (after.st_ino, after.st_mtime_ns, after.st_ctime_ns) == (before.st_ino, before.st_mtime_ns, before.st_ctime_ns)
+    _write_ndjson(path, [{**rows[0], "command": "changed"}])
+    assert path.read_text() != json.dumps(rows[0], ensure_ascii=False, sort_keys=True) + "\n"
+
+
 def _command(day: int) -> AtuinCommand:
     return AtuinCommand(
         timestamp=datetime(2026, 1, day, 10, tzinfo=timezone.utc),

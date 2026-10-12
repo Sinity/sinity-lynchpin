@@ -8,6 +8,58 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_atuin_day_identity_ignores_rewrite_but_detects_payload_change(tmp_path):
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    from lynchpin.core.cache import input_versions
+    path = tmp_path / "history.ndjson"
+    rows = [{"timestamp": "2026-01-04T10:00:00+00:00", "command": "fixture"}]
+    path.write_text(json.dumps(rows[0]) + "\n")
+    def versions():
+        return mod._atuin_day_versions(path, json.dumps(input_versions((path,)), sort_keys=True))
+    before = versions()
+    path.write_text(json.dumps(rows[0], indent=0).replace("\n", "") + "\n")
+    assert versions() == before
+    path.write_text(json.dumps({**rows[0], "command": "changed"}) + "\n")
+    assert versions() != before
+    assert versions()[1]["date"] == "2026-01-04"
+
+
+def test_changed_atuin_day_preserves_only_proven_unaffected_dates(monkeypatch):
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    old = {"path": "/synthetic/history.ndjson", "source": "atuin", "date": "2026-01-04", "sha256": "a" * 64}
+    new = {**old, "sha256": "b" * 64}
+    previous = {"covered_dates": ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"], "repair_input_versions": [old]}
+    monkeypatch.setattr(mod, "_atuin_affected_dates", lambda day, retained: {day})
+    assert mod._repair_reuse_is_proven(previous, [new], date(2026, 1, 4), date(2026, 1, 5))
+    monkeypatch.setattr(mod, "_atuin_affected_dates", lambda day, retained: {date(2026, 1, 1), day})
+    assert not mod._repair_reuse_is_proven(previous, [{**old, "sha256": "b" * 64}], date(2026, 1, 4), date(2026, 1, 5))
+
+
+def test_atuin_influence_covers_long_raw_intervals(monkeypatch):
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    from lynchpin.sources import activitywatch_raw
+    event = SimpleNamespace(start=datetime(2026, 1, 1, 10, tzinfo=timezone.utc),
+                            end=datetime(2026, 1, 5, 10, tzinfo=timezone.utc))
+    monkeypatch.setattr(activitywatch_raw, "afk_events", lambda **kwargs: iter([event]))
+    monkeypatch.setattr(activitywatch_raw, "window_events", lambda **kwargs: iter([]))
+    retained = {date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)}
+    assert retained <= mod._atuin_affected_dates(date(2026, 1, 4), retained)
+
+
+def test_repair_refresh_window_includes_changed_atuin_influence(monkeypatch):
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    old = {"path": "/synthetic/history.ndjson", "source": "atuin", "date": "2026-01-04", "sha256": "a" * 64, "available": True}
+    previous = {"covered_dates": ["2026-01-01", "2026-01-04"], "repair_input_versions": [old]}
+    monkeypatch.setattr(mod, "_load_json", lambda path: previous)
+    monkeypatch.setattr(mod, "activitywatch_derived_input_files", lambda: ())
+    monkeypatch.setattr(mod, "activitywatch_repair_input_versions", lambda **kwargs: [{**old, "sha256": "b" * 64}])
+    monkeypatch.setattr(mod, "_atuin_affected_dates", lambda day, retained: {date(2026, 1, 1), day})
+    monkeypatch.setattr(mod, "_canonical_reuse_is_proven", lambda *args: True)
+    assert mod.activitywatch_derived_refresh_window((date(2026, 1, 4), date(2026, 1, 5))) == (date(2026, 1, 1), date(2026, 1, 5))
+    previous["repair_input_versions"] = [{"path": old["path"], "source": "atuin", "stat": [1]}]
+    assert not mod._repair_reuse_is_proven(previous, [{**old, "sha256": "b" * 64}], date(2026, 1, 4), date(2026, 1, 5))
+
+
 @pytest.mark.parametrize("start, expected", [(date(2026, 1, 3), True), (date(2026, 1, 4), False)])
 def test_repair_reuse_bounds_newly_closed_keyboard_file(start, expected):
     from lynchpin.ingest import activitywatch_derived_materialize as mod
@@ -79,7 +131,7 @@ def test_activitywatch_derived_repair_inputs_record_optional_absence_and_arrival
     assert mod.activitywatch_repair_input_versions() == absent
     for path in (sleep, shell, keyboard):
         before = mod.activitywatch_repair_input_versions()
-        path.write_text("{}\n")
+        path.write_text('{"timestamp":"2026-01-04T10:00:00+00:00","command":"fixture"}\n' if path == shell else "{}\n")
         assert mod.activitywatch_repair_input_versions() != before
 
 
