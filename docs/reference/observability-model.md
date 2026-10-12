@@ -64,8 +64,9 @@ contain physical partitions; their rows alone are not a complete generation.
 Service-state and cgroup-memory sources may still require a SQLite scan because
 they lack timestamp indexes. That scan does not rebuild or index the historical
 DuckDB facts. Explicit full rebuilds and uncovered historical prefixes require
-a complete population and remain subject to resource limits. An incomplete
-Parquet prefix cannot establish a safe tail watermark.
+a complete population and remain subject to resource limits. Initial population
+reads the canonical SQLite source. Retained Parquet archives remain unchanged;
+they do not establish a current replacement-tail watermark.
 
 Machine fact tables use columnar storage without ART primary-key or secondary
 indexes. Their full historical indexes cannot be evicted by DuckDB's buffer
@@ -82,3 +83,9 @@ It stops the existing `materialize-machine` DAG after source-selected
 promotion. It preserves the other retained products and does not run the
 Polylogue archive campaign. Publication records its separate machine refresh;
 the evidence graph retains its own refresh and coverage until rebuilt.
+
+Inheritance requires a matching configured SQLite location observation. Unknown
+legacy locations and changed source files require fresh population. This marker
+identifies placement (path, device observation and inode); it is not a content
+digest or retrospective proof of byte continuity. Incremental promotion relies
+on the capture owner's append-only source contract.

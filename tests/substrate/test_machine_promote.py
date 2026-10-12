@@ -933,20 +933,10 @@ def test_attach_fast_path_promotes_process_io_and_cgroup_memory_in_one_statement
     )
 
 
-def test_lake_bootstrap_avoids_full_attach_scan_on_first_backfill(
+def test_initial_machine_population_uses_canonical_source_with_archive_retained(
     tmp_path, monkeypatch
 ):
-    """sinnix-2g54 stage 3: a no-watermark first run must prefer the Parquet
-    lake over DuckDB's ATTACH full-table SQLite scan wherever the lake has
-    sealed-day coverage, falling back to the indexed incremental-append
-    reader (not another ATTACH scan) for whatever the lake does not yet
-    cover.
-
-    Uses the real exporter (`lynchpin.cli.machine_telemetry_export.run_export`)
-    to build the lake, so this is an integration check of the schema/column
-    contract between stages 2 and 3, not just the promotion code in
-    isolation.
-    """
+    """Retained exports cannot replace the canonical source of an initial population."""
     from datetime import datetime as dt_cls
     from types import SimpleNamespace
 
@@ -972,10 +962,6 @@ def test_lake_bootstrap_avoids_full_attach_scan_on_first_backfill(
         lake_root=lake_root,
         tables=("process_io_delta_sample",),
         now=dt_cls(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
-    )
-    monkeypatch.setattr(
-        "lynchpin.analysis.active.substrate_promote_machine._machine_lake_root",
-        lambda: lake_root,
     )
 
     counts: dict[str, int] = {}
@@ -1006,14 +992,9 @@ def test_lake_bootstrap_avoids_full_attach_scan_on_first_backfill(
     attach_scan_inserts = [
         s for s in conn.statements if "machine_src.process_io_delta_sample" in s
     ]
-    assert attach_scan_inserts == [], (
-        "the full ATTACH-scan branch must not run when the lake already "
-        f"covers the window's sealed days, got {len(attach_scan_inserts)}"
-    )
-    lake_bootstrap_inserts = [s for s in conn.statements if "read_parquet" in s]
-    assert (
-        len(lake_bootstrap_inserts) == 1
-    ), f"expected exactly one lake-bootstrap INSERT, got {len(lake_bootstrap_inserts)}"
+    assert len(attach_scan_inserts) == 1
+    assert not any("read_parquet" in sql for sql in conn.statements)
+    assert (lake_root / "manifest.json").is_file()
 
 
 def _insert_process_io_day(path, day):
@@ -1456,27 +1437,6 @@ def test_machine_python_memory_failure_records_error_and_stops(tmp_path):
         assert conn.execute("SELECT status FROM substrate_source_status WHERE refresh_id='fixture'").fetchone() == ("error",)
 
 
-def test_lake_memory_failure_propagates_instead_of_requesting_full_scan(tmp_path):
-    import pytest
-    from lynchpin.analysis.active import substrate_promote_machine as machine
-
-    partition = tmp_path / "metric_sample" / "dt=2026-05-01"
-    partition.mkdir(parents=True)
-    (partition / "fixture.parquet").touch()
-    class FailingConnection:
-        def execute(self, sql, *_args):
-            if "FROM read_parquet" in sql:
-                raise MemoryError("neutral lake allocation")
-            return self
-        def fetchone(self):
-            return (0,)
-    with pytest.raises(MemoryError, match="neutral lake allocation"):
-        machine._maybe_bootstrap_from_lake(
-            FailingConnection(), src_table="metric_sample", dst_table="fixture",
-            refresh_id="fixture", lake_root=tmp_path,
-            window_start=date(2026, 5, 1), window_end=date(2026, 5, 2),
-            columns=("observed_at",), overrides={},
-        )
 
 
 @pytest.mark.parametrize("src_table", ["service_state", "cgroup_memory_sample"])
@@ -1518,7 +1478,6 @@ def test_unindexed_machine_tables_reuse_history(tmp_path, monkeypatch, src_table
     for day in ["2026-05-01", "2026-05-02", "2026-05-03"]:
         insert(day, 10)
     monkeypatch.setattr(machine, "readiness", lambda: SimpleNamespace(status="ready", reason=None))
-    monkeypatch.setattr(module, "_machine_lake_root", lambda: None)
     reader_name = "service_states" if src_table == "service_state" else "cgroup_memory_samples"
     original_reader = getattr(machine, reader_name)
     reads = []
@@ -1702,3 +1661,25 @@ def test_machine_readers_support_retained_pre_partition_generation(tmp_path):
         assert len(records) == 1
         assert records[0].cpu_usage_nsec is None
         assert conn.execute("SELECT value FROM substrate_meta WHERE key='version'").fetchone() == ("50",)
+
+
+
+def test_machine_predecessor_does_not_borrow_a_different_sqlite_source(tmp_path):
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine_lineage import machine_predecessor, record_machine_partition, sqlite_location_identity
+    from lynchpin.analysis.active.substrate_promote_status import record_source_status
+
+    original = tmp_path / "original.sqlite"
+    replacement = tmp_path / "replacement.sqlite"
+    original.touch()
+    replacement.touch()
+    first = sqlite_location_identity(original)
+    second = sqlite_location_identity(replacement)
+    with connect(tmp_path / "identity.duckdb") as conn:
+        apply_schema(conn)
+        record_machine_partition(conn, table="machine_metric_sample", refresh_id="parent", window_start=date(2026, 5, 1), window_end=date(2026, 5, 4), input_fingerprint=first)
+        record_source_status(conn, refresh_id="parent", source="machine", status="ok", reason=None, row_count=3, window_start=date(2026, 5, 1), window_end=date(2026, 5, 4))
+        kwargs = dict(table="machine_metric_sample", source="machine", refresh_id="child", window_start=date(2026, 5, 1), window_end=date(2026, 5, 5))
+        assert machine_predecessor(conn, **kwargs, input_fingerprint=first) == "parent"
+        assert machine_predecessor(conn, **kwargs, input_fingerprint=second) is None
+        assert machine_predecessor(conn, **kwargs) is None

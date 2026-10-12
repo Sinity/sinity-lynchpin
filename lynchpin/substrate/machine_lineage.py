@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
+import hashlib
+import json
 from typing import Any
 
 MACHINE_KEYS = {
@@ -30,6 +33,18 @@ def validate_machine_keys(conn: Any, physical_table: str, refresh_id: str, *, ta
         [refresh_id],
     ).fetchone():
         raise duckdb.ConstraintException(f"duplicate machine fact key in {table}")
+
+
+def sqlite_location_identity(path: Path) -> str:
+    """Bind a partition to its configured SQLite object, not to its byte digest.
+
+    Device numbers are observations: drift safely requires fresh population.
+    The source owner supplies the append-only capture contract.
+    """
+    resolved = path.resolve()
+    stat = resolved.stat()
+    observation = json.dumps([str(resolved), stat.st_dev, stat.st_ino], separators=(",", ":"))
+    return "sqlite-location-v1:" + hashlib.sha256(observation.encode()).hexdigest()
 
 
 def _literal(value: str) -> str:
@@ -90,7 +105,7 @@ def machine_relation(conn: Any, table: str, refresh_id: str | None) -> str:
 def record_machine_partition(
     conn: Any, *, table: str, refresh_id: str, window_start: date, window_end: date,
     predecessor: str | None = None, replacement_start: date | None = None,
-    logical_row_count: int | None = None,
+    logical_row_count: int | None = None, input_fingerprint: str | None = None,
 ) -> None:
     if table not in MACHINE_TABLES:
         raise ValueError(f"unknown machine relation {table!r}")
@@ -99,17 +114,17 @@ def record_machine_partition(
     conn.execute(
         "INSERT OR REPLACE INTO substrate_product_lineage "
         "(product, refresh_id, predecessor_refresh_id, replacement_start, replacement_end, "
-        "window_start, window_end, logical_row_count, mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "window_start, window_end, logical_row_count, mode, input_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [table, refresh_id, predecessor, replacement_start,
          window_end + timedelta(days=1) if replacement_start is not None else None,
          window_start, window_end + timedelta(days=1), logical_row_count,
-         "incremental" if predecessor is not None else "full"],
+         "incremental" if predecessor is not None else "full", input_fingerprint],
     )
 
 
 def machine_predecessor(
     conn: Any, *, table: str, source: str, refresh_id: str,
-    window_start: date, window_end: date,
+    window_start: date, window_end: date, input_fingerprint: str | None = None,
 ) -> str | None:
     """Choose a complete earlier source window; never bridge an unscanned prefix."""
     row = conn.execute(
@@ -121,13 +136,10 @@ def machine_predecessor(
     if row is None:
         return None
     previous, start, end = row
-    exists = conn.execute(
-        "SELECT 1 FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?",
+    identity = conn.execute(
+        "SELECT input_fingerprint FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?",
         [table, previous],
     ).fetchone()
-    if exists is None:
-        # Annotate an already-published complete legacy snapshot. Only metadata
-        # changes in the private candidate; retained rows are not copied.
-        record_machine_partition(conn, table=table, refresh_id=previous,
-                                 window_start=start, window_end=end)
+    if identity is None or input_fingerprint is None or identity[0] != input_fingerprint:
+        return None  # Unknown or changed source locations cannot establish inheritance.
     return str(previous)
