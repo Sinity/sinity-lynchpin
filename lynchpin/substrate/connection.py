@@ -42,6 +42,23 @@ SUBSTRATE_VERSION = 50
 """Current schema contract; incompatible changes rebuild, declared additive changes migrate."""
 
 log = logging.getLogger(__name__)
+
+# Leave headroom inside the bulk job cap for Python objects and other native
+# allocations. DuckDB's host-derived default can exceed the entire job budget.
+_DATABASE_MEMORY_LIMIT = "4GiB"
+
+
+def _bounded_connect(duckdb: Any, database: str, *, read_only: bool = False) -> Any:
+    connection = duckdb.connect(database, read_only=read_only)
+    try:
+        # SET preserves compatibility with existing connections to this file;
+        # constructor config would reject a shared instance opened elsewhere.
+        connection.execute(f"SET memory_limit = '{_DATABASE_MEMORY_LIMIT}'")
+    except BaseException:
+        connection.close()
+        raise
+    return connection
+
 _CANCELLATION_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 _CANDIDATE_RECEIPT_PREFIX = "candidate-receipt-"
 _CANDIDATE_RECEIPT_LIMIT = 16
@@ -199,7 +216,7 @@ def generation_refresh_id(path: Path) -> str | None:
     import duckdb
 
     try:
-        with duckdb.connect(str(path), read_only=True) as conn:
+        with _bounded_connect(duckdb, str(path), read_only=True) as conn:
             row = conn.execute(
                 """
                 SELECT refresh_id
@@ -232,7 +249,7 @@ def generation_publication_identity(path: Path) -> tuple[str, datetime] | None:
     import duckdb
 
     try:
-        with duckdb.connect(str(path), read_only=True) as conn:
+        with _bounded_connect(duckdb, str(path), read_only=True) as conn:
             rows = dict(conn.execute(
                 "SELECT key, value FROM substrate_meta WHERE key IN ('publication_id', 'publication_at')"
             ).fetchall())
@@ -338,7 +355,7 @@ def _candidate_run_step_evidence(
     try:
         import duckdb
 
-        with duckdb.connect(str(candidate), read_only=True) as conn:
+        with _bounded_connect(duckdb, str(candidate), read_only=True) as conn:
             rows = conn.execute(
                 "SELECT step, status, message, row_count, started_at, finished_at "
                 "FROM substrate_run_step WHERE refresh_id = ? "
@@ -1051,7 +1068,7 @@ def _logical_index_rebuild_seed(source: Path, candidate: Path, refresh_id: str) 
             "logical index rebuild requires a readable verified generation"
         )
 
-    with duckdb.connect(str(candidate)) as conn:
+    with _bounded_connect(duckdb, str(candidate)) as conn:
         apply_schema(conn)
         source_sql = str(source).replace("'", "''")
         conn.execute(f"ATTACH '{source_sql}' AS source (READ_ONLY)")
@@ -1146,7 +1163,7 @@ def _latest_verified_generation(canonical: Path) -> Path:
         if refresh_id is None:
             continue
         try:
-            with duckdb.connect(str(path), read_only=True) as conn:
+            with _bounded_connect(duckdb, str(path), read_only=True) as conn:
                 row = conn.execute(
                     """
                     SELECT finished_at
@@ -1184,7 +1201,7 @@ def _record_publication_identity(generation: CandidateGeneration) -> None:
     )
     published_at = datetime.now(UTC)
     promotion_refresh_id = generation_refresh_id(generation.candidate)
-    with duckdb.connect(str(generation.candidate)) as conn:
+    with _bounded_connect(duckdb, str(generation.candidate)) as conn:
         conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_id', ?)",
                      [generation.refresh_id])
         conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('publication_at', ?)",
@@ -1221,7 +1238,7 @@ def _record_candidate_phase(
     assert isinstance(measurement, PhaseMeasurement)
     target_refresh_id = receipt_refresh_id or refresh_id
     try:
-        with duckdb.connect(str(candidate)) as conn:
+        with _bounded_connect(duckdb, str(candidate)) as conn:
             payload = record_phase_evidence(
                 conn,
                 refresh_id=target_refresh_id,
@@ -1271,7 +1288,7 @@ def _verify_candidate_publication_contract(
     import duckdb
 
     try:
-        with duckdb.connect(str(candidate), read_only=True) as conn:
+        with _bounded_connect(duckdb, str(candidate), read_only=True) as conn:
             promotion = conn.execute(
                 """
                 SELECT status FROM substrate_promotion_run
@@ -1332,7 +1349,7 @@ def _bind_candidate_attempt_evidence(generation: CandidateGeneration) -> None:
     from lynchpin.substrate.run_steps import record_run_step
 
     try:
-        with duckdb.connect(str(generation.candidate)) as conn:
+        with _bounded_connect(duckdb, str(generation.candidate)) as conn:
             record_run_step(
                 conn,
                 refresh_id=generation.expected_refresh_id,
@@ -1428,7 +1445,7 @@ def candidate_generation(
                 with measure_phase("candidate_write") as seed_measurement:
                     import duckdb
 
-                    with duckdb.connect(str(candidate)) as conn:
+                    with _bounded_connect(duckdb, str(candidate)) as conn:
                         apply_schema(conn)
                         conn.execute("CHECKPOINT")
             elif rebuild_indexes:
@@ -1673,7 +1690,7 @@ def connect(
     )
     with stable_read:
         try:
-            conn = duckdb.connect(str(target), read_only=read_only)
+            conn = _bounded_connect(duckdb, str(target), read_only=read_only)
         except (duckdb.IOException, duckdb.ConnectionException, duckdb.InternalException) as exc:
             if not read_only or not snapshot_fallback:
                 if rebuild_corrupt and not read_only and isinstance(exc, duckdb.InternalException):
@@ -1687,7 +1704,7 @@ def connect(
                     "substrate read opened snapshot %s because %s is unavailable: %s",
                     own_snapshot, target, exc,
                 )
-                conn = duckdb.connect(str(own_snapshot), read_only=True)
+                conn = _bounded_connect(duckdb, str(own_snapshot), read_only=True)
         try:
             yield conn
         finally:
@@ -1725,12 +1742,12 @@ def serving_generation(path: Path | str | None = None) -> Iterator[ServingGenera
         if generation_refresh_id(target) is None and generation_refresh_id(snapshot) is not None:
             selected = snapshot
         try:
-            conn = duckdb.connect(str(selected), read_only=True)
+            conn = _bounded_connect(duckdb, str(selected), read_only=True)
         except (duckdb.IOException, duckdb.ConnectionException, duckdb.InternalException):
             if selected == snapshot or not snapshot.exists():
                 raise
             selected = snapshot
-            conn = duckdb.connect(str(selected), read_only=True)
+            conn = _bounded_connect(duckdb, str(selected), read_only=True)
         try:
             manifest = (
                 _load_stable_substrate_status_manifest(target)

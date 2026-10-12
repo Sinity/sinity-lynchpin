@@ -53,6 +53,14 @@ readiness into a non-zero exit.
 ### 4. DuckDB substrate
 
 The substrate is a coherent analytical snapshot over a selected time window.
+
+Substrate connections use a 4 GiB DuckDB memory budget, including serving
+reads, candidate builds, recovery, and publication validation. DuckDB may
+spill supported operations beside the database on the configured storage.
+This budget leaves room for Python and other native allocations inside the
+job cap; it does not bound Python collections. Budget failures remain explicit
+and cannot publish an incomplete candidate.
+
 Promoters load canonical rows into typed tables for work, projects, personal
 signals, machine state, GitHub/review context, claims, and graph products.
 

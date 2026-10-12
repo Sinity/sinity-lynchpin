@@ -1282,3 +1282,30 @@ def test_publication_lock_contends_across_runtime_environments(
                 os.close(fd)
         _, status = os.waitpid(pid, 0)
     assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+
+
+def test_serving_reads_bound_duckdb_without_conflicting_with_existing_connection(tmp_path):
+    from lynchpin.substrate import connection
+
+    database = tmp_path / "bounded.duckdb"
+    with duckdb.connect(str(database)) as existing:
+        existing.execute("CREATE TABLE retained AS SELECT 42 AS value")
+        with connection.connect(database, snapshot_fallback=False) as bounded:
+            assert bounded.execute("SELECT current_setting('memory_limit')").fetchone() == ("4.0 GiB",)
+            assert bounded.execute("SELECT value FROM retained").fetchone() == (42,)
+        assert existing.execute("SELECT value FROM retained").fetchone() == (42,)
+
+
+def test_bounded_database_query_failure_retains_committed_data(tmp_path, monkeypatch):
+    from lynchpin.substrate import connection
+
+    database = tmp_path / "bounded-failure.duckdb"
+    with duckdb.connect(str(database)) as writer:
+        writer.execute("CREATE TABLE retained AS SELECT 42 AS value")
+    monkeypatch.setattr(connection, "_DATABASE_MEMORY_LIMIT", "1MiB")
+    with connection.connect(database, read_only=True, snapshot_fallback=False) as bounded:
+        with pytest.raises(duckdb.OutOfMemoryException):
+            bounded.execute("SELECT list(repeat('x', 1024) || i::VARCHAR) FROM range(100000) t(i)").fetchone()
+        assert bounded.execute("SELECT value FROM retained").fetchone() == (42,)
+    with duckdb.connect(str(database), read_only=True) as reopened:
+        assert reopened.execute("SELECT value FROM retained").fetchone() == (42,)
