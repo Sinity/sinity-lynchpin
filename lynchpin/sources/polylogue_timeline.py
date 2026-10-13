@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from lynchpin.core.parse import as_local, parse_datetime
@@ -611,9 +611,12 @@ def _service_spans(
     end: datetime,
 ) -> list[PolylogueTimelineSpan]:
     from lynchpin.sources.machine import service_states
-    from lynchpin.sources.service_health import downtime_intervals
+    from lynchpin.sources.service_health import MAX_OBSERVATION_GAP, downtime_intervals
 
-    states = list(service_states(start=start.date(), end=end.date()))
+    states = list(service_states(
+        start=(start - MAX_OBSERVATION_GAP).astimezone(timezone.utc),
+        end=end.astimezone(timezone.utc),
+    ))
     out = []
     for idx, down in enumerate(
         downtime_intervals(states, window_start=start, window_end=end)

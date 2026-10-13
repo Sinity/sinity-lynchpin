@@ -114,3 +114,20 @@ def test_service_spans_clip_date_wide_rows_to_session_window(monkeypatch):
         ("inactive", start + timedelta(seconds=20), start + timedelta(seconds=50)),
         ("unobserved", start + timedelta(seconds=50), end),
     ]
+
+
+def test_service_spans_read_bounded_utc_predecessor_across_midnight(monkeypatch):
+    import lynchpin.sources.machine as machine
+    import lynchpin.sources.polylogue_timeline as timeline
+    from lynchpin.sources.machine_models import MachineServiceState
+    for offset in (0,2):
+        start=datetime(2026,6,6,0,0,5,tzinfo=timezone(timedelta(hours=offset)))
+        end=start+timedelta(seconds=10)
+        prior=MachineServiceState(start-timedelta(seconds=10),"fixture",None,"polylogued.service","system","active","running")
+        def read(*,start,end):
+            assert start.tzinfo==timezone.utc and end.tzinfo==timezone.utc
+            assert end-start==timedelta(seconds=40)
+            return iter([prior] if start<=prior.observed_at<=end else [])
+        monkeypatch.setattr(machine,"service_states",read)
+        spans=timeline._service_spans(_profile(),start,end)
+        assert not any(span.summary=="polylogued.service" for span in spans)

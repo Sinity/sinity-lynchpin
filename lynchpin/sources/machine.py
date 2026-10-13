@@ -388,8 +388,12 @@ def _metric_sample_from_sqlite_row(row: sqlite3.Row) -> MachineMetricSample | No
 
 
 def service_states(
-    *, start: date | None = None, end: date | None = None, path: Path | None = None
+    *, start: date | datetime | None = None, end: date | datetime | None = None, path: Path | None = None
 ) -> Iterator[MachineServiceState]:
+    if isinstance(start, datetime):
+        start = start.astimezone(timezone.utc)
+    if isinstance(end, datetime):
+        end = end.astimezone(timezone.utc)
     if path is None:
         if db := _default_machine_db():
             yield from service_states(start=start, end=end, path=db)
@@ -1303,9 +1307,14 @@ def _metric_samples_from_ndjson(
 
 
 def _service_states_from_ndjson(
-    path: Path, *, start: date | None, end: date | None
+    path: Path, *, start: date | datetime | None, end: date | datetime | None
 ) -> Iterator[MachineServiceState]:
-    for row in _load_machine_rows(path, start=start, end=end):
+    for row in _load_machine_rows(path, start=_as_date(start), end=_as_date(end)):
+        observed = row["observed_at"]
+        if isinstance(start, datetime) and observed < start:
+            continue
+        if isinstance(end, datetime) and observed > end:
+            continue
         yield MachineServiceState(**row)
 
 

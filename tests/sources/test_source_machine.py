@@ -417,3 +417,17 @@ def test_network_samples_filter_stale_interfaces(monkeypatch, tmp_path):
         machine.network_samples(start=date(2026, 5, 15), end=date(2026, 5, 15), path=db)
     )
     assert [sample.interface for sample in network] == ["enp4s0"]
+
+
+def test_service_ndjson_datetime_bounds_preserve_exact_window(monkeypatch,tmp_path):
+    from lynchpin.sources import machine
+    from datetime import datetime,timedelta,timezone
+    start=datetime(2026,6,5,23,59,55,tzinfo=timezone.utc)
+    end=start+timedelta(seconds=20)
+    def rows(path,*,start,end):
+        assert start.isoformat()=="2026-06-05" and end.isoformat()=="2026-06-06"
+        for offset in (-1,0,20,21):
+            yield {"observed_at":datetime(2026,6,5,23,59,55,tzinfo=timezone.utc)+timedelta(seconds=offset),"host":"fixture","boot_id":None,"unit":"fixture.service","scope":"system","active_state":"active","sub_state":"running"}
+    monkeypatch.setattr(machine,"_load_machine_rows",rows)
+    result=list(machine._service_states_from_ndjson(tmp_path/"fixture.ndjson",start=start,end=end))
+    assert [row.observed_at for row in result]==[start,end]
