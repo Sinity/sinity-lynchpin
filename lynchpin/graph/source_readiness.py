@@ -40,11 +40,12 @@ def source_readiness(
         if repair_materializations
         else {}
     )
-    coverage = coverage_report(
+    coverage_audit = coverage_report(
         start=start,
         end=materialization_end,
         repair_materializations=repair_materializations,
-    ).by_source()
+    )
+    coverage = coverage_audit.by_source()
     comms_product_root = cfg.data_root / "state/lynchpin/communications"
     items: list[SourceReadiness] = [
         _path_source(
@@ -204,6 +205,7 @@ def source_readiness(
         generated_at=datetime.now(timezone.utc),
         sources=tuple(sorted(items, key=lambda item: item.source)),
         application_health=application_health_report(cfg=cfg),
+        service_evidence=coverage_audit.service_evidence,
     )
 
 
@@ -259,6 +261,9 @@ def render_source_readiness(report: SourceReadinessReport) -> str:
         for health in report.application_health:
             reason = str(health["reason"]).replace("|", "\\|").replace("\n", "<br>")
             lines.append(f"| {health['application']} | {health['probe_status']} | {health['health']} | {reason} |")
+    if report.service_evidence is not None:
+        from .capture_service_evidence import render_capture_service_evidence
+        lines += ["",render_capture_service_evidence(report.service_evidence)]
     return "\n".join(lines)
 
 

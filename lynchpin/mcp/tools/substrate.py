@@ -685,9 +685,16 @@ def analysis_readiness(
     dataset_rows = contract_coverage(start=start, end=end)
     substrate = substrate_readiness_report()
     machine_caveats: list[str] = []
+    service_evidence = None
     if start is not None and end is not None:
         from datetime import date, timedelta
         from lynchpin.graph.source_readiness import _machine_promotion_staleness
+        from lynchpin.graph.capture_service_evidence import capture_service_evidence
+        from datetime import datetime, timezone
+        service_evidence = capture_service_evidence(
+            start=datetime.combine(date.fromisoformat(start), datetime.min.time(), timezone.utc),
+            end=datetime.combine(date.fromisoformat(end)+timedelta(days=1), datetime.min.time(), timezone.utc),
+        )
         machine_caveats = list(_machine_promotion_staleness(
             window=(date.fromisoformat(start), date.fromisoformat(end) + timedelta(days=1)),
         ))
@@ -717,6 +724,7 @@ def analysis_readiness(
         "substrate": substrate,
         "machine_promotion_caveats": machine_caveats,
         "application_health": list(health_observations),
+        "capture_service_evidence": service_evidence,
         "summary": {
             "dataset_count": len(dataset_rows),
             "blocking_dataset_count": len(blocking_datasets),

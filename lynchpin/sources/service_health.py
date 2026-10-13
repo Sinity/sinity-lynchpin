@@ -78,6 +78,8 @@ def downtime_intervals(
     window_start: datetime,
     window_end: datetime,
     units: Sequence[str] = CAPTURE_SERVICE_UNITS,
+    host: str | None = None,
+    scope: str | None = None,
 ) -> Iterator[ServiceDowntime]:
     """Yield non-active-running intervals per unit within [window_start, window_end].
 
@@ -94,11 +96,14 @@ def downtime_intervals(
     unit_set = set(units)
     by_unit: dict[str, list[MachineServiceState]] = {}
     for state in states:
-        if state.unit in unit_set:
-            by_unit.setdefault(state.unit, []).append(state)
+        if state.unit in unit_set and (host is None or state.host == host) and (scope is None or state.scope == scope):
+            if window_start - MAX_OBSERVATION_GAP <= state.observed_at < window_end:
+                by_unit.setdefault(state.unit, []).append(state)
 
     for unit in units:
         rows = sorted(by_unit.get(unit, []), key=lambda s: s.observed_at)
+        if len({(row.host, row.scope) for row in rows}) > 1:
+            raise ValueError(f"ambiguous service identity for {unit}; select host and scope")
         if not rows:
             yield ServiceDowntime(
                 unit=unit, start=window_start, end=window_end,
@@ -114,63 +119,53 @@ def _is_running(state: MachineServiceState) -> bool:
 
 def _sweep_unit(
     unit: str,
-    rows: Sequence[MachineServiceState],
+    rows: Iterable[MachineServiceState],
     window_start: datetime,
     window_end: datetime,
 ) -> Iterator[ServiceDowntime]:
-    def _state_label(row: MachineServiceState) -> str:
-        return f"{row.active_state or '?'}/{row.sub_state or '?'}"
-    prior = [row for row in rows if row.observed_at < window_start]
-    in_window = [
-        row for row in rows
-        if window_start <= row.observed_at < window_end
-    ]
-    current = prior[-1] if prior else None
+    """Sweep sorted observations with one pending interval, not a window-sized list."""
+    current = None
     cursor = window_start
-    intervals: list[ServiceDowntime] = []
+    pending: ServiceDowntime | None = None
+    previous_time: datetime | None = None
 
-    def append(
-        start: datetime,
-        end: datetime,
-        kind: str,
-        states: tuple[str, ...],
-    ) -> None:
+    def append(start: datetime, end: datetime, kind: str, states: tuple[str, ...]) -> Iterator[ServiceDowntime]:
+        nonlocal pending
         if end <= start or kind == "active":
             return
-        if intervals and intervals[-1].end == start and intervals[-1].kind == kind:
-            previous = intervals[-1]
-            combined = tuple(dict.fromkeys(previous.observed_states + states))
-            intervals[-1] = ServiceDowntime(unit, previous.start, end, kind, combined)
+        if pending is not None and pending.end == start and pending.kind == kind:
+            pending = ServiceDowntime(unit, pending.start, end, kind,
+                                     tuple(dict.fromkeys(pending.observed_states + states)))
         else:
-            intervals.append(ServiceDowntime(unit, start, end, kind, states))
+            if pending is not None:
+                yield pending
+            pending = ServiceDowntime(unit, start, end, kind, states)
 
-    # A predecessor may establish the state at the left edge only while it is
-    # within the sampling hold. Otherwise the prefix is explicitly unknown.
-    if current is None or window_start - current.observed_at > MAX_OBSERVATION_GAP:
-        current = None
+    def advance(end: datetime) -> Iterator[ServiceDowntime]:
+        if current is None:
+            yield from append(cursor, end, "unobserved", ("unknown",))
+        else:
+            held = max(cursor, min(end, current.observed_at + MAX_OBSERVATION_GAP))
+            kind = "active" if _is_running(current) else "inactive"
+            label = f"{current.active_state or '?'}/{current.sub_state or '?'}"
+            yield from append(cursor, held, kind, (label,))
+            yield from append(held, end, "unobserved", ("unknown",))
 
-    for row in in_window:
-        if row.observed_at > cursor:
-            if current is None:
-                append(cursor, row.observed_at, "unobserved", ("unknown",))
-            else:
-                held_until = min(row.observed_at, current.observed_at + MAX_OBSERVATION_GAP)
-                kind = "active" if _is_running(current) else "inactive"
-                append(cursor, held_until, kind, (_state_label(current),))
-                append(held_until, row.observed_at, "unobserved", ("unknown",))
+    for row in rows:
+        if previous_time is not None and row.observed_at < previous_time:
+            raise ValueError("service observations must be time ordered")
+        previous_time = row.observed_at
+        if row.observed_at >= window_end:
+            break
+        if row.observed_at < window_start:
+            current = row
+            continue
+        yield from advance(row.observed_at)
         current = row
         cursor = row.observed_at
-
-    if cursor < window_end:
-        if current is None:
-            append(cursor, window_end, "unobserved", ("unknown",))
-        else:
-            held_until = min(window_end, current.observed_at + MAX_OBSERVATION_GAP)
-            kind = "active" if _is_running(current) else "inactive"
-            append(cursor, held_until, kind, (_state_label(current),))
-            append(held_until, window_end, "unobserved", ("unknown",))
-
-    yield from intervals
+    yield from advance(window_end)
+    if pending is not None:
+        yield pending
 
 
 def service_uptime_summary(
@@ -179,6 +174,8 @@ def service_uptime_summary(
     window_start: datetime,
     window_end: datetime,
     units: Sequence[str] = CAPTURE_SERVICE_UNITS,
+    host: str | None = None,
+    scope: str | None = None,
 ) -> dict[str, dict[str, float]]:
     """Per-unit uptime fraction over [window_start, window_end].
 
@@ -192,7 +189,7 @@ def service_uptime_summary(
         for unit in units
     }
     for interval in downtime_intervals(
-        states, window_start=window_start, window_end=window_end, units=units,
+        states, window_start=window_start, window_end=window_end, units=units, host=host, scope=scope,
     ):
         dt = (interval.end - interval.start).total_seconds()
         result[interval.unit]["downtime_s"] += max(dt, 0.0)

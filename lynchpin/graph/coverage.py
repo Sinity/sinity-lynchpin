@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from ..core.config import get_config
 from ..materialization import MaterializedDataset, materialized_dataset_coverage
@@ -49,6 +50,7 @@ class CoverageReport:
     end: date
     generated_at: datetime
     sources: tuple[SourceCoverage, ...]
+    service_evidence: dict[str, Any] | None = None
 
     def by_source(self) -> dict[str, SourceCoverage]:
         return {source.source: source for source in self.sources}
@@ -122,11 +124,16 @@ def coverage_report(
                 repair_hint=repair_hint,
             )
         )
+    from .capture_service_evidence import capture_service_evidence
     return CoverageReport(
         start=start,
         end=end,
         generated_at=datetime.now(timezone.utc),
         sources=tuple(sorted(rows, key=lambda item: item.source)),
+        service_evidence=capture_service_evidence(
+            start=datetime.combine(start, datetime.min.time(), timezone.utc),
+            end=datetime.combine(end, datetime.min.time(), timezone.utc), cfg=cfg,
+        ) if hasattr(cfg, "sinnix_runtime_inventory_json") else None,
     )
 
 
@@ -173,6 +180,9 @@ def render_coverage_report(report: CoverageReport) -> str:
         lines.append(
             f"| {row.source} | {row.status} | {row.row_count if row.row_count is not None else ''} | {coverage} | {basis} | {repair} |"
         )
+    if report.service_evidence is not None:
+        from .capture_service_evidence import render_capture_service_evidence
+        lines += ["",render_capture_service_evidence(report.service_evidence)]
     return "\n".join(lines)
 
 

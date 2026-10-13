@@ -199,3 +199,26 @@ def test_uptime_summary_counts_unobserved_as_downtime() -> None:
         units=("polylogued.service",),
     )
     assert summary["polylogued.service"]["uptime_fraction"] == 0.0
+
+
+def test_same_unit_across_managers_requires_identity_selection():
+    from dataclasses import replace
+    import pytest
+    unit="activitywatch.service"
+    rows=[S(unit,0,"failed","failed"),replace(S(unit,0),scope="user")]
+    with pytest.raises(ValueError,match="ambiguous service identity"):
+        list(downtime_intervals(rows,window_start=W_START,window_end=W_START+timedelta(seconds=20),units=(unit,)))
+    system=list(downtime_intervals(rows,window_start=W_START,window_end=W_START+timedelta(seconds=20),units=(unit,),host="sinnix-prime",scope="system"))
+    user=list(downtime_intervals(rows,window_start=W_START,window_end=W_START+timedelta(seconds=20),units=(unit,),host="sinnix-prime",scope="user"))
+    assert len(system)==1 and system[0].kind=="inactive"
+    assert user==[]
+
+
+def test_sorted_sweep_consumes_one_pass_and_rejects_reverse_time():
+    import pytest
+    from lynchpin.sources.service_health import _sweep_unit
+    unit="activitywatch.service"
+    rows=(S(unit,t) for t in range(0,3600,30))
+    assert list(_sweep_unit(unit,rows,W_START,W_END))==[]
+    with pytest.raises(ValueError,match="time ordered"):
+        list(_sweep_unit(unit,iter([S(unit,30),S(unit,0)]),W_START,W_END))
