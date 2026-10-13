@@ -1650,13 +1650,17 @@ def load_machine_promotion_freshness(
     from pathlib import Path as _Path
 
     from lynchpin.core.config import get_config
+    from lynchpin.core.errors import SourceUnavailableError
     from lynchpin.sources.machine_sqlite import as_utc, connect_readonly
 
     cfg = get_config()
     db_path = _Path(live_db_path) if live_db_path is not None else cfg.machine_telemetry_db
     results: list[dict[str, Any]] = []
-    if db_path is None or not db_path.exists():
-        return results
+    if db_path is None or not db_path.is_file():
+        raise SourceUnavailableError(
+            "machine", path=str(db_path) if db_path is not None else None,
+            reason="telemetry database is not configured or is not a regular file",
+        )
 
     sconn = connect_readonly(db_path)
     try:
@@ -1685,6 +1689,11 @@ def load_machine_promotion_freshness(
                 continue
             live_max = as_utc(live_max_raw) if live_max_raw else None
             if live_max is None:
+                if live_max_raw is not None:
+                    results.append({
+                        "table": duck_table, "live_table": live_table,
+                        "error": "latest live observed_at is invalid", "stale": None,
+                    })
                 continue
 
             try:

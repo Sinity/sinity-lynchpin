@@ -132,13 +132,40 @@ def test_machine_source_downgrades_to_partial_when_stale(tmp_path, monkeypatch):
     assert any("cgroup_memory_sample" in c for c in result.caveats)
 
 
-@pytest.mark.parametrize("bad_path", [None])
-def test_machine_promotion_staleness_no_live_db_returns_empty(tmp_path, monkeypatch, bad_path):
+@pytest.mark.parametrize("bad_path", ["missing", "directory", "unconfigured"])
+def test_machine_promotion_staleness_reports_unavailable_live_db(tmp_path, monkeypatch, bad_path):
+    sub_db = tmp_path / "substrate.duckdb"
+    _seed_substrate(sub_db)
+    path = {"missing": tmp_path / "missing.sqlite", "directory": tmp_path, "unconfigured": None}[bad_path]
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: sub_db)
+    monkeypatch.setattr("lynchpin.core.config.get_config", lambda: SimpleNamespace(machine_telemetry_db=path))
+    caveats = _machine_promotion_staleness()
+    assert len(caveats) == 1
+    assert "freshness check failed" in caveats[0]
+    assert "telemetry database" in caveats[0]
+    assert not (tmp_path / "missing.sqlite").exists()
+
+
+@pytest.mark.parametrize("timestamp", ["not-a-timestamp", ""])
+def test_machine_promotion_staleness_reports_invalid_timestamp(tmp_path, monkeypatch, timestamp):
+    live_db = tmp_path / "telemetry.sqlite"
+    _seed_live_sqlite(live_db, {"metric_sample": timestamp})
     sub_db = tmp_path / "substrate.duckdb"
     _seed_substrate(sub_db)
     monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: sub_db)
-    monkeypatch.setattr(
-        "lynchpin.core.config.get_config",
-        lambda: SimpleNamespace(machine_telemetry_db=tmp_path / "does-not-exist.sqlite"),
-    )
-    assert _machine_promotion_staleness(max_lag_hours=24.0) == ()
+    monkeypatch.setattr("lynchpin.core.config.get_config", lambda: SimpleNamespace(machine_telemetry_db=live_db))
+    caveats = _machine_promotion_staleness()
+    assert len(caveats) == 1
+    assert "machine_metric_sample" in caveats[0]
+    assert "observed_at is invalid" in caveats[0]
+
+
+def test_machine_promotion_staleness_empty_live_table_is_not_invalid(tmp_path, monkeypatch):
+    live_db = tmp_path / "telemetry.sqlite"
+    with sqlite3.connect(live_db) as conn:
+        conn.execute("CREATE TABLE metric_sample (observed_at TEXT)")
+    sub_db = tmp_path / "substrate.duckdb"
+    _seed_substrate(sub_db)
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: sub_db)
+    monkeypatch.setattr("lynchpin.core.config.get_config", lambda: SimpleNamespace(machine_telemetry_db=live_db))
+    assert _machine_promotion_staleness() == ()
