@@ -269,14 +269,28 @@ def _write_beads_index(path: Path, export: Path, count: int) -> None:
         if count
         else "No generated Beads export was available."
     )
-    path.write_text(
-        "# Beads task and memory records\n\n"
-        f"{status}\n\n"
-        "The adjacent `beads-export.jsonl` preserves the existing `bd export "
-        "--include-memories` records. This package step does not query or mutate "
-        "the Beads owner. Read the JSONL for complete issue, memory, and dependency fields.\n",
-        encoding="utf-8",
-    )
+    lines = [
+        "# Beads task and memory records", "", status, "",
+        "`beads-export.jsonl` retains complete owner-exported records, including "
+        "comments and dependencies. This is an issue snapshot, not a Dolt database "
+        "backup or task history. The export follows the repository's Beads redirect "
+        "independently of Git tracking.", "",
+    ]
+    if export.exists():
+        records = [json.loads(line) for line in export.read_text().splitlines() if line.strip()]
+        for row in sorted(records, key=lambda row: str(row.get("id", ""))):
+            lines.extend([
+                f"## {row.get('id', 'unknown')}: {row.get('title', '')}", "",
+                f"Status: {row.get('status', 'unknown')}; priority: {row.get('priority', 'unknown')}", "",
+            ])
+            for field in ("description", "design", "acceptance_criteria", "notes"):
+                if row.get(field):
+                    lines.extend([f"### {field.replace('_', ' ').capitalize()}", "", str(row[field]), ""])
+            for field in ("dependencies", "comments", "metadata"):
+                if row.get(field):
+                    lines.extend([f"### {field.capitalize()}", "", "```json",
+                                  json.dumps(row[field], indent=2, ensure_ascii=False), "```", ""])
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _verification_payload(

@@ -88,3 +88,5 @@ Publication builds a sibling candidate, verifies selected project manifests, and
 ## Relocating retained packages
 
 After an owner-led filesystem move, `agentctl job start lynchpin snapshot_locations -- --moves MOVES.json --local-root OWNER/.lynchpin` plans current substrate lookup changes. Add `--apply` to publish through a guarded candidate generation. The JSON list contains absolute `source` and `destination` prefixes; the longest component prefix wins. Only the latest run’s `output_dir` and slice `path` columns change. Captured timestamps, commits, sizes, package bytes and historical partitions remain unchanged. Keep the move receipt with the filesystem maintenance evidence.
+
+Beads records are read through the repository redirect using `bd export --include-memories`, independently of Git tracking. Each compact package includes complete records in `trackers/beads-export.jsonl` and readable task details, notes, comments, and dependencies in `trackers/beads.md`. These private issue snapshots do not replace native Dolt backups or preserve its commit history. Ready-task counts use an unlimited owner query.

@@ -470,3 +470,18 @@ def test_github_actions_runs_reports_cap_and_missing_owner_route(tmp_path, monke
         tmp_path, github_slug=None, revision="x", dirty=False, gh_path="gh"
     )
     assert no_slug["coverage"]["pages_read"] == 0
+
+
+def test_beads_readable_index_retains_external_task_context(tmp_path) -> None:
+    export = tmp_path / "beads-export.jsonl"
+    export.write_text(json.dumps({"id": "demo-1", "title": "Repair input",
+        "status": "open", "description": "Complete source details",
+        "notes": "Retained evidence", "dependencies": [{"depends_on_id": "demo-2"}],
+        "comments": [{"text": "Owner comment"}]}) + "\n")
+    original = export.read_bytes()
+    chisel_context._write_beads_index(tmp_path / "beads.md", export, 1)
+    text = (tmp_path / "beads.md").read_text()
+    for value in ("demo-1", "Repair input", "Complete source details", "Retained evidence",
+                  "demo-2", "Owner comment", "not a Dolt database"):
+        assert value in text
+    assert export.read_bytes() == original

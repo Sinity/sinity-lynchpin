@@ -307,7 +307,7 @@ def test_generate_beads_exports_issue_dependency_and_memory_context(
                 ),
                 "",
             )
-        if cmd == ["bd", "ready", "--json", "--readonly", "--sandbox"]:
+        if cmd == ["bd", "ready", "--limit", "0", "--json", "--readonly", "--sandbox"]:
             return subprocess.CompletedProcess(
                 cmd, 0, chisel.json.dumps([{"id": "example-b"}]), ""
             )
@@ -391,7 +391,7 @@ def test_generate_beads_strips_xml_disallowed_controls(
             return {"path": str(repo / ".beads")}
         if cmd == ["stats"]:
             return {"summary": {}}
-        if cmd in (["ready"], ["blocked"]):
+        if cmd in (["ready", "--limit", "0"], ["blocked"]):
             return []
         raise AssertionError(f"unexpected command: {cmd}")
 

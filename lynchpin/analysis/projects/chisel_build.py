@@ -1709,7 +1709,7 @@ def _generate_beads(
     try:
         workspace = _bd_json(["where"], cwd=plan.path)
         stats = _bd_json(["stats"], cwd=plan.path) or {}
-        ready = _bd_json(["ready"], cwd=plan.path) or []
+        ready = _bd_json(["ready", "--limit", "0"], cwd=plan.path) or []
         blocked = _bd_json(["blocked"], cwd=plan.path) or []
         rows = _bd_export_rows(plan.path)
     except (FileNotFoundError, json.JSONDecodeError, SourceUnavailableError) as exc:
