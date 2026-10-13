@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from ..core.config import get_config
+from ..materialization import MaterializedDataset, materialized_dataset_coverage
 
 CoverageStatus = str
 
@@ -24,16 +25,13 @@ class SourceCoverage:
     path: str | None = None
     basis: str = "source"
     repair_hint: str | None = None
+    fully_covers_requested_window: bool | None = None
+    covered_days: int | None = None
+    requested_days: int | None = None
 
     @property
     def covers_requested_window(self) -> bool:
-        requested_last = self.requested_end - timedelta(days=1)
-        return bool(
-            self.first_date is not None
-            and self.last_date is not None
-            and self.first_date <= self.requested_start
-            and self.last_date >= requested_last
-        )
+        return self.fully_covers_requested_window is True
 
     @property
     def intersects_requested_window(self) -> bool:
@@ -173,7 +171,7 @@ def render_coverage_report(report: CoverageReport) -> str:
         if reason:
             basis = f"{basis}<br>{reason}"
         lines.append(
-            f"| {row.source} | {row.status} | {row.row_count or ''} | {coverage} | {basis} | {repair} |"
+            f"| {row.source} | {row.status} | {row.row_count if row.row_count is not None else ''} | {coverage} | {basis} | {repair} |"
         )
     return "\n".join(lines)
 
@@ -191,6 +189,9 @@ def _row(
     path: Path | str | None = None,
     basis: str = "source",
     repair_hint: str | None = None,
+    fully_covers: bool | None = None,
+    covered_days: int | None = None,
+    requested_days: int | None = None,
 ) -> SourceCoverage:
     return SourceCoverage(
         source=source,
@@ -204,26 +205,15 @@ def _row(
         path=str(path) if path is not None else None,
         basis=basis,
         repair_hint=repair_hint,
-    )
-
-
-def _coverage_status(first: date | None, last: date | None, start: date, end: date) -> tuple[CoverageStatus, str]:
-    if first is None or last is None:
-        return "missing", "no parsed rows"
-    requested_last = end - timedelta(days=1)
-    if first <= start and last >= requested_last:
-        return "available", "parsed rows cover the requested window"
-    if first < end and last >= start:
-        return "partial", "parsed rows only partially cover the requested window"
-    return (
-        "out_of_range",
-        "parsed rows do not intersect the requested window",
+        fully_covers_requested_window=fully_covers,
+        covered_days=covered_days,
+        requested_days=requested_days,
     )
 
 
 def _from_materialized_dataset(
     source: str,
-    dataset: object,
+    dataset: MaterializedDataset,
     *,
     start: date,
     end: date,
@@ -231,7 +221,8 @@ def _from_materialized_dataset(
     basis: str,
     repair_hint: str | None = None,
 ) -> SourceCoverage:
-    status_value = getattr(dataset, "status", None)
+    coverage = materialized_dataset_coverage(dataset, start=start, end=end)
+    status_value = dataset.status
     if status_value != "ready":
         status: CoverageStatus = "missing" if status_value == "missing" else "partial"
         reason = f"materialized product is {status_value}: {getattr(dataset, 'reason', '')}"
@@ -241,14 +232,25 @@ def _from_materialized_dataset(
             end,
             status=status,
             reason=reason,
-            count=getattr(dataset, "row_count", None),
+            first=dataset.first_date,
+            last=dataset.last_date,
+            count=dataset.row_count,
             path=path,
             basis=basis,
             repair_hint=repair_hint,
+            fully_covers=coverage["fully_covers_requested_window"],
+            covered_days=coverage["covered_days"],
+            requested_days=coverage["requested_days"],
         )
     first = getattr(dataset, "first_date", None)
     last = getattr(dataset, "last_date", None)
-    status, reason = _coverage_status(first, last, start, end)
+    relation = coverage["relation"]
+    status = {
+        "covers_window": "available",
+        "no_overlap": "out_of_range",
+        "undated": "missing",
+    }.get(relation, "partial")
+    reason = coverage["interpretation"]
     return _row(
         source,
         start,
@@ -261,6 +263,9 @@ def _from_materialized_dataset(
         path=path,
         basis=basis,
         repair_hint=repair_hint,
+        fully_covers=coverage["fully_covers_requested_window"],
+        covered_days=coverage["covered_days"],
+        requested_days=coverage["requested_days"],
     )
 
 

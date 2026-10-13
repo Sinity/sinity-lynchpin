@@ -304,3 +304,7 @@ ActivityWatch event-index manifests record the logical-day boundary, effective t
 Disabling refresh with `ensure=False` still reads the retained canonical ActivityWatch index for covered historical windows. Explicit SQLite overrides and unindexed tail windows read the native source. Missing selected index partitions remain explicit errors instead of silently changing the input route.
 
 The header-only terminal index is refreshed with `agentctl job start lynchpin asciinema_index` (`python -m lynchpin.cli.asciinema_index`). It follows the configured asciinema capture root and its explicit override, preserves producer metadata, and atomically replaces `index/asciinema_sessions.ndjson`. Missing or inaccessible input fails without creating a capture directory or replacing an existing index; an accessible empty source publishes an empty index. `--out` selects a different derived destination.
+
+## Coverage audit
+
+`python -m lynchpin.cli.coverage_audit` uses the same window calculation as the materialization audit. First and last event dates alone establish overlap; intervening coverage remains unknown. Precise covered dates expose internal gaps. Reports retain measured zero row counts and distinguish them from unavailable counts. JSON includes covered and requested day counts and nullable full-window coverage.

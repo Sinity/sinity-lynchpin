@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +28,7 @@ def _dataset(
         last_date=last,
         materialization_hint="refresh",
         reason="fixture",
+        covered_dates=tuple(first + timedelta(days=i) for i in range((last - first).days + 1)) if first and last else (),
     )
 
 
@@ -197,3 +198,36 @@ def test_coverage_report_can_skip_inline_materialization_repair(monkeypatch, tmp
 
     assert ensure_calls == []
     assert report.by_source()["webhistory"].status == "missing"
+
+
+def test_graph_coverage_preserves_gaps_and_unknown_coverage(monkeypatch):
+    from dataclasses import replace
+    from lynchpin.graph.coverage import render_coverage_report
+    from lynchpin.materialization import materialized_dataset_coverage
+
+    start, end = date(2026, 5, 20), date(2026, 5, 24)
+    complete = _dataset("activitywatch", first=start, last=end - timedelta(days=1))
+    cases = [
+        (complete, "available", True, 4),
+        (replace(complete, covered_dates=(start, end - timedelta(days=1))), "partial", False, 2),
+        (replace(complete, covered_dates=()), "partial", None, None),
+        (replace(complete, status="missing", row_count=0), "missing", False, 0),
+        (replace(complete, status="stale", tail_stale=True), "partial", True, 4),
+    ]
+    monkeypatch.setattr("lynchpin.graph.coverage.get_config", lambda: SimpleNamespace())
+    for dataset, status, full, days in cases:
+        monkeypatch.setattr("lynchpin.materialization.audit_materialization", lambda cfg=None: [dataset])
+        report = coverage_report(start=start, end=end, repair_materializations=False)
+        row = report.sources[0]
+        canonical = materialized_dataset_coverage(dataset, start=start, end=end)
+        assert row.status == status
+        assert row.fully_covers_requested_window is full
+        assert row.covers_requested_window is (full is True)
+        if status != "missing":
+            assert row.covered_days == days == canonical["covered_days"]
+            if dataset.status == "ready":
+                assert row.reason == canonical["interpretation"]
+            else:
+                assert "stale" in row.reason
+        else:
+            assert "| missing | 0 |" in render_coverage_report(report)
