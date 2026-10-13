@@ -1626,13 +1626,13 @@ def load_machine_promotion_freshness(
     *,
     max_lag_hours: float = 24.0,
     live_db_path: Any = None,
+    refresh_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Compare each machine substrate table's newest row against the live source.
 
     Returns one entry per table in ``MACHINE_PROMOTION_FRESHNESS_TABLES`` with
     the live SQLite source's ``MAX(observed_at)``, the DuckDB substrate's
-    ``MAX(observed_at)`` across ALL refresh_ids (i.e. whatever is actually
-    persisted right now, not scoped to one refresh attempt), the lag in
+    ``MAX(observed_at)`` in one serving logical generation, the lag in
     hours, and a ``stale`` flag when the lag exceeds ``max_lag_hours``. A
     table missing from the live source (not yet captured on this host/schema
     version) is skipped entirely rather than reported stale — missing is
@@ -1661,6 +1661,18 @@ def load_machine_promotion_freshness(
             "machine", path=str(db_path) if db_path is not None else None,
             reason="telemetry database is not configured or is not a regular file",
         )
+
+    from lynchpin.substrate.snapshots import latest_materialized_refresh_id
+
+    if refresh_id is None:
+        refresh_id = latest_materialized_refresh_id(conn, caller="machine_promotion_freshness")
+        if refresh_id is None:
+            has_runs = conn.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_schema = 'main' "
+                "AND table_name = 'substrate_promotion_run'"
+            ).fetchone()
+            if has_runs and conn.execute("SELECT 1 FROM substrate_promotion_run LIMIT 1").fetchone():
+                raise SourceUnavailableError("machine substrate", reason="no serving promotion generation")
 
     sconn = connect_readonly(db_path)
     try:
@@ -1697,7 +1709,13 @@ def load_machine_promotion_freshness(
                 continue
 
             try:
-                duck_row = conn.execute(f"SELECT MAX(observed_at) FROM {duck_table}").fetchone()
+                relation = machine_relation(conn, duck_table, refresh_id)
+                if refresh_id is not None and relation == duck_table:
+                    duck_row = conn.execute(
+                        f"SELECT MAX(observed_at) FROM {relation} WHERE refresh_id = ?", [refresh_id],
+                    ).fetchone()
+                else:
+                    duck_row = conn.execute(f"SELECT MAX(observed_at) FROM {relation}").fetchone()
             except Exception as exc:  # e.g. table not yet created by apply_schema
                 results.append(
                     {
@@ -1725,6 +1743,7 @@ def load_machine_promotion_freshness(
                 {
                     "table": duck_table,
                     "live_table": live_table,
+                    "refresh_id": refresh_id,
                     "live_max_observed_at": live_max.isoformat(),
                     "substrate_max_observed_at": duck_max.isoformat() if duck_max else None,
                     "lag_hours": lag_hours,

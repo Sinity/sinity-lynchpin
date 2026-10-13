@@ -10,7 +10,7 @@ visible readiness caveat / status downgrade.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -169,3 +169,50 @@ def test_machine_promotion_staleness_empty_live_table_is_not_invalid(tmp_path, m
     monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: sub_db)
     monkeypatch.setattr("lynchpin.core.config.get_config", lambda: SimpleNamespace(machine_telemetry_db=live_db))
     assert _machine_promotion_staleness() == ()
+
+
+def test_failed_promotion_rows_cannot_mask_serving_generation_lag(tmp_path, monkeypatch):
+    from lynchpin.substrate.connection import connect
+    live_db = tmp_path / "live.sqlite"
+    _seed_live_sqlite(live_db, {"metric_sample": "2026-07-06T10:00:00+00:00"})
+    sub_db = tmp_path / "substrate.duckdb"
+    _seed_substrate(sub_db, metric_observed_at=datetime(2026, 6, 26, 6, tzinfo=timezone.utc))
+    with connect(sub_db) as conn:
+        conn.execute("INSERT INTO substrate_promotion_run (refresh_id,status,started_at,finished_at) VALUES ('r1','ok',now(),now()), ('failed','failed',now(),now())")
+        conn.execute("INSERT INTO machine_metric_sample (observed_at,host,source,source_schema_version,refresh_id) VALUES (?, 'fixture', 'fixture', 1, 'failed')", [datetime(2026,7,6,10,tzinfo=timezone.utc)])
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: sub_db)
+    monkeypatch.setattr("lynchpin.core.config.get_config", lambda: SimpleNamespace(machine_telemetry_db=live_db))
+    assert any("behind live telemetry" in item for item in _machine_promotion_staleness())
+
+
+def test_failed_only_promotion_is_unavailable(tmp_path, monkeypatch):
+    from lynchpin.substrate.connection import connect
+    live_db = tmp_path / "live.sqlite"
+    _seed_live_sqlite(live_db, {"metric_sample": "2026-07-06T10:00:00+00:00"})
+    sub_db = tmp_path / "substrate.duckdb"
+    _seed_substrate(sub_db, metric_observed_at=datetime(2026,7,6,10,tzinfo=timezone.utc))
+    with connect(sub_db) as conn:
+        conn.execute("INSERT INTO substrate_promotion_run (refresh_id,status,started_at,finished_at) VALUES ('r1','failed',now(),now())")
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: sub_db)
+    monkeypatch.setattr("lynchpin.core.config.get_config", lambda: SimpleNamespace(machine_telemetry_db=live_db))
+    assert any("no serving promotion generation" in item for item in _machine_promotion_staleness())
+
+
+def test_freshness_includes_serving_inherited_partition(tmp_path, monkeypatch):
+    from lynchpin.substrate.connection import connect
+    from lynchpin.substrate.machine_lineage import record_machine_partition
+    from lynchpin.substrate.machine import load_machine_promotion_freshness
+    live_db = tmp_path / "live.sqlite"
+    _seed_live_sqlite(live_db, {"metric_sample": "2026-07-06T10:00:00+00:00"})
+    sub_db = tmp_path / "substrate.duckdb"
+    _seed_substrate(sub_db, metric_observed_at=datetime(2026, 7, 6, 10, tzinfo=timezone.utc))
+    with connect(sub_db) as conn:
+        monkeypatch.setattr("lynchpin.core.config.get_config", lambda: SimpleNamespace(machine_telemetry_db=live_db))
+        record_machine_partition(conn, table="machine_metric_sample", refresh_id="r1", window_start=date(2026,7,5), window_end=date(2026,7,6))
+        record_machine_partition(conn, table="machine_metric_sample", refresh_id="child", predecessor="r1", replacement_start=date(2026,7,7), window_start=date(2026,7,5), window_end=date(2026,7,7))
+        conn.execute("INSERT INTO substrate_promotion_run (refresh_id,status,started_at,finished_at) VALUES ('child','ok',now(),now())")
+        reports = load_machine_promotion_freshness(conn)
+    assert len(reports) == 1
+    assert reports[0]["refresh_id"] == "child"
+    assert reports[0]["stale"] is False
+    assert reports[0]["lag_hours"] == 0
