@@ -1,26 +1,24 @@
-"""Build a per-day asciinema header index.
+"""Build a header-only index of configured asciinema captures.
 
-The full asciinema corpus is ~181 GB across ~2,900 session.cast files;
-parsing event streams in source modules is impractical. Instead we
-extract a header-only index that gives downstream consumers the
-session metadata they need for cross-referencing with Atuin / keylog
-/ AW: when did this terminal start, on which pty, with which shell.
+The default output is index/asciinema_sessions.ndjson beneath the configured
+capture root. Input placement uses Lynchpin's filesystem registry and explicit
+LYNCHPIN_ASCIINEMA_ROOT override. Only headers are read, not event streams.
 
-Output: /realm/activity/asciinema/index/asciinema_sessions.ndjson
-(one record per .cast file).
-
-Run: python scripts/asciinema_index.py
+Run: python -m lynchpin.cli.asciinema_index
 """
 from __future__ import annotations
 
+import argparse
 import json
+import os
+import tempfile
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-CAST_ROOT = Path("/realm/activity/asciinema")
-INDEX_PATH = CAST_ROOT / "index" / "asciinema_sessions.ndjson"
+from lynchpin.core.config import get_config
+from lynchpin.core.errors import SourceUnavailableError
 
 DIR_RE = re.compile(
     r"^(?P<host>[^-]+)-(?P<user>[^-]+)-(?P<shell>[a-z0-9._]+)_"
@@ -60,10 +58,17 @@ def parse_dir_name(dir_name: str) -> dict | None:
     }
 
 
-def iter_sessions():
+def iter_sessions(root: Path):
     """Yield one dict per session.cast found."""
-    for cast in sorted(CAST_ROOT.rglob("session.cast")):
-        rel = cast.relative_to(CAST_ROOT)
+    def fail(error: OSError) -> None:
+        raise error
+
+    for directory, _dirs, files in root.walk(on_error=fail):
+        _dirs.sort()
+        if "session.cast" not in files:
+            continue
+        cast = directory / "session.cast"
+        rel = cast.relative_to(root)
         # rel = YYYY/MM/DD/<dir>/session.cast
         parts = rel.parts
         if len(parts) < 5:
@@ -121,17 +126,41 @@ def iter_sessions():
         yield rec
 
 
-def main():
-    INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-    n = 0
-    with INDEX_PATH.open("w", encoding="utf-8") as out:
-        for rec in iter_sessions():
-            out.write(json.dumps(rec, sort_keys=True) + "\n")
-            n += 1
-            if n % 500 == 0:
-                print(f"  {n} sessions indexed...", file=sys.stderr, flush=True)
-    print(f"\nWrote {n} sessions → {INDEX_PATH}", file=sys.stderr)
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", type=Path, help="Override the index destination")
+    args = parser.parse_args(argv)
+    temporary: Path | None = None
+    try:
+        root = get_config().asciinema_root
+        # Probe access before creating any output directory. Path.walk may yield
+        # nothing for an absent root; that is unavailable input, not an empty scan.
+        with os.scandir(root):
+            pass
+        output = args.out or root / "index" / "asciinema_sessions.ndjson"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=output.parent,
+                                         prefix=".asciinema-index-", delete=False) as out:
+            temporary = Path(out.name)
+            n = 0
+            for rec in iter_sessions(root):
+                out.write(json.dumps(rec, sort_keys=True) + "\n")
+                n += 1
+                if n % 500 == 0:
+                    print(f"  {n} sessions indexed...", file=sys.stderr, flush=True)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temporary, output)
+        temporary = None
+        print(f"\nWrote {n} sessions → {output}", file=sys.stderr)
+        return 0
+    except (OSError, ValueError, SourceUnavailableError) as error:
+        print(f"asciinema index failed: {error}", file=sys.stderr)
+        return 2
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

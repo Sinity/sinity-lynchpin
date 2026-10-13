@@ -9,7 +9,7 @@ operator directs agents rather than typing code or committing directly.
 
 Same state-dump -> claude -p -> versioned-output shape as the sinnix
 enrich-dump family of tools; kept as a standalone script (like
-scripts/asciinema_index.py) rather than wired into the materialize DAG,
+lynchpin.cli.asciinema_index) rather than wired into the materialize DAG,
 since this is a periodic evidence-mining job, not a daily substrate input.
 
 Output: /realm/report/cartography/<timestamp>/{evidence-bundle.json,skill-map.json}

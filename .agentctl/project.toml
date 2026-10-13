@@ -401,3 +401,11 @@ scratch = "nvme"
 timeout_seconds = 7200
 # Full restoration needs headroom for native allocations beyond DuckDB buffers.
 admission = { memory_mib = 10240 }
+
+[operations.asciinema_index]
+description = "Refresh the header-only terminal capture index without reading event streams"
+exec = ["python", "-m", "lynchpin.cli.asciinema_index"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+timeout_seconds = 900
