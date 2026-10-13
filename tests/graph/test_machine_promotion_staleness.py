@@ -216,3 +216,90 @@ def test_freshness_includes_serving_inherited_partition(tmp_path, monkeypatch):
     assert reports[0]["refresh_id"] == "child"
     assert reports[0]["stale"] is False
     assert reports[0]["lag_hours"] == 0
+
+
+@pytest.mark.parametrize("fresh_tail", [False, True])
+def test_window_comparison_detects_partial_history_with_a_fresh_tail(tmp_path, monkeypatch, fresh_tail):
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_promotion_freshness
+    live = tmp_path / "live.sqlite"
+    with sqlite3.connect(live) as conn:
+        conn.execute("CREATE TABLE metric_sample (observed_at TEXT NOT NULL)")
+        conn.execute("CREATE INDEX metric_time ON metric_sample(observed_at)")
+        conn.execute("WITH RECURSIVE rows(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM rows WHERE n<447000) INSERT INTO metric_sample SELECT strftime('%Y-%m-%dT%H:%M:%S+00:00', '2026-06-30', '+' || (n*86400/447001) || ' seconds') FROM rows")
+        conn.execute("INSERT INTO metric_sample VALUES ('2026-07-01T01:00:00+00:00')")
+    with connect(tmp_path / "sub.duckdb") as conn:
+        apply_schema(conn)
+        conn.execute("INSERT INTO machine_metric_sample (observed_at,host,source,source_schema_version,refresh_id) SELECT TIMESTAMPTZ '2026-06-30T00:00:00Z' + CAST(n*16200/14999 AS BIGINT) * INTERVAL '1 second','fixture','fixture',1,'r1' FROM range(15000) AS rows(n)")
+        if fresh_tail:
+            conn.execute("UPDATE machine_metric_sample SET observed_at=TIMESTAMPTZ '2026-06-30T20:00:00Z' WHERE observed_at=TIMESTAMPTZ '2026-06-30T04:30:00Z'")
+        monkeypatch.setattr("lynchpin.core.config.get_config", lambda: SimpleNamespace(machine_telemetry_db=live))
+        rows = load_machine_promotion_freshness(conn, window=(date(2026,6,30),date(2026,7,1)))
+    assert rows[0]["stale"] is False  # A current tail does not prove historical completeness.
+    assert rows[0]["live_window_rows"] == 447000
+    assert rows[0]["substrate_window_rows"] == 15000
+    assert rows[0]["window_row_count_agrees"] is False
+
+
+def test_window_comparison_rejects_unindexed_full_source_scan(tmp_path, monkeypatch):
+    from lynchpin.substrate.connection import connect
+    from lynchpin.substrate.machine import load_machine_promotion_freshness
+    live = tmp_path / "live.sqlite"
+    _seed_live_sqlite(live, {"metric_sample": "2026-07-06T10:00:00+00:00"})
+    sub = tmp_path / "sub.duckdb"
+    _seed_substrate(sub, metric_observed_at=datetime(2026,7,6,10,tzinfo=timezone.utc))
+    with connect(sub) as conn:
+        monkeypatch.setattr("lynchpin.core.config.get_config", lambda: SimpleNamespace(machine_telemetry_db=live))
+        rows = load_machine_promotion_freshness(conn, window=(date(2026,7,6),date(2026,7,7)))
+    assert rows[0]["live_window_rows"] is None
+    assert rows[0]["window_row_count_agrees"] is None
+    assert "indexed time-range" in rows[0]["history_error"]
+
+
+def test_window_comparison_measures_empty_source_as_zero(tmp_path, monkeypatch):
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_promotion_freshness
+    live = tmp_path / "empty.sqlite"
+    with sqlite3.connect(live) as conn:
+        conn.execute("CREATE TABLE metric_sample (observed_at TEXT NOT NULL)")
+        conn.execute("CREATE INDEX metric_time ON metric_sample(observed_at)")
+    with connect(tmp_path / "sub.duckdb") as conn:
+        apply_schema(conn)
+        monkeypatch.setattr("lynchpin.core.config.get_config", lambda: SimpleNamespace(machine_telemetry_db=live))
+        rows = load_machine_promotion_freshness(conn, window=(date(2026,6,30),date(2026,7,1)))
+    assert rows[0]["live_window_rows"] == rows[0]["substrate_window_rows"] == 0
+    assert rows[0]["window_row_count_agrees"] is True
+
+
+def test_readiness_exposes_window_disagreement(monkeypatch):
+    from contextlib import nullcontext
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture")
+    monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *a, **kw: nullcontext(object()))
+    def report(conn, *, max_lag_hours, window):
+        assert window == (date(2026,6,30),date(2026,7,1))
+        return [{"table":"machine_metric_sample", "stale":False, "window_row_count_agrees":False,
+                 "live_window_rows":447000,"substrate_window_rows":15000,
+                 "comparison_window_start":"2026-06-30","comparison_window_end":"2026-07-01"}]
+    monkeypatch.setattr("lynchpin.substrate.machine.load_machine_promotion_freshness", report)
+    caveats = _machine_promotion_staleness(window=(date(2026,6,30),date(2026,7,1)))
+    assert len(caveats)==1 and "447000 live, 15000 substrate" in caveats[0]
+
+
+def test_window_budget_exhaustion_is_unavailable_not_zero(tmp_path):
+    from lynchpin.substrate.machine import _machine_window_row_counts
+    with sqlite3.connect(tmp_path / "fixture.sqlite") as conn:
+        conn.execute("CREATE TABLE metric_sample (observed_at TEXT NOT NULL)")
+        conn.execute("CREATE INDEX metric_time ON metric_sample(observed_at)")
+        result = _machine_window_row_counts(None, conn, duck_table="machine_metric_sample", live_table="metric_sample", refresh_id=None, window=(date(2026,6,30),date(2026,7,1)), deadline=-1)
+    assert result["live_window_rows"] is None
+    assert result["substrate_window_rows"] is None
+    assert result["window_row_count_agrees"] is None
+    assert "budget exhausted" in result["history_error"]
+
+
+def test_machine_readiness_retains_measured_zero_rows(tmp_path, monkeypatch):
+    path = tmp_path / "fixture.sqlite"
+    monkeypatch.setattr("lynchpin.graph.source_readiness.get_config", lambda: SimpleNamespace(machine_telemetry_db=path))
+    monkeypatch.setattr("lynchpin.sources.machine.readiness", lambda: MachineSourceReadiness(status="ready", reason="measured empty", live_db=path, live_rows=0))
+    monkeypatch.setattr("lynchpin.graph.source_readiness._machine_promotion_staleness", lambda **kwargs: ())
+    assert _machine_source().count == 0

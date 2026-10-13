@@ -51,3 +51,48 @@ def test_window_select_empty_indexed_source():
                         where=['observed_at>=?'], order='observed_at,label',
                         prefix='label', index='sample_label_time')
     assert conn.execute(sql, ('0990',)).fetchall() == []
+
+
+def test_readonly_connection_preserves_uri_punctuation_in_filename(tmp_path):
+    import sqlite3
+    from lynchpin.sources.machine_sqlite import connect_readonly
+    actual = tmp_path / "capture?detail#part.sqlite"
+    decoy = tmp_path / "capture"
+    for path, value in [(actual, 2), (decoy, 1)]:
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE evidence (value INTEGER)")
+            conn.execute("INSERT INTO evidence VALUES (?)", [value])
+    with connect_readonly(actual) as conn:
+        assert conn.execute("SELECT value FROM evidence").fetchone() == (2,)
+        try:
+            conn.execute("DELETE FROM evidence")
+        except sqlite3.OperationalError as exc:
+            assert "readonly" in str(exc)
+        else:
+            raise AssertionError("readonly source permitted mutation")
+
+
+def test_latest_timestamp_seeks_each_nonnullable_index_prefix(tmp_path):
+    import sqlite3
+    from lynchpin.sources.machine_sqlite import latest_observed_at
+    with sqlite3.connect(tmp_path / "fixture.sqlite") as conn:
+        conn.execute("CREATE TABLE sample (host TEXT NOT NULL, observed_at TEXT NOT NULL)")
+        conn.execute("CREATE INDEX host_time ON sample(host, observed_at)")
+        conn.executemany("INSERT INTO sample VALUES (?,?)", [("a","2026-01-01T00:00:00Z"),("b","2026-01-03T00:00:00Z"),("a","2026-01-02T00:00:00Z")])
+        statements = []
+        conn.set_trace_callback(statements.append)
+        assert latest_observed_at(conn,"sample") == "2026-01-03T00:00:00Z"
+        sql = next(statement for statement in statements if statement.startswith("WITH RECURSIVE"))
+        plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql)]
+        assert any("SEARCH sample" in row and "host=?" in row for row in plan)
+        assert not any("SCAN sample" in row for row in plan)
+
+
+def test_latest_timestamp_keeps_nullable_prefix_records(tmp_path):
+    import sqlite3
+    from lynchpin.sources.machine_sqlite import latest_observed_at
+    with sqlite3.connect(tmp_path / "fixture.sqlite") as conn:
+        conn.execute("CREATE TABLE sample (host TEXT, observed_at TEXT NOT NULL)")
+        conn.execute("CREATE INDEX host_time ON sample(host, observed_at)")
+        conn.executemany("INSERT INTO sample VALUES (?,?)", [("a","2026-01-01T00:00:00Z"),(None,"2026-01-03T00:00:00Z")])
+        assert latest_observed_at(conn,"sample") == "2026-01-03T00:00:00Z"

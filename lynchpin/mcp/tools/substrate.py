@@ -682,6 +682,13 @@ def analysis_readiness(
     """One-stop readiness for dataset contracts plus latest substrate statuses."""
     dataset_rows = contract_coverage(start=start, end=end)
     substrate = substrate_readiness_report()
+    machine_caveats: list[str] = []
+    if start is not None and end is not None:
+        from datetime import date, timedelta
+        from lynchpin.graph.source_readiness import _machine_promotion_staleness
+        machine_caveats = list(_machine_promotion_staleness(
+            window=(date.fromisoformat(start), date.fromisoformat(end) + timedelta(days=1)),
+        ))
     blocking_datasets = [
         row for row in dataset_rows
         if row["substrate_status"] in {"unavailable", "error"}
@@ -692,6 +699,12 @@ def analysis_readiness(
         and isinstance(row.get("coverage"), dict)
         and row["coverage"].get("relation") in {"no_overlap", "partial_overlap"}
     ]
+    continuous_coverage_unknown = [
+        row for row in dataset_rows
+        if row.get("collection_model") == "continuous"
+        and isinstance(row.get("coverage"), dict)
+        and row["coverage"].get("relation") in {"extent_overlap", "undated"}
+    ]
     blocking_stages = [
         row for row in substrate["sources"]
         if row.get("kind") == "stage" and row["status"] in {"unavailable", "error"}
@@ -700,14 +713,18 @@ def analysis_readiness(
         "requested_window": {"start": start, "end": end},
         "datasets": dataset_rows,
         "substrate": substrate,
+        "machine_promotion_caveats": machine_caveats,
         "summary": {
             "dataset_count": len(dataset_rows),
             "blocking_dataset_count": len(blocking_datasets),
             "continuous_coverage_gap_count": len(continuous_coverage_gaps),
+            "continuous_coverage_unknown_count": len(continuous_coverage_unknown),
             "blocking_stage_count": len(blocking_stages),
             "trustworthy": (
                 not blocking_datasets
                 and not continuous_coverage_gaps
+                and not continuous_coverage_unknown
+                and not machine_caveats
                 and not blocking_stages
                 and substrate["summary"]["trustworthy"]
             ),
@@ -715,6 +732,8 @@ def analysis_readiness(
         "blocking": {
             "datasets": blocking_datasets,
             "continuous_coverage_gaps": continuous_coverage_gaps,
+            "continuous_coverage_unknown": continuous_coverage_unknown,
+            "machine_promotion": machine_caveats,
             "stages": blocking_stages,
         },
     }

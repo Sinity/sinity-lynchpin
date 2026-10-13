@@ -17,7 +17,7 @@ CostClass = Literal["materialized", "network"]
 # "blocked"       — source errored / cannot be read (genuine obstruction:
 #                   missing credentials, broken file, parse failure).
 # There is intentionally no "stale" status: dataset coverage is a property of
-# the dataset (first_date..last_date), not a global freshness verdict.
+# evidence for the requested window, not a global freshness verdict.
 ReadinessStatus = Literal["available", "partial", "out_of_range", "missing", "blocked"]
 
 

@@ -1719,3 +1719,21 @@ def test_runtime_status_retains_promotion_time(tmp_path: Path, monkeypatch: pyte
 
     assert status["materialization"]["status"] in {"degraded", "failed"}
     assert status["materialization"]["serving_freshness"] == "stale"
+
+
+def test_readiness_shares_window_comparison_and_rejects_unknown_coverage(monkeypatch):
+    from datetime import date
+    from lynchpin.mcp.tools import substrate
+    monkeypatch.setattr(substrate, "contract_coverage", lambda **kw: [{
+        "substrate_status":"ready", "collection_model":"continuous",
+        "coverage":{"relation":"extent_overlap"},
+    }])
+    monkeypatch.setattr(substrate, "substrate_readiness_report", lambda: {"sources":[], "summary":{"trustworthy":True}})
+    def caveats(*, window):
+        assert window == (date(2026,6,30),date(2026,7,1))
+        return ("fixture window row counts disagree",)
+    monkeypatch.setattr("lynchpin.graph.source_readiness._machine_promotion_staleness", caveats)
+    result = substrate.analysis_readiness(start="2026-06-30",end="2026-06-30")
+    assert result["machine_promotion_caveats"] == ["fixture window row counts disagree"]
+    assert result["summary"]["continuous_coverage_unknown_count"] == 1
+    assert result["summary"]["trustworthy"] is False

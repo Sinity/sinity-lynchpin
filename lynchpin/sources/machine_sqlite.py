@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -34,7 +35,46 @@ def as_utc(value: str) -> datetime | None:
 
 
 def connect_readonly(path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+
+
+def time_prefix_index(conn: sqlite3.Connection, table: str) -> tuple[str, str] | None:
+    """Find an existing nonnullable prefix/time index without source mutation."""
+    nonnull = {row[1] for row in conn.execute(f"PRAGMA table_info({table})") if row[3]}
+    for entry in conn.execute(f"PRAGMA index_list({table})"):
+        index = str(entry[1])
+        if entry[4] or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", index):
+            continue
+        columns = [row[2] for row in conn.execute(f"PRAGMA index_info({index})")]
+        if len(columns) >= 2 and columns[1] == "observed_at" and columns[0] in nonnull:
+            prefix = columns[0]
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", prefix):
+                return prefix, index
+    return None
+
+
+def _prefixes_sql(table: str, prefix: str, index: str) -> str:
+    return (
+        f"WITH RECURSIVE prefixes(value) AS ("
+        f"SELECT MIN({prefix}) FROM {table} INDEXED BY {index} UNION ALL "
+        f"SELECT (SELECT MIN({prefix}) FROM {table} INDEXED BY {index} "
+        f"WHERE {prefix}>prefixes.value) FROM prefixes WHERE value IS NOT NULL) "
+    )
+
+
+def latest_observed_at(conn: sqlite3.Connection, table: str) -> str | None:
+    """Seek each prefix's last timestamp instead of scanning its full history."""
+    indexed = time_prefix_index(conn, table)
+    if indexed is None:
+        sql = f"SELECT MAX(observed_at) FROM {table}"
+    else:
+        prefix, index = indexed
+        sql = _prefixes_sql(table, prefix, index) + (
+            f"SELECT MAX((SELECT MAX(observed_at) FROM {table} INDEXED BY {index} "
+            f"WHERE {prefix}=prefixes.value)) FROM prefixes WHERE value IS NOT NULL"
+        )
+    value = conn.execute(sql).fetchone()[0]
+    return str(value) if value is not None else None
 
 
 def window_select(
@@ -68,11 +108,8 @@ def window_select(
     )
     if where and nonnull and index_columns[:2] == [prefix, "observed_at"]:
         return (
-            f"WITH RECURSIVE prefixes(value) AS ("
-            f"SELECT MIN({prefix}) FROM {table} INDEXED BY {index} UNION ALL "
-            f"SELECT (SELECT MIN({prefix}) FROM {table} INDEXED BY {index} "
-            f"WHERE {prefix}>prefixes.value) FROM prefixes WHERE value IS NOT NULL) "
-            f"SELECT {', '.join(columns)} FROM prefixes CROSS JOIN {table} "
+            _prefixes_sql(table, prefix, index)
+            +             f"SELECT {', '.join(columns)} FROM prefixes CROSS JOIN {table} "
             f"INDEXED BY {index} WHERE prefixes.value IS NOT NULL "
             f"AND {table}.{prefix}=prefixes.value AND {' AND '.join(where)} "
             f"ORDER BY {order}"

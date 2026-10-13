@@ -1627,6 +1627,7 @@ def load_machine_promotion_freshness(
     max_lag_hours: float = 24.0,
     live_db_path: Any = None,
     refresh_id: str | None = None,
+    window: tuple[date, date] | None = None,
 ) -> list[dict[str, Any]]:
     """Compare each machine substrate table's newest row against the live source.
 
@@ -1651,8 +1652,10 @@ def load_machine_promotion_freshness(
 
     from lynchpin.core.config import get_config
     from lynchpin.core.errors import SourceUnavailableError
-    from lynchpin.sources.machine_sqlite import as_utc, connect_readonly
+    from lynchpin.sources.machine_sqlite import as_utc, connect_readonly, latest_observed_at
 
+    if window is not None and window[1] <= window[0]:
+        raise ValueError("historical comparison requires a nonempty half-open window")
     cfg = get_config()
     db_path = _Path(live_db_path) if live_db_path is not None else cfg.machine_telemetry_db
     results: list[dict[str, Any]] = []
@@ -1674,8 +1677,11 @@ def load_machine_promotion_freshness(
             if has_runs and conn.execute("SELECT 1 FROM substrate_promotion_run LIMIT 1").fetchone():
                 raise SourceUnavailableError("machine substrate", reason="no serving promotion generation")
 
+    import time
+    history_deadline = time.monotonic() + 2.0
     sconn = connect_readonly(db_path)
     try:
+        sconn.execute("BEGIN")
         live_tables = {
             row[0]
             for row in sconn.execute(
@@ -1686,9 +1692,7 @@ def load_machine_promotion_freshness(
             if live_table not in live_tables:
                 continue
             try:
-                live_max_raw = sconn.execute(
-                    f"SELECT MAX(observed_at) FROM {live_table}"
-                ).fetchone()[0]
+                live_max_raw = latest_observed_at(sconn, live_table)
             except sqlite3.Error as exc:
                 results.append(
                     {
@@ -1701,10 +1705,20 @@ def load_machine_promotion_freshness(
                 continue
             live_max = as_utc(live_max_raw) if live_max_raw else None
             if live_max is None:
-                if live_max_raw is not None:
+                if live_max_raw is not None or sconn.execute(f"SELECT 1 FROM {live_table} LIMIT 1").fetchone():
                     results.append({
                         "table": duck_table, "live_table": live_table,
                         "error": "latest live observed_at is invalid", "stale": None,
+                    })
+                elif window is not None:
+                    results.append({
+                        **_machine_window_row_counts(
+                            conn, sconn, duck_table=duck_table, live_table=live_table,
+                            refresh_id=refresh_id, window=window, deadline=history_deadline,
+                        ),
+                        "table": duck_table, "live_table": live_table,
+                        "refresh_id": refresh_id, "lag_hours": None, "stale": False,
+                        "live_max_observed_at": None, "substrate_max_observed_at": None,
                     })
                 continue
 
@@ -1739,8 +1753,15 @@ def load_machine_promotion_freshness(
                 lag_hours = lag_value
                 stale = lag_value > max_lag_hours
 
+            history: dict[str, Any] = {}
+            if window is not None:
+                history = _machine_window_row_counts(
+                    conn, sconn, duck_table=duck_table, live_table=live_table,
+                    refresh_id=refresh_id, window=window, deadline=history_deadline,
+                )
             results.append(
                 {
+                    **history,
                     "table": duck_table,
                     "live_table": live_table,
                     "refresh_id": refresh_id,
@@ -1753,6 +1774,55 @@ def load_machine_promotion_freshness(
     finally:
         sconn.close()
     return results
+
+
+def _machine_window_row_counts(
+    conn: Any, live: sqlite3.Connection, *, duck_table: str, live_table: str,
+    refresh_id: str | None, window: tuple[date, date], deadline: float,
+) -> dict[str, Any]:
+    """Compare one UTC window; counts agree only about cardinality, not payloads."""
+    import time
+    from lynchpin.sources.machine_sqlite import time_prefix_index, window_select
+
+    left, right = (datetime.combine(day, datetime.min.time(), timezone.utc) for day in window)
+    params = [left.isoformat(), right.isoformat()]
+    where = ["observed_at >= ?", "observed_at < ?"]
+    sql = f"SELECT COUNT(*) FROM {live_table} WHERE {' AND '.join(where)}"
+    indexed = time_prefix_index(live, live_table)
+    if indexed is not None:
+        prefix, index = indexed
+        sql = window_select(live, table=live_table, columns=["COUNT(*)"], where=where,
+                            order="1", prefix=prefix, index=index)
+    result: dict[str, Any] = {
+        "comparison_window_start": window[0].isoformat(),
+        "comparison_window_end": window[1].isoformat(),
+        "live_window_rows": None, "substrate_window_rows": None,
+        "window_row_count_agrees": None,
+    }
+    # A bounded request must not fall back to reading every retained source row.
+    plan = live.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()
+    if not any("SEARCH" in str(row[3]) and "observed_at" in str(row[3]) for row in plan):
+        return {**result, "history_error": "live window has no indexed time-range read"}
+    if time.monotonic() >= deadline:
+        return {**result, "history_error": "live window comparison budget exhausted"}
+    live.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+    try:
+        result["live_window_rows"] = int(live.execute(sql, params).fetchone()[0])
+    except sqlite3.Error as exc:
+        return {**result, "history_error": f"live window count unavailable: {exc}"}
+    finally:
+        live.set_progress_handler(None, 0)
+    relation = machine_relation(conn, duck_table, refresh_id)
+    filters = ["observed_at >= ?", "observed_at < ?"]
+    args: list[Any] = [left, right]
+    if refresh_id is not None and relation == duck_table:
+        filters.append("refresh_id = ?")
+        args.append(refresh_id)
+    result["substrate_window_rows"] = int(conn.execute(
+        f"SELECT COUNT(*) FROM {relation} WHERE {' AND '.join(filters)}", args,
+    ).fetchone()[0])
+    result["window_row_count_agrees"] = result["live_window_rows"] == result["substrate_window_rows"]
+    return result
 
 
 __all__ = [

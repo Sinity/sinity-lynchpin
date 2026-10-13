@@ -186,7 +186,7 @@ def source_readiness(
             "substance log is missing",
             coverage=coverage.get("substance"),
         ),
-        _machine_source(),
+        _machine_source(window=(start, materialization_end)),
         _xtask_history_source(),
         _sinnix_runtime_inventory_source(),
         _analysis_source(include_inventory=include_analysis_inventory),
@@ -459,7 +459,7 @@ def _analysis_source(*, include_inventory: bool) -> SourceReadiness:
     )
 
 
-def _machine_source() -> SourceReadiness:
+def _machine_source(*, window: tuple[date, date] | None = None) -> SourceReadiness:
     from ..sources.machine import readiness as machine_readiness
 
     cfg = get_config()
@@ -481,7 +481,7 @@ def _machine_source() -> SourceReadiness:
         path = ready.live_db
         caveats = ()
 
-    stale = _machine_promotion_staleness()
+    stale = _machine_promotion_staleness(window=window)
     if stale:
         # A live-and-current source with a stalled substrate promotion is a
         # "partial" readiness, not "available" — the source itself is fine,
@@ -501,13 +501,13 @@ def _machine_source() -> SourceReadiness:
         reason=ready.reason,
         cost="materialized",
         path=str(path),
-        count=ready.live_rows if ready.live_rows else None,
+        count=ready.live_rows if ready.status == "ready" else None,
         last_date=_mtime_date(path),
         caveats=caveats,
     )
 
 
-def _machine_promotion_staleness(*, max_lag_hours: float = 24.0) -> tuple[str, ...]:
+def _machine_promotion_staleness(*, max_lag_hours: float = 24.0, window: tuple[date, date] | None = None) -> tuple[str, ...]:
     """Return one caveat string per machine substrate table lagging live data.
 
     Reads the substrate read-only (falls back to the read-snapshot if the
@@ -523,7 +523,7 @@ def _machine_promotion_staleness(*, max_lag_hours: float = 24.0) -> tuple[str, .
 
     try:
         with connect(substrate_path(), read_only=True) as conn:
-            reports = load_machine_promotion_freshness(conn, max_lag_hours=max_lag_hours)
+            reports = load_machine_promotion_freshness(conn, max_lag_hours=max_lag_hours, window=window)
     except Exception as exc:  # pragma: no cover — substrate unavailable/corrupt
         return (f"machine promotion freshness check failed: {exc}",)
 
@@ -534,6 +534,14 @@ def _machine_promotion_staleness(*, max_lag_hours: float = 24.0) -> tuple[str, .
                 f"{report['table']}: freshness check error ({report['error']})"
             )
             continue
+        if report.get("history_error"):
+            caveats.append(f"{report['table']}: historical comparison unavailable ({report['history_error']})")
+        elif report.get("window_row_count_agrees") is False:
+            caveats.append(
+                f"{report['table']}: window row counts disagree "
+                f"({report['live_window_rows']} live, {report['substrate_window_rows']} substrate; "
+                f"{report['comparison_window_start']} to {report['comparison_window_end']} exclusive)"
+            )
         if not report.get("stale"):
             continue
         lag = report.get("lag_hours")
