@@ -1779,3 +1779,21 @@ def test_cgroup_samples_with_equal_label_and_timestamp_keep_native_ids(tmp_path)
             _promote_machine_fast(c, refresh_id=refresh, sqlite_path=source, window_start=date(2026, 5, 1), window_end=date(2026, 5, 1), counts={}, selection=SourceSelection.from_collection({"machine_cgroup_memory_sample"}))
             assert [(r.source_row_id, r.memory_current_bytes) for r in load_machine_cgroup_memory_samples(c, refresh_id=refresh)] == [(1, 4096), (2, 8192)]
             c.execute("DETACH machine_src")
+
+
+def test_machine_predecessor_searches_past_ineligible_newer_candidates(tmp_path):
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine_lineage import machine_predecessor, record_machine_partition
+    from lynchpin.substrate.source_status import record_source_status
+    with connect(tmp_path / "predecessors.duckdb") as conn:
+        apply_schema(conn)
+        for refresh, identity, first in [
+            ("eligible", "source-a", date(2026,5,1)),
+            ("changed-source", "source-b", date(2026,5,1)),
+            ("unscanned-prefix", "source-a", date(2026,5,3)),
+        ]:
+            record_machine_partition(conn, table="machine_metric_sample", refresh_id=refresh, window_start=first, window_end=date(2026,5,4), input_fingerprint=identity)
+            # A status envelope alone must not establish a wider lineage window.
+            record_source_status(conn, refresh_id=refresh, source="machine", status="ok", reason=None, row_count=3, window_start=date(2026,5,1), window_end=date(2026,5,4))
+        selected = machine_predecessor(conn, table="machine_metric_sample", source="machine", refresh_id="child", window_start=date(2026,5,1), window_end=date(2026,5,5), input_fingerprint="source-a")
+        assert selected == "eligible"

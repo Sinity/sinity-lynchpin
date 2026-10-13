@@ -143,19 +143,19 @@ def machine_predecessor(
     window_start: date, window_end: date, input_fingerprint: str | None = None,
 ) -> str | None:
     """Choose a complete earlier source window; never bridge an unscanned prefix."""
-    row = conn.execute(
-        "SELECT refresh_id, window_start, window_end FROM substrate_source_status "
-        "WHERE source = ? AND refresh_id != ? AND kind = 'stage' AND status IN ('ok', 'empty') "
-        "AND window_start <= ? AND window_end >= ? ORDER BY recorded_at DESC LIMIT 1",
-        [source, refresh_id, window_start, window_start],
-    ).fetchone()
-    if row is None:
+    if input_fingerprint is None:
         return None
-    previous, start, end = row
-    identity = conn.execute(
-        "SELECT input_fingerprint FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?",
-        [table, previous],
+    row = conn.execute(
+        "SELECT status.refresh_id FROM substrate_source_status AS status "
+        "JOIN substrate_product_lineage AS lineage "
+        "ON lineage.refresh_id = status.refresh_id AND lineage.product = ? "
+        "WHERE status.source = ? AND status.refresh_id != ? "
+        "AND status.kind = 'stage' AND status.status IN ('ok', 'empty') "
+        "AND status.window_start <= ? AND status.window_end >= ? "
+        "AND lineage.window_start <= ? AND lineage.window_end > ? "
+        "AND lineage.input_fingerprint = ? "
+        "ORDER BY status.recorded_at DESC LIMIT 1",
+        [table, source, refresh_id, window_start, window_start,
+         window_start, window_start, input_fingerprint],
     ).fetchone()
-    if identity is None or input_fingerprint is None or identity[0] != input_fingerprint:
-        return None  # Unknown or changed source locations cannot establish inheritance.
-    return str(previous)
+    return str(row[0]) if row else None
