@@ -197,11 +197,13 @@ def source_readiness(
             repair=repair_materializations,
         ),
     ]
+    from ..sources.application_health import application_health_report
     return SourceReadinessReport(
         start=start,
         end=end,
         generated_at=datetime.now(timezone.utc),
         sources=tuple(sorted(items, key=lambda item: item.source)),
+        application_health=application_health_report(cfg=cfg),
     )
 
 
@@ -252,6 +254,11 @@ def render_source_readiness(report: SourceReadinessReport) -> str:
         if item.caveats:
             reason = reason + "<br>" + "<br>".join(c.replace("|", "\\|") for c in item.caveats)
         lines.append(f"| {item.source} | {item.status} | {item.cost} | {count} | {coverage} | {reason} |")
+    if report.application_health:
+        lines += ["", "| Application | Probe | Live health | Reason |", "|---|---|---|---|"]
+        for health in report.application_health:
+            reason = str(health["reason"]).replace("|", "\\|").replace("\n", "<br>")
+            lines.append(f"| {health['application']} | {health['probe_status']} | {health['health']} | {reason} |")
     return "\n".join(lines)
 
 

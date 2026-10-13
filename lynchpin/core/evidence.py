@@ -144,6 +144,7 @@ class SourceReadinessReport:
     end: date
     generated_at: datetime
     sources: tuple[SourceReadiness, ...]
+    application_health: tuple[dict[str, object], ...] = ()
 
     @property
     def caveats(self) -> tuple[EvidenceCaveat, ...]:

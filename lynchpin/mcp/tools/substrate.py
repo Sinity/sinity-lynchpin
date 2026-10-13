@@ -680,6 +680,8 @@ def analysis_readiness(
     end: str | None = None,
 ) -> dict[str, Any]:
     """One-stop readiness for dataset contracts plus latest substrate statuses."""
+    from lynchpin.sources.application_health import application_health_report
+    health_observations = application_health_report()
     dataset_rows = contract_coverage(start=start, end=end)
     substrate = substrate_readiness_report()
     machine_caveats: list[str] = []
@@ -714,6 +716,7 @@ def analysis_readiness(
         "datasets": dataset_rows,
         "substrate": substrate,
         "machine_promotion_caveats": machine_caveats,
+        "application_health": list(health_observations),
         "summary": {
             "dataset_count": len(dataset_rows),
             "blocking_dataset_count": len(blocking_datasets),

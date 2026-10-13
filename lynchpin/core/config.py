@@ -117,6 +117,10 @@ class LynchpinConfig:
     transcripts_dir: Path
     transcribed_ledger_jsonl: Path
 
+    application_health_enabled: bool = True
+    application_health_timeout_seconds: float = 3.0
+    sinex_runtime_target: Path | None = Path("/etc/sinex/runtime-target.json")
+    sinex_health_ca_cert: Path | None = None
     filesystem_layout: Path = Path("/etc/sinnix/filesystem-layout.json")
     chisel_cache_root: Path | None = None
     chisel_scratch_root: Path | None = None
@@ -467,6 +471,10 @@ class LynchpinConfig:
             steering_sqlite=steering_sqlite,
             transcripts_dir=transcripts_dir,
             transcribed_ledger_jsonl=transcribed_ledger_jsonl,
+            application_health_enabled=os.environ.get("LYNCHPIN_APPLICATION_HEALTH", "1").lower() not in {"0", "false", "off"},
+            application_health_timeout_seconds=float(os.environ.get("LYNCHPIN_APPLICATION_HEALTH_TIMEOUT", "3")),
+            sinex_runtime_target=Path(os.environ.get("SINEX_RUNTIME_TARGET_CONFIG", "/etc/sinex/runtime-target.json")) if os.environ.get("SINEX_RUNTIME_TARGET_CONFIG", "/etc/sinex/runtime-target.json") else None,
+            sinex_health_ca_cert=Path(os.environ["LYNCHPIN_SINEX_HEALTH_CA_CERT"]) if os.environ.get("LYNCHPIN_SINEX_HEALTH_CA_CERT") else None,
         )
 
 

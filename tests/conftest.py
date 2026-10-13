@@ -24,6 +24,7 @@ def isolate_operator_data(
         yield
         return
 
+    monkeypatch.setenv("LYNCHPIN_APPLICATION_HEALTH", "0")
     root = tmp_path / "operator-data"
     data = root / "data"
     local = root / "local"
