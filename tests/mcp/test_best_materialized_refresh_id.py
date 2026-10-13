@@ -851,7 +851,7 @@ def test_fallback_prefers_high_coverage_over_recent_when_no_status(
 
 def test_activity_content_selector_uses_producer_source_name() -> None:
     import duckdb
-    from lynchpin.analysis.active.substrate_promote_status import SOURCE_ACTIVITY_CONTENT
+    from lynchpin.substrate.source_status import SOURCE_ACTIVITY_CONTENT
 
     with duckdb.connect() as conn:
         conn.execute("CREATE TABLE activity_content_day (refresh_id VARCHAR, date DATE)")

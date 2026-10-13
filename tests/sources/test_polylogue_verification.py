@@ -158,7 +158,7 @@ def test_work_promotion_marks_a_malformed_lane_degraded(tmp_path: Path, monkeypa
     """Anti-vacuity: treating a contract error like an absent lane records
     'unavailable' instead of 'degraded'."""
     from lynchpin.analysis.active import substrate_promote_work as work_promote
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_WORK_OBSERVATIONS,
         SourceSelection,
     )

@@ -54,7 +54,7 @@ def test_work_binding_detects_owner_inputs_code_and_unavailable_route(tmp_path, 
 
 def test_completed_degraded_attempt_skips_without_rewriting_rejected_evidence(tmp_path, monkeypatch):
     from lynchpin.analysis.active.substrate_promote_work import promote_work_sources
-    from lynchpin.analysis.active.substrate_promote_status import SourceSelection, record_source_status
+    from lynchpin.substrate.source_status import SourceSelection, record_source_status
     from lynchpin.analysis.core.dag import DAG, Step
     from lynchpin.analysis.core.materialization_intelligence import (
         MaterializationStepPolicy, materialization_plan_for_dag, _substrate_source_status,
@@ -106,7 +106,7 @@ def test_completed_degraded_attempt_skips_without_rewriting_rejected_evidence(tm
 
 def test_changed_inputs_during_promotion_do_not_publish_stale_binding(tmp_path, monkeypatch):
     from lynchpin.analysis.active.substrate_promote_work import promote_work_sources
-    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.source_status import SourceSelection
     from lynchpin.substrate.connection import apply_schema, connect
     _sources(tmp_path, monkeypatch)
     bindings = iter([{'inputs': 'before', 'implementation': 'same'}, {'inputs': 'after', 'implementation': 'same'}])

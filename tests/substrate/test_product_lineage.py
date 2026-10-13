@@ -205,7 +205,7 @@ def test_failed_replacement_preserves_existing_rows_and_lineage(tmp_path: Path) 
 
 def _run_title_promotion(monkeypatch: pytest.MonkeyPatch, conn: Any, tmp_path: Path, refresh_id: str) -> Any:
     from lynchpin.analysis.active.substrate_promote_personal import promote_personal_sources
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_TITLE_CLASSIFICATION,
         SourceSelection,
     )
@@ -321,7 +321,7 @@ def test_zero_row_lineage_rejects_unreadable_or_failed_head(
 def test_active_title_correction_matches_full_snapshot(case, first, last, seconds, tmp_path, monkeypatch) -> None:
     from dataclasses import asdict, replace
     from lynchpin.analysis.active.substrate_promote_personal import promote_personal_sources
-    from lynchpin.analysis.active.substrate_promote_status import SOURCE_ACTIVITY_CONTENT, SourceSelection
+    from lynchpin.substrate.source_status import SOURCE_ACTIVITY_CONTENT, SourceSelection
     from lynchpin.sources.activity_content import ActivityTitleUsage, iter_activity_title_usage
     from lynchpin.substrate.personal import _ACTIVITY_TITLE_USAGE_COLUMNS, _title_usage_key, promote_activity_title_usage
 

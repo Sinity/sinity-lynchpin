@@ -8,7 +8,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any
 
-from .substrate_promote_status import (
+from lynchpin.substrate.source_status import (
     SOURCE_BORG_DRILL,
     SOURCE_ACTIVITY_CONTENT,
     SOURCE_PERSONAL_DAILY_SIGNAL,

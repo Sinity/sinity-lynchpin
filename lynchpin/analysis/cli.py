@@ -69,7 +69,7 @@ from .machine.status import machine_status_payload
 from .machine.support_assessment import write_machine_support_assessment
 from .machine.telemetry import write_machine_telemetry_analysis
 from .active.substrate_promote import run_substrate_promote
-from .active.substrate_promote_status import SOURCE_MACHINE, SOURCE_MACHINE_EXPERIMENTS
+from lynchpin.substrate.source_status import SOURCE_MACHINE, SOURCE_MACHINE_EXPERIMENTS
 from .machine.work_observations import write_work_observation_analysis
 from .personal_interest_fusion import write_personal_interest_trace
 from .projects import cli as projects_cli

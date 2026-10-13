@@ -142,7 +142,7 @@ def test_pinned_owner_facade_imports_and_exposes_current_read_methods():
 def test_retired_product_promotion_records_unavailable(monkeypatch):
     from datetime import date
     from lynchpin.analysis.active import substrate_promote_ai
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_AI_WORK_EVENTS,
         SourceSelection,
     )

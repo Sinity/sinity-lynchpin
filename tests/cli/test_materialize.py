@@ -504,7 +504,7 @@ def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch, t
         lambda _conn, *, rows, **_kwargs: len(list(rows)),
     )
     monkeypatch.setattr(
-        "lynchpin.analysis.active.substrate_promote_status.record_source_status",
+        "lynchpin.substrate.source_status.record_source_status",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(

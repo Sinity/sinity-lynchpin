@@ -13,7 +13,7 @@ from .substrate_promote_loaders import (
     _load_symbol_change_rows,
     _merge_ai_attribution,
 )
-from .substrate_promote_status import (
+from lynchpin.substrate.source_status import (
     SOURCE_COMMITS,
     SOURCE_FILE_CHANGES,
     SOURCE_SYMBOLS,

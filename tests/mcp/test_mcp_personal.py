@@ -1569,7 +1569,7 @@ def test_public_bookmark_daily_includes_selected_end_day(monkeypatch: pytest.Mon
 
 def test_spotify_bounded_default_matches_explicit_retained_generation(monkeypatch, tmp_path) -> None:
     from types import SimpleNamespace
-    from lynchpin.analysis.active.substrate_promote_status import record_source_status
+    from lynchpin.substrate.source_status import record_source_status
     from lynchpin.mcp.tools import personal
     from lynchpin.substrate.connection import apply_schema, connect
     from lynchpin.substrate.personal import promote_spotify_daily_rows

@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .substrate_promote_status import (
+from lynchpin.substrate.source_status import (
     SOURCE_MACHINE,
     SOURCE_MACHINE_EXPERIMENTS,
     SOURCE_MACHINE_GPU,

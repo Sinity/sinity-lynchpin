@@ -7,7 +7,7 @@ import logging
 from datetime import date
 from typing import Any
 
-from .substrate_promote_status import (
+from lynchpin.substrate.source_status import (
     SOURCE_EVIDENCE_GRAPH,
     SourceSelection,
     record_source_status,

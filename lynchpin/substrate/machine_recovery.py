@@ -76,7 +76,7 @@ def recover_machine_partitions(
             conn.execute(f"INSERT INTO {table} ({columns}) SELECT {expressions} FROM machine_recovery.{table} WHERE refresh_id = ?", [archive, previous])
             record_machine_partition(conn, table=table, refresh_id=archive, window_start=window_start,
                                      window_end=window_end, logical_row_count=count, input_fingerprint=identity)
-            from lynchpin.analysis.active.substrate_promote_status import record_source_status
+            from lynchpin.substrate.source_status import record_source_status
 
             record_source_status(conn, refresh_id=archive, source=source, status="ok" if count else "empty",
                                  reason=f"reused completed partition from {path.name}", row_count=count,

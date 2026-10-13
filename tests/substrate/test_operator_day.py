@@ -190,7 +190,7 @@ def test_promote_operator_day_source_status_enables_best_refresh_id(tmp_path):
     """After promoting rows + recording source status, best_materialized_refresh_id finds the refresh_id."""
     from datetime import date
     from lynchpin.analysis.operator_daily import OperatorDay
-    from lynchpin.analysis.active.substrate_promote_status import record_source_status
+    from lynchpin.substrate.source_status import record_source_status
     from lynchpin.substrate.connection import apply_schema, connect
     from lynchpin.substrate.personal import promote_operator_day_rows
     from lynchpin.substrate.snapshots import best_materialized_refresh_id

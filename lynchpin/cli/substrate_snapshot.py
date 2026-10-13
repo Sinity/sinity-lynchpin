@@ -255,8 +255,8 @@ def _record_snapshot_materialization_statuses(
     projects: tuple[str, ...],
     generation: str | None = None,
 ) -> None:
-    from lynchpin.analysis.active.substrate_promote_status import record_source_status
-    from lynchpin.analysis.active.substrate_promote_status import SOURCE_EVIDENCE_GRAPH
+    from lynchpin.substrate.source_status import record_source_status
+    from lynchpin.substrate.source_status import SOURCE_EVIDENCE_GRAPH
     from lynchpin.core.source_contracts import dataset_status_to_substrate_status
     from lynchpin.materialization import audit_materialization
     from lynchpin.substrate.connection import apply_schema, connect, substrate_path
@@ -314,7 +314,7 @@ def _promote_snapshot_daily_signals(
     incremental_tail_start: date | None = None,
     generation: str | None = None,
 ) -> None:
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_PERSONAL_DAILY_SIGNAL,
         record_source_status,
     )
@@ -456,7 +456,7 @@ def _record_absent_typed_projections(conn: Any, *, refresh_id: str, start: date,
     without its status rows an empty typed table would read as no activity
     while graph nodes for the same work exist.
     """
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_AI_WORK_EVENTS,
         SOURCE_COMMITS,
         SOURCE_FILE_CHANGES,

@@ -181,7 +181,7 @@ def _rolling_window(
 def _promote_operator_day(*, start: date | None, end: date | None) -> dict:
     from lynchpin.substrate.connection import apply_schema, connect, substrate_path
     from lynchpin.substrate.personal import promote_operator_day_rows
-    from lynchpin.analysis.active.substrate_promote_status import record_source_status
+    from lynchpin.substrate.source_status import record_source_status
 
     resolved_start, resolved_end = _rolling_window(start=start, end=end, days=90)
     refresh_id = f"operator-day:{resolved_start.isoformat()}:{resolved_end.isoformat()}"

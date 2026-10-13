@@ -14,7 +14,7 @@ def test_promote_personal_sources_bounds_activity_content_reads(monkeypatch, tmp
     selection = [pinned]
     monkeypatch.setattr("lynchpin.sources.activity_content.activity_content_bundle_paths", lambda: selection[0])
     from lynchpin.analysis.active.substrate_promote_personal import promote_personal_sources
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_ACTIVITY_CONTENT,
         SourceSelection,
     )
@@ -97,7 +97,7 @@ def test_promote_personal_sources_bounds_activity_content_reads(monkeypatch, tmp
 
 def test_promote_personal_sources_uses_preconverged_personal_products(monkeypatch) -> None:
     from lynchpin.analysis.active.substrate_promote_personal import promote_personal_sources
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_PERSONAL_DAILY_SIGNAL,
         SOURCE_SPOTIFY_DAILY,
         SourceSelection,
@@ -177,7 +177,7 @@ def test_promote_personal_sources_uses_preconverged_personal_products(monkeypatc
 
 def test_promote_personal_sources_translates_operator_day_window(monkeypatch) -> None:
     from lynchpin.analysis.active.substrate_promote_personal import promote_personal_sources
-    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.source_status import SourceSelection
 
     calls: list[tuple[date, date]] = []
     promoted_dates: list[date] = []

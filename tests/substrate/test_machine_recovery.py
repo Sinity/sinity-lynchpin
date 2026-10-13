@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from lynchpin.analysis.active.substrate_promote_status import SourceSelection, record_source_status
+from lynchpin.substrate.source_status import SourceSelection, record_source_status
 from lynchpin.substrate.connection import apply_schema, connect
 from lynchpin.substrate.machine_lineage import record_machine_partition, sqlite_location_identity
 from lynchpin.substrate.machine_recovery import recover_machine_partitions

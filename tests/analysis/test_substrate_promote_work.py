@@ -35,7 +35,7 @@ def test_missing_xtask_is_not_measured_empty(tmp_path, monkeypatch):
     import duckdb
     from types import SimpleNamespace
     from lynchpin.analysis.active.substrate_promote_work import promote_work_sources
-    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.source_status import SourceSelection
     from lynchpin.substrate.connection import apply_schema
     empty = SimpleNamespace(observations=(), rejected=())
     monkeypatch.setattr("lynchpin.sources.xtask_history.xtask_history_path", lambda: tmp_path / "missing.db")

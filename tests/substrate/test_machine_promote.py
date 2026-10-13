@@ -887,7 +887,7 @@ def test_attach_fast_path_promotes_process_io_and_cgroup_memory_in_one_statement
     from types import SimpleNamespace
 
     from lynchpin.analysis.active.substrate_promote_machine import _promote_machine_fast
-    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.source_status import SourceSelection
     from lynchpin.substrate.connection import apply_schema, connect
 
     monkeypatch.setattr(
@@ -941,7 +941,7 @@ def test_initial_machine_population_uses_canonical_source_with_archive_retained(
     from types import SimpleNamespace
 
     from lynchpin.analysis.active.substrate_promote_machine import _promote_machine_fast
-    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.source_status import SourceSelection
     from lynchpin.cli.machine_telemetry_export import run_export
     from lynchpin.substrate.connection import apply_schema, connect
 
@@ -1035,7 +1035,7 @@ def test_incremental_watermark_appends_new_day_without_full_rescan(
     from types import SimpleNamespace
 
     from lynchpin.analysis.active.substrate_promote_machine import _promote_machine_fast
-    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.source_status import SourceSelection
     from lynchpin.substrate.connection import apply_schema, connect
 
     monkeypatch.setattr(
@@ -1122,7 +1122,7 @@ def test_slow_fallback_failure_records_exact_stage_and_experiments_continue(
     import duckdb
 
     from lynchpin.analysis.active import substrate_promote_machine as machine_promote
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_MACHINE,
         SOURCE_MACHINE_EXPERIMENTS,
         SourceSelection,
@@ -1214,7 +1214,7 @@ def test_slow_table_stages_continue_and_keep_exact_failed_stage_evidence(
     from types import SimpleNamespace
 
     from lynchpin.analysis.active import substrate_promote_machine as machine_promote
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_MACHINE,
         SOURCE_MACHINE_SERVICE_STATE,
         SourceSelection,
@@ -1286,7 +1286,7 @@ def test_failed_slow_table_does_not_publish_partial_refresh(
     import duckdb
 
     from lynchpin.analysis.active import substrate_promote_machine as machine_promote
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_MACHINE,
         SourceSelection,
     )
@@ -1447,7 +1447,7 @@ def test_unindexed_machine_tables_reuse_history(tmp_path, monkeypatch, src_table
     from types import SimpleNamespace
 
     from lynchpin.analysis.active import substrate_promote_machine as module
-    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.source_status import SourceSelection
     from lynchpin.sources import machine
     from lynchpin.substrate.connection import apply_schema, connect
 
@@ -1600,7 +1600,7 @@ def test_machine_lineage_typed_readers_resolve_new_identity(tmp_path, table):
 def test_machine_predecessor_rejects_unscanned_prefix(tmp_path):
     from lynchpin.substrate.connection import apply_schema, connect
     from lynchpin.substrate.machine_lineage import machine_predecessor
-    from lynchpin.analysis.active.substrate_promote_status import record_source_status
+    from lynchpin.substrate.source_status import record_source_status
 
     with connect(tmp_path / "prefix.duckdb") as conn:
         apply_schema(conn)
@@ -1675,7 +1675,7 @@ def test_machine_readers_support_retained_pre_partition_generation(tmp_path):
 def test_machine_predecessor_does_not_borrow_a_different_sqlite_source(tmp_path):
     from lynchpin.substrate.connection import apply_schema, connect
     from lynchpin.substrate.machine_lineage import machine_predecessor, record_machine_partition, sqlite_location_identity
-    from lynchpin.analysis.active.substrate_promote_status import record_source_status
+    from lynchpin.substrate.source_status import record_source_status
 
     original = tmp_path / "original.sqlite"
     replacement = tmp_path / "replacement.sqlite"
@@ -1698,7 +1698,7 @@ def test_gpu_samples_with_equal_timestamp_keep_native_record_ids(tmp_path, monke
     import sqlite3
     from lynchpin.sources import machine as source
     from lynchpin.analysis.active import substrate_promote_machine as promoter
-    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.source_status import SourceSelection
     from lynchpin.substrate.connection import apply_schema, connect
     from lynchpin.substrate.machine import load_machine_gpu_samples
 
@@ -1742,7 +1742,7 @@ def test_gpu_samples_with_equal_timestamp_keep_native_record_ids(tmp_path, monke
 
 def test_failed_native_machine_stage_stops_before_next_table(tmp_path, monkeypatch):
     from lynchpin.analysis.active import substrate_promote_machine as module
-    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.source_status import SourceSelection
     from lynchpin.substrate.connection import CandidateGenerationRejected, apply_schema, connect
 
     db = tmp_path / "source.sqlite"
@@ -1763,7 +1763,7 @@ def test_cgroup_samples_with_equal_label_and_timestamp_keep_native_ids(tmp_path)
     import sqlite3
     from lynchpin.sources.machine import cgroup_memory_samples
     from lynchpin.analysis.active.substrate_promote_machine import _promote_machine_fast
-    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.source_status import SourceSelection
     from lynchpin.substrate.connection import apply_schema, connect
     from lynchpin.substrate.machine import load_machine_cgroup_memory_samples
 

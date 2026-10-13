@@ -29,7 +29,7 @@ from .substrate_promote_machine import promote_machine_tables
 from .substrate_promote_personal import promote_personal_sources
 from .substrate_promote_polylogue_timeline import promote_polylogue_timeline_source
 from .substrate_promote_work import promote_work_sources
-from .substrate_promote_status import (
+from lynchpin.substrate.source_status import (
     MACHINE_SOURCE_IDS,
     SOURCE_AI_WORK_EVENTS,
     SOURCE_COMMITS,

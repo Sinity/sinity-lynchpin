@@ -52,7 +52,7 @@ def test_malformed_fact_artifact_cannot_publish_as_empty(tmp_path, monkeypatch, 
 @pytest.mark.parametrize("source_status", ["partial", "degraded"])
 def test_incomplete_source_keeps_native_promotion_degraded(tmp_path, monkeypatch, source_status):
     from lynchpin.analysis.active import substrate_promote
-    from lynchpin.analysis.active.substrate_promote_status import record_source_status
+    from lynchpin.substrate.source_status import record_source_status
     from lynchpin.substrate.connection import substrate_path
 
     monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
@@ -222,7 +222,7 @@ def _record_failed_current_source(
     refresh_id: str,
     **_kwargs: object,
 ) -> None:
-    from lynchpin.analysis.active.substrate_promote_status import record_source_status
+    from lynchpin.substrate.source_status import record_source_status
 
     record_source_status(
         conn,
@@ -423,7 +423,7 @@ def test_substrate_promote_uses_derived_personal_products(
     monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_PERSONAL_DAILY_SIGNAL,
         SOURCE_SPOTIFY_DAILY,
     )
@@ -1148,7 +1148,7 @@ def test_evidence_graph_empty_promote_is_not_reported_ok(
     _reload_config(monkeypatch)
 
     from lynchpin.analysis.active.substrate_promote_graph import promote_graph_source
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_EVIDENCE_GRAPH,
         SourceSelection,
     )
@@ -1213,7 +1213,7 @@ def test_evidence_graph_fatal_duckdb_error_is_not_swallowed(
 ) -> None:
     """Fatal DuckDB errors invalidate the connection; callers must fail fast."""
     from lynchpin.analysis.active import substrate_promote_graph as graph_promote
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_EVIDENCE_GRAPH,
         SourceSelection,
     )
@@ -1365,7 +1365,7 @@ def test_work_source_promotion_streams_source_iterables(
 ) -> None:
     """Work promotion must not materialize high-volume source rows as lists."""
     from lynchpin.analysis.active import substrate_promote_work as work_promote
-    from lynchpin.analysis.active.substrate_promote_status import (
+    from lynchpin.substrate.source_status import (
         SOURCE_WORK_OBSERVATIONS,
         SourceSelection,
     )
@@ -1375,6 +1375,9 @@ def test_work_source_promotion_streams_source_iterables(
             self.deletes = 0
 
         def execute(self, sql: str, params: list[object]) -> None:
+            if sql == "DELETE FROM substrate_meta WHERE key = ?":
+                assert params == ["work_observations:input_binding:rid"]
+                return
             assert sql == "DELETE FROM work_observation WHERE refresh_id = ?"
             assert params == ["rid"]
             self.deletes += 1
@@ -1394,6 +1397,8 @@ def test_work_source_promotion_streams_source_iterables(
         "lynchpin.sources.xtask_history.xtask_history_path",
         lambda *a, **k: tmp_path / "xtask.db",
     )
+    monkeypatch.setattr("lynchpin.analysis.core.work_input_binding.current_work_input_binding", lambda: None)
+
     class AgentctlSnapshot:
         observations = ()
 

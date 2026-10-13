@@ -7,7 +7,7 @@ from datetime import date
 from typing import Any
 
 from .substrate_promote_backfill import _backfill_ai_attribution
-from .substrate_promote_status import (
+from lynchpin.substrate.source_status import (
     SOURCE_AI_WORK_EVENTS,
     SourceSelection,
     record_source_status,
