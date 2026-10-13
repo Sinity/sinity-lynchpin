@@ -8,7 +8,7 @@ from lynchpin.graph.capture_service_evidence import capture_service_evidence
 
 def fixture(tmp_path, *, indexed=True):
     inventory=tmp_path/"inventory.json"
-    inventory.write_text(json.dumps({"schema":"sinnix-runtime-inventory-v1","hostname":"fixture-host","classes":{},"commandClasses":{},"slices":{},"surfaces":{},"backups":{},"environmentAllowList":[],"observedServices":[],"mounts":[],"captures":[
+    inventory.write_text(json.dumps({"schema":"sinnix-runtime-inventory-v1","hostname":"fixture-host","classes":{},"slices":{},"surfaces":{},"backups":{},"observedServices":[],"mounts":[],"captures":[
         {"name":"system-capture","producer":{"surface":"fixture","unit":"shared.service","manager":"system"}},
         {"name":"user-capture","producer":{"surface":"fixture","unit":"shared.service","manager":"user"}},
         {"name":"standalone","producer":None},

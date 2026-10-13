@@ -25,8 +25,6 @@ SCHEMA = "sinnix-runtime-inventory-v1"
 class SinnixRuntimeInventory:
     hostname: str
     classes: dict[str, Any]
-    command_classes: dict[str, Any]
-    environment_allow_list: tuple[str, ...]
     slices: dict[str, Any]
     surfaces: dict[str, Any]
     observed_services: tuple[dict[str, Any], ...]
@@ -75,10 +73,6 @@ def read_inventory(path: Path | None = None) -> SinnixRuntimeInventory:
     return SinnixRuntimeInventory(
         hostname=str(payload.get("hostname") or ""),
         classes=_dict_value(payload.get("classes"), "classes"),
-        command_classes=_dict_value(payload.get("commandClasses"), "commandClasses"),
-        environment_allow_list=tuple(
-            str(value) for value in _list_value(payload.get("environmentAllowList"), "environmentAllowList")
-        ),
         slices=_dict_value(payload.get("slices"), "slices"),
         surfaces=_dict_value(payload.get("surfaces"), "surfaces"),
         observed_services=tuple(_dict_rows(payload.get("observedServices"), "observedServices")),
