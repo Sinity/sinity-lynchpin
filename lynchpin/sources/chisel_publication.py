@@ -49,7 +49,7 @@ def _seed_candidate(source: Path, target: Path) -> None:
     unselected trees as hard links avoids copying large bundles and archives.
     Root-level index files are copied because callers commonly rewrite them.
     """
-    target.mkdir()
+    target.mkdir(mode=0o700)
     for child in source.iterdir():
         destination = target / child.name
         if child.is_symlink():
@@ -102,7 +102,7 @@ def staged_publication(output_root: Path) -> Iterator[Path]:
             _validate_tree(output_root)
             _seed_candidate(output_root, candidate)
         else:
-            candidate.mkdir()
+            candidate.mkdir(mode=0o700)
         yield candidate
     finally:
         if candidate is not None and candidate.exists():

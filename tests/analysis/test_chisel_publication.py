@@ -203,3 +203,12 @@ def test_failed_candidate_cannot_mutate_published_growth_or_logs(tmp_path):
             (candidate / area / "record.txt").write_text("candidate")
             assert (root / area / "record.txt").read_text() == "published"
     assert (root / "growth/record.txt").read_text() == "published"
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_staging_keeps_private_tracker_payloads_private(tmp_path: Path, existing: bool) -> None:
+    output = tmp_path / "packages"
+    if existing:
+        output.mkdir(mode=0o700)
+    with staged_publication(output) as candidate:
+        assert candidate.stat().st_mode & 0o777 == 0o700
