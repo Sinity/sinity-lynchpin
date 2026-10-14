@@ -221,7 +221,9 @@ Products requiring an explicit
 schema migration or lacking verified historical input identities remain
 check-only, with their unavailable coverage recorded in the new generation.
 Explicit plans read their selected upstream products during temporal and
-ActivityContent computation, rather than starting recursive refreshes. The
+ActivityContent computation, rather than starting recursive refreshes. Temporal
+ActivityWatch freshness follows the selected derived partitions and graph
+manifest; live database appends become relevant after graph publication. The
 nightly source window ends at the current logical day boundary. ActivityContent
 keeps title-use fact replacements in one SQLite transaction and can migrate a
 damaged compatibility export from its retained facts.

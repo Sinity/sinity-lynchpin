@@ -290,12 +290,22 @@ def _temporal_input_files(start: date, end: date) -> tuple[Path, ...]:
     history_start = start - timedelta(days=ANOMALY_BASELINE_DAYS)
     paths: list[Path] = []
     for row in audit_materialization():
-        if row.name == "temporal_signals":
+        # ActivityWatch signals consume the selected derived graph. Its raw
+        # database and event index are upstream inputs, not temporal inputs.
+        if row.name in {"temporal_signals", "activitywatch", "activitywatch_event_index"}:
             continue
-        if not materialized_dataset_overlaps(row, start=history_start, end=end):
+        # A stale upstream tail can mark derived coverage unavailable while
+        # its selected partitions still serve the detector. Retain their
+        # identities even in that degraded state.
+        if row.name != "activitywatch_derived" and not materialized_dataset_overlaps(
+            row, start=history_start, end=end
+        ):
             continue
         for path in tuple(row.materialized_paths) or tuple(row.raw_roots):
-            if path.exists() and not (path.suffix == ".json" and "manifest" in path.name):
+            if path.exists() and (
+                row.name == "activitywatch_derived"
+                or not (path.suffix == ".json" and "manifest" in path.name)
+            ):
                 paths.append(path)
     return tuple(dict.fromkeys(paths))
 

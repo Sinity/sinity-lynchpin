@@ -332,3 +332,37 @@ def test_explicit_temporal_plan_uses_retained_inputs(monkeypatch, tmp_path):
         output=tmp_path / "temporal.ndjson", ensure_inputs=False,
     )
     assert result["row_count"] == 0
+
+
+def test_temporal_activitywatch_inputs_track_selected_graph_not_live_database(monkeypatch, tmp_path):
+    from lynchpin import materialization
+    from lynchpin.core.cache import input_versions, manifest_versions_current
+    from lynchpin.ingest.temporal_signals_materialize import _temporal_input_files
+
+    database = tmp_path / "live.db"
+    event_index = tmp_path / "events.ndjson"
+    partition = tmp_path / "derived.ndjson"
+    manifest = tmp_path / "manifest.json"
+    for path in (database, event_index, partition, manifest):
+        path.write_text("original")
+    rows = [SimpleNamespace(name=name, materialized_paths=paths, raw_roots=())
+            for name, paths in (
+                ("activitywatch", (database,)),
+                ("activitywatch_event_index", (event_index,)),
+                ("activitywatch_derived", (partition, manifest)),
+            )]
+    monkeypatch.setattr(materialization, "audit_materialization", lambda: rows)
+    monkeypatch.setattr(materialization, "materialized_dataset_overlaps",
+                        lambda row, **kwargs: row.name != "activitywatch_derived")
+    paths = _temporal_input_files(date(2026, 5, 1), date(2026, 5, 2))
+    assert set(paths) == {partition, manifest}
+    recorded = {"input_versions": input_versions(paths)}
+    database.write_text("new live capture")
+    database.with_name("live.db-wal").write_text("new frames")
+    event_index.write_text("new indexed capture")
+    assert manifest_versions_current(recorded, paths)
+    partition.write_text("changed selected product")
+    assert not manifest_versions_current(recorded, paths)
+    recorded = {"input_versions": input_versions(paths)}
+    manifest.write_text("new selected generation")
+    assert not manifest_versions_current(recorded, paths)
