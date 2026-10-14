@@ -289,3 +289,12 @@ def test_steering_audit_preserves_access_error(monkeypatch, tmp_path: Path) -> N
     assert f"unavailable: {cfg.steering_sqlite}" in row.reason
     assert "synthetic denied store" in row.reason
     assert f"missing: {cfg.steering_sqlite}" not in row.reason
+
+
+def test_activitywatch_index_default_uses_shared_capture_home(monkeypatch, tmp_path: Path) -> None:
+    from lynchpin.sources.activitywatch_event_index import activitywatch_event_index_dir
+
+    monkeypatch.setenv("LYNCHPIN_DATA_ROOT", str(tmp_path))
+    assert activitywatch_event_index_dir() == tmp_path / "activity/shared/activitywatch/events_by_day"
+    explicit = tmp_path / "custom-activity"
+    assert activitywatch_event_index_dir(explicit) == explicit / "activitywatch/events_by_day"

@@ -59,7 +59,7 @@ def activitywatch_event_index_recipe() -> dict[str, Any]:
 
 
 def activitywatch_event_index_dir(root: Path | None = None) -> Path:
-    base = root or (get_config().data_root / "activity")
+    base = root or (get_config().data_root / "activity/shared")
     return base / "activitywatch/events_by_day"
 
 
