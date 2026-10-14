@@ -510,3 +510,31 @@ def test_short_afk_interval_does_not_scan_entire_press_day():
             context.__exit__(None, None, None)
     assert len(repaired) == 1 and repaired[0].status == 'not-afk'
     assert day.reads < 100
+
+
+def test_frozen_keylog_cache_ignores_live_appends(tmp_path):
+    from contextlib import ExitStack
+    from lynchpin.core.input_snapshot import input_snapshot
+    from lynchpin.sources import keylog
+
+    source = tmp_path / "presses.jsonl"
+    first_row = json.dumps({"event": "press", "ts": BASE.isoformat()}) + "\n"
+    source.write_text(first_row)
+    keylog._press_timestamps.cache_clear()
+    try:
+        with ExitStack() as stack:
+            for context in _patch_signals():
+                stack.enter_context(context)
+            stack.enter_context(patch("lynchpin.sources.activitywatch_repair._candidate_files", return_value=[source]))
+            stack.enter_context(patch("lynchpin.sources.activitywatch_repair._press_timestamps", keylog._press_timestamps))
+            with input_snapshot() as snapshot:
+                snapshot.capture((source,))
+                first = list(repair_afk_events([_aw("not-afk", 0, 120)]))
+                source.write_text(first_row + json.dumps({"event": "press", "ts": (BASE + timedelta(seconds=30)).isoformat()}) + "\n")
+                second = list(repair_afk_events([_aw("not-afk", 0, 120)]))
+                assert first == second
+                assert keylog._press_timestamps.cache_info().misses == 1
+        stat = source.stat()
+        assert len(keylog._press_timestamps(str(source), stat.st_mtime_ns, stat.st_size)) == 2
+    finally:
+        keylog._press_timestamps.cache_clear()

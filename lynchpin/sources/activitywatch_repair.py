@@ -19,6 +19,7 @@ from typing import Iterable, Iterator
 
 from ..core.cache import file_signature
 from ..core.config import get_config
+from ..core.input_snapshot import read_input_path
 from ..core.primitives import _instant, duration_s
 from .activitywatch_models import AWEvent
 from .activitywatch_raw import window_events
@@ -335,7 +336,7 @@ def repair_afk_events(
             kp_times: list[datetime] = []
             for path in _candidate_files(event.start, event.end, ensure=ensure):
                 try:
-                    stat = path.stat()
+                    stat = read_input_path(path).stat()
                 except OSError:
                     continue
                 points = _press_timestamps(str(path), stat.st_mtime_ns, stat.st_size)
