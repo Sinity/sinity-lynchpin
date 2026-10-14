@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import sqlite3
+import stat
 import uuid
 from concurrent.futures import Future
 from contextlib import contextmanager
@@ -2543,8 +2544,38 @@ def _phone_ambient_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 
 def _steering_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
-    return _live_source_dataset(
-        cfg, name="steering", raw_roots=(cfg.steering_jsonl_dir, cfg.steering_sqlite)
+    # Exports serve reads, but the live store is also declared input evidence.
+    # A healthy export must not conceal a stale or inaccessible store path.
+    contract = source_contract("steering")
+    problems: list[str] = []
+    available = 0
+    for path, expected_directory in (
+        (cfg.steering_jsonl_dir, True), (cfg.steering_sqlite, False),
+    ):
+        try:
+            mode = path.stat().st_mode
+        except FileNotFoundError:
+            problems.append(f"missing: {path}")
+        except OSError as exc:
+            problems.append(f"unavailable: {path} ({exc})")
+        else:
+            correct_type = stat.S_ISDIR(mode) if expected_directory else stat.S_ISREG(mode)
+            if correct_type:
+                available += 1
+            else:
+                problems.append(f"wrong object type: {path}")
+    return MaterializedDataset(
+        name=contract.name,
+        status="ready" if not problems else "partial" if available else "missing",
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(),
+        raw_roots=(cfg.steering_jsonl_dir, cfg.steering_sqlite),
+        row_count=None,
+        first_date=None,
+        last_date=None,
+        materialization_hint=contract.materialization_hint,
+        reason="; ".join(problems) if problems else "steering export directory and live store are present",
     )
 
 

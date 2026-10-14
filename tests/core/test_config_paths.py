@@ -242,3 +242,50 @@ def test_missing_explicit_raindrop_csv_remains_configured(tmp_path):
     from lynchpin.core.config import _resolve_raindrop_csv
     missing = tmp_path / "selected.csv"
     assert _resolve_raindrop_csv(str(missing), tmp_path) == missing
+
+
+def test_steering_store_default_tracks_data_root(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LYNCHPIN_DATA_ROOT", str(tmp_path))
+    monkeypatch.delenv("LYNCHPIN_STEERING_SQLITE", raising=False)
+    assert LynchpinConfig.from_env().steering_sqlite == tmp_path / "project/steering/repo/steering.sqlite"
+    override = tmp_path / "custom.sqlite"
+    monkeypatch.setenv("LYNCHPIN_STEERING_SQLITE", str(override))
+    assert LynchpinConfig.from_env().steering_sqlite == override
+
+
+def test_steering_audit_reports_missing_store_with_healthy_exports(monkeypatch, tmp_path: Path) -> None:
+    from lynchpin.materialization import _steering_dataset
+
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    store = tmp_path / "store.sqlite"
+    monkeypatch.setenv("LYNCHPIN_STEERING_JSONL_DIR", str(exports))
+    monkeypatch.setenv("LYNCHPIN_STEERING_SQLITE", str(store))
+    cfg = LynchpinConfig.from_env()
+    row = _steering_dataset(cfg)
+    assert row.status == "partial"
+    assert f"missing: {store}" in row.reason
+    assert row.row_count is None
+    store.touch()
+    assert _steering_dataset(cfg).status == "ready"
+    store.unlink()
+    store.mkdir()
+    assert f"wrong object type: {store}" in _steering_dataset(cfg).reason
+
+
+def test_steering_audit_preserves_access_error(monkeypatch, tmp_path: Path) -> None:
+    from lynchpin.materialization import _steering_dataset
+
+    cfg = LynchpinConfig.from_env()
+    original_stat = Path.stat
+
+    def denied(self, *args, **kwargs):
+        if self == cfg.steering_sqlite:
+            raise PermissionError("synthetic denied store")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied)
+    row = _steering_dataset(cfg)
+    assert f"unavailable: {cfg.steering_sqlite}" in row.reason
+    assert "synthetic denied store" in row.reason
+    assert f"missing: {cfg.steering_sqlite}" not in row.reason

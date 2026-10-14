@@ -1,9 +1,9 @@
 """Steering store: commitments, activities, and reviews.
 
-The steering store (`/realm/state/steering/steering.sqlite`, `commitments`
+The configured steering store (`commitments`
 / `activities` / `reviews` tables) drives the operator's daily
 commit-forecast-review ritual. It nightly-exports each table to JSONL at
-``captures/steering/YYYY-MM-DD.jsonl``, one row per record, tagged with a
+``<steering_jsonl_dir>/YYYY-MM-DD.jsonl``, one row per record, tagged with a
 ``_table`` field. The JSONL export is the lake artifact and the preferred
 source of record here; the live sqlite is read directly only if the export
 proves insufficient for a given consumer.

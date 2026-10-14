@@ -403,7 +403,7 @@ class LynchpinConfig:
         ))
         steering_sqlite = Path(os.environ.get(
             "LYNCHPIN_STEERING_SQLITE",
-            "/realm/state/steering/steering.sqlite",
+            data_root / "project/steering/repo/steering.sqlite",
         ))
         transcripts_dir = Path(os.environ.get("LYNCHPIN_TRANSCRIPTS_DIR") or capture_default("transcripts"))
         transcribed_ledger_jsonl = Path(os.environ.get(
