@@ -28,6 +28,12 @@ from .manifest_windows import merge_manifest_covered_dates
 
 SignalRow = dict[str, Any]
 TEMPORAL_SIGNALS_SCHEMA_VERSION = 1
+# Canonical sources read by default_signal_specs; shared with preparation.
+_TEMPORAL_INPUT_PRODUCTS = (
+    "activitywatch_derived", "atuin", "polylogue", "webhistory",
+    "browser_bookmarks", "communications", "arbtt", "google_takeout",
+    "sleep", "health",
+)
 
 
 def materialize_temporal_signals(
@@ -285,27 +291,16 @@ def _merge_covered_dates(
 
 
 def _temporal_input_files(start: date, end: date) -> tuple[Path, ...]:
-    from ..materialization import audit_materialization, materialized_dataset_overlaps
+    from ..materialization import audit_materialization
 
-    history_start = start - timedelta(days=ANOMALY_BASELINE_DAYS)
     paths: list[Path] = []
     for row in audit_materialization():
-        # ActivityWatch signals consume the selected derived graph. Its raw
-        # database and event index are upstream inputs, not temporal inputs.
-        if row.name in {"temporal_signals", "activitywatch", "activitywatch_event_index"}:
+        if row.name not in _TEMPORAL_INPUT_PRODUCTS:
             continue
-        # A stale upstream tail can mark derived coverage unavailable while
-        # its selected partitions still serve the detector. Retain their
-        # identities even in that degraded state.
-        if row.name != "activitywatch_derived" and not materialized_dataset_overlaps(
-            row, start=history_start, end=end
-        ):
-            continue
+        # Degraded coverage does not stop retained products serving the
+        # detector. Record their identities and generation selectors too.
         for path in tuple(row.materialized_paths) or tuple(row.raw_roots):
-            if path.exists() and (
-                row.name == "activitywatch_derived"
-                or not (path.suffix == ".json" and "manifest" in path.name)
-            ):
+            if path.is_file():
                 paths.append(path)
     return tuple(dict.fromkeys(paths))
 
@@ -329,18 +324,7 @@ def _ensure_temporal_inputs(start: date, end: date) -> None:
             end + timedelta(days=1),
         )
 
-    for name in (
-        "activitywatch_derived",
-        "atuin",
-        "polylogue",
-        "webhistory",
-        "browser_bookmarks",
-        "communications",
-        "arbtt",
-        "google_takeout",
-        "sleep",
-        "health",
-    ):
+    for name in _TEMPORAL_INPUT_PRODUCTS:
         window = activitywatch_window if name == "activitywatch_derived" else (start, end + timedelta(days=1))
         row = rows.get(name)
         if row is not None and (row.status == "ready" or row.tail_stale) and row.first_date is not None:
