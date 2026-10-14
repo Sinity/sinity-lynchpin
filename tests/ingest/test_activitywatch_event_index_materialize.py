@@ -597,3 +597,24 @@ def test_index_does_not_open_partitions_ending_before_query(tmp_path):
     assert list(iter_indexed_activitywatch_events(bucket_prefix="aw-watcher-afk_",
         start=datetime(2026, 6, 6, 8, tzinfo=timezone.utc),
         end=datetime(2026, 6, 6, 9, tzinfo=timezone.utc), root=tmp_path)) == []
+
+
+def test_event_index_normalizes_naive_direct_read_bounds(tmp_path):
+    from lynchpin.core.parse import as_local
+    from lynchpin.core.primitives import logical_date
+    from lynchpin.sources.activitywatch_event_index import (
+        activitywatch_event_index_path, iter_indexed_activitywatch_events,
+    )
+
+    start = datetime(2026, 5, 2, 7)
+    end = datetime(2026, 5, 2, 8)
+    path = activitywatch_event_index_path(logical_date(start), tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"bucket": "aw-watcher-window_test",
+                               "start": as_local(start).isoformat(),
+                               "end": as_local(end).isoformat(), "data": {"app": "test"}}) + "\n")
+    def read(left, right):
+        return list(iter_indexed_activitywatch_events(root=tmp_path,
+                    bucket_prefix="aw-watcher-window", start=left, end=right))
+    assert read(start, end) == read(as_local(start), as_local(end))
+    assert len(read(start, end)) == 1

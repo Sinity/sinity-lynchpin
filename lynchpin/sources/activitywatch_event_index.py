@@ -12,7 +12,7 @@ from typing import Any, Iterator
 
 from ..core.config import get_config
 from ..core.errors import SourceUnavailableError
-from ..core.parse import local_tz
+from ..core.parse import as_local, local_tz
 from ..core.primitives import DAY_BOUNDARY_HOUR, logical_date
 from .activitywatch_models import AWEvent
 
@@ -124,6 +124,8 @@ def iter_indexed_activitywatch_events(
     Each read resolves one manifest and leaves original event fields intact.
     """
 
+    start = as_local(start)
+    end = as_local(end)
     if end.timestamp() <= start.timestamp():
         return
     last = logical_date(end - timedelta(microseconds=1))
