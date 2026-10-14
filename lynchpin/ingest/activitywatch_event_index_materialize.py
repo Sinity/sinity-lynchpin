@@ -227,7 +227,7 @@ def _iter_live_rows(
         order="bucket",
         dedupe=False,
     )
-    for event in dedup_and_merge(raw):
+    for event in dedup_and_merge(raw, presorted=True):
         yield {
             "bucket": event.bucket,
             "start": event.start.isoformat(),

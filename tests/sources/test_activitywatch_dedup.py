@@ -154,3 +154,35 @@ def test_overlapping_events_keep_max_end():
     out = list(dedup_and_merge(inputs))
     assert len(out) == 1
     assert (out[0].end - out[0].start).total_seconds() == 300
+
+
+def test_presorted_merge_matches_buffered_timestamp_clusters():
+    rows = [
+        E("a", 0, 1, title="x"), E("a", 0, 5, title="y"),
+        E("a", 0, 9, title="x"), E("a", 10, 1, title="x"),
+        E("a", 50, 0, title="x"), E("a", 51, 0, title="x"),
+        E("b", 0, 2), E("b", 1, 20),
+    ]
+    assert list(dedup_and_merge(rows, presorted=True)) == list(dedup_and_merge(rows))
+
+
+def test_presorted_merge_yields_before_consuming_bucket_history():
+    consumed = 0
+
+    def rows():
+        nonlocal consumed
+        for index in range(100_000):
+            consumed += 1
+            yield E("bucket", index, 0, title=str(index))
+
+    output = dedup_and_merge(rows(), presorted=True)
+    assert next(output).data["title"] == "0"
+    assert consumed <= 4
+    output.close()
+
+
+def test_presorted_merge_rejects_reversed_input():
+    import pytest
+
+    with pytest.raises(ValueError, match="not ordered"):
+        list(dedup_and_merge([E("a", 2, 0), E("a", 1, 0)], presorted=True))

@@ -20,7 +20,7 @@ def test_materialize_activitywatch_event_index_writes_logical_day_files(monkeypa
     monkeypatch.setattr(
         mod,
         "events_from_activitywatch_dbs",
-        lambda *_args, **_kwargs: iter(
+        lambda *_args, **_kwargs: iter(sorted(
             [
                 SimpleNamespace(
                     bucket="aw-watcher-window_host",
@@ -34,8 +34,8 @@ def test_materialize_activitywatch_event_index_writes_logical_day_files(monkeypa
                     end=datetime(2026, 3, 15, 9, tzinfo=timezone.utc),
                     data={"status": "not-afk"},
                 ),
-            ]
-        ),
+            ], key=lambda event: (event.bucket, event.start)
+        )),
     )
 
     manifest = mod.materialize_activitywatch_event_index(root=tmp_path, full=True)

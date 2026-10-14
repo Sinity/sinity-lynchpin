@@ -39,6 +39,7 @@ intervals you can integrate over to get honest focus seconds.
 """
 from __future__ import annotations
 
+from itertools import groupby
 from typing import Iterable, Iterator
 
 from .activitywatch_raw import AWEvent
@@ -50,7 +51,7 @@ from .activitywatch_raw import AWEvent
 MERGE_PULSETIME_S: float = 30.0
 
 
-def dedup_and_merge(events: Iterable[AWEvent]) -> Iterator[AWEvent]:
+def dedup_and_merge(events: Iterable[AWEvent], *, presorted: bool = False) -> Iterator[AWEvent]:
     """Stream of AWEvents → cleaned stream of AWEvents.
 
     Assumes input is sorted by ``start`` within bucket (the raw
@@ -63,9 +64,13 @@ def dedup_and_merge(events: Iterable[AWEvent]) -> Iterator[AWEvent]:
     Pass 2: merge consecutive same-``data`` rows when the gap between
     them is ≤ MERGE_PULSETIME_S. Fixes the window zero-duration spam.
 
-    Memory cost: O(events_per_bucket) — we batch per bucket to keep
-    sorting cheap.
+    With presorted=True, input must be ordered by (bucket, start); memory
+    holds only one timestamp cluster and the current merged interval. Otherwise
+    each consecutive bucket is buffered and sorted before merging.
     """
+    if presorted:
+        yield from _dedup_sorted(events)
+        return
     bucket_buf: dict[str, list[AWEvent]] = {}
 
     def flush(bucket: str) -> Iterator[AWEvent]:
@@ -82,37 +87,7 @@ def dedup_and_merge(events: Iterable[AWEvent]) -> Iterator[AWEvent]:
                 by_key[key] = e
         deduped = sorted(by_key.values(), key=lambda x: x.start)
 
-        # Pass 2: merge consecutive same-data rows within MERGE_PULSETIME_S
-        current: AWEvent | None = None
-        for e in deduped:
-            if current is None:
-                current = e
-                continue
-            same_data = _data_key(current.data) == _data_key(e.data)
-            # Gap = next.start - current.end (negative if overlapping).
-            # Note: many events have current.end == current.start (legacy
-            # zero-duration rows). Use next.start - current.start when
-            # current is zero-duration to avoid pathological infinite-gap
-            # comparisons.
-            current_end = current.end if current.end > current.start else current.start
-            gap_s = (e.start - current_end).total_seconds()
-            if same_data and 0 <= gap_s <= MERGE_PULSETIME_S:
-                # Extend current's endtime to absorb this heartbeat.
-                # Synthesize an endtime that covers up to e.start + 1
-                # heartbeat tick (treat e as a heartbeat marker, not an
-                # interval) — but bounded by next event's start.
-                merged_end = max(current.end, e.end, e.start)
-                current = AWEvent(
-                    bucket=current.bucket,
-                    start=current.start,
-                    end=merged_end,
-                    data=current.data,
-                )
-            else:
-                yield current
-                current = e
-        if current is not None:
-            yield current
+        yield from _merge_intervals(deduped)
 
     last_bucket: str | None = None
     for e in events:
@@ -128,6 +103,64 @@ def dedup_and_merge(events: Iterable[AWEvent]) -> Iterator[AWEvent]:
     for b in list(bucket_buf.keys()):
         for x in flush(b):
             yield x
+
+
+def _merge_intervals(events: Iterable[AWEvent]) -> Iterator[AWEvent]:
+    current: AWEvent | None = None
+    for e in events:
+        if current is None:
+            current = e
+            continue
+        same_data = _data_key(current.data) == _data_key(e.data)
+        # Gap = next.start - current.end (negative if overlapping).
+        # Note: many events have current.end == current.start (legacy
+        # zero-duration rows). Use next.start - current.start when
+        # current is zero-duration to avoid pathological infinite-gap
+        # comparisons.
+        current_end = current.end if current.end > current.start else current.start
+        gap_s = (e.start - current_end).total_seconds()
+        if same_data and 0 <= gap_s <= MERGE_PULSETIME_S:
+            # Extend current's endtime to absorb this heartbeat.
+            # Synthesize an endtime that covers up to e.start + 1
+            # heartbeat tick (treat e as a heartbeat marker, not an
+            # interval) — but bounded by next event's start.
+            merged_end = max(current.end, e.end, e.start)
+            current = AWEvent(
+                bucket=current.bucket,
+                start=current.start,
+                end=merged_end,
+                data=current.data,
+            )
+        else:
+            yield current
+            current = e
+    if current is not None:
+        yield current
+
+
+def _dedup_sorted(events: Iterable[AWEvent]) -> Iterator[AWEvent]:
+    """Retain one timestamp cluster and one interval, rather than a whole bucket."""
+    def checked() -> Iterator[AWEvent]:
+        previous = None
+        for event in events:
+            key = (event.bucket, event.start)
+            if previous is not None and key < previous:
+                raise ValueError("presorted ActivityWatch input is not ordered by bucket and start")
+            previous = key
+            yield event
+
+    def collapse(bucket_events: Iterable[AWEvent]) -> Iterator[AWEvent]:
+        for _start, cluster in groupby(bucket_events, key=lambda event: event.start):
+            by_data: dict[str, AWEvent] = {}
+            for event in cluster:
+                key = _data_key(event.data)
+                previous = by_data.get(key)
+                if previous is None or event.end > previous.end:
+                    by_data[key] = event
+            yield from by_data.values()
+
+    for _bucket, bucket_events in groupby(checked(), key=lambda event: event.bucket):
+        yield from _merge_intervals(collapse(bucket_events))
 
 
 def _data_key(data: dict) -> str:
