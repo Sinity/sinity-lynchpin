@@ -2,6 +2,7 @@ import json
 import shutil
 import sqlite3
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -374,3 +375,36 @@ def test_unknown_export_selector_refuses_before_publishing(tmp_path, tables):
         run_export(**kwargs, tables=tables)
     after = {str(p.relative_to(lake)): p.read_bytes() for p in lake.rglob("*") if p.is_file()}
     assert after == before
+
+
+def test_export_closes_job_bounded_connection_and_owns_spill(tmp_path, monkeypatch):
+    import duckdb
+    from lynchpin.cli import machine_telemetry_export as exporter
+
+    db = tmp_path / "telemetry.sqlite"
+    _seed_source_db(db, {"2026-08-15": 3})
+    from lynchpin.substrate import connection
+
+    original_connect = connection._bounded_connect
+    original_temporary = exporter.tempfile.TemporaryDirectory
+    connections = []
+    spill = []
+
+    def connect(*args, **kwargs):
+        conn = original_connect(*args, **kwargs)
+        assert conn.execute("SELECT current_setting('memory_limit')").fetchone()[0] == "4.0 GiB"
+        connections.append(conn)
+        return conn
+
+    def temporary(*args, **kwargs):
+        directory = original_temporary(*args, **kwargs)
+        spill.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr(connection, "_bounded_connect", connect)
+    monkeypatch.setattr(exporter.tempfile, "TemporaryDirectory", temporary)
+    exporter.run_export(sqlite_path=db, lake_root=tmp_path / "lake", tables=("gpu_sample",),
+                        now=datetime(2026, 8, 17, 12, tzinfo=timezone.utc))
+    assert spill and all(not path.exists() for path in spill)
+    with pytest.raises(duckdb.ConnectionException):
+        connections[0].execute("SELECT 1")

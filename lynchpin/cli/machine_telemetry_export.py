@@ -339,47 +339,53 @@ def run_export(
     export_time = now or datetime.now(timezone.utc)
     today = export_time.astimezone(timezone.utc).date()
     lake_root.mkdir(parents=True, exist_ok=True)
-    conn = duckdb.connect()
-    conn.execute("INSTALL sqlite; LOAD sqlite;")
-    conn.execute(f"ATTACH {_sql_literal(sqlite_path)} AS src (TYPE SQLITE, READ_ONLY)")
+    from lynchpin.substrate.connection import _bounded_connect
 
-    results = []
-    for table, time_col in _TABLES:
-        if tables and table not in tables:
-            continue
-        log.info(
-            "machine-telemetry-export: %s (sealed days before %s)",
-            table,
-            today.isoformat(),
-        )
-        result = export_table(
-            conn,
-            table=table,
-            time_col=time_col,
-            lake_root=lake_root,
-            today=today,
-            full=full,
-        )
-        results.append(result)
-        if result.days_exported:
-            log.info(
-                "machine-telemetry-export: %s: %d day(s), %s rows, %.2f MB verified",
-                table,
-                len(result.days_exported),
-                f"{result.rows_exported:,}",
-                result.bytes_written / 1e6,
+    # Reuse the substrate's job-sized budget, rather than DuckDB's host-sized
+    # default. Spill files belong to this invocation, never the checkout.
+    with tempfile.TemporaryDirectory(prefix="lynchpin-machine-export-") as scratch:
+        with _bounded_connect(duckdb, ":memory:") as conn:
+            conn.execute(f"SET temp_directory = {_sql_literal(scratch)}")
+            conn.execute("INSTALL sqlite; LOAD sqlite;")
+            conn.execute(f"ATTACH {_sql_literal(sqlite_path)} AS src (TYPE SQLITE, READ_ONLY)")
+
+            results = []
+            for table, time_col in _TABLES:
+                if tables and table not in tables:
+                    continue
+                log.info(
+                    "machine-telemetry-export: %s (sealed days before %s)",
+                    table,
+                    today.isoformat(),
+                )
+                result = export_table(
+                    conn,
+                    table=table,
+                    time_col=time_col,
+                    lake_root=lake_root,
+                    today=today,
+                    full=full,
+                )
+                results.append(result)
+                if result.days_exported:
+                    log.info(
+                        "machine-telemetry-export: %s: %d day(s), %s rows, %.2f MB verified",
+                        table,
+                        len(result.days_exported),
+                        f"{result.rows_exported:,}",
+                        result.bytes_written / 1e6,
+                    )
+            metadata_rows = {
+                table: _export_metadata_table(conn, table=table, lake_root=lake_root)
+                for table in _METADATA_TABLES
+            }
+            _write_coverage_manifest(
+                lake_root=lake_root,
+                sqlite_path=sqlite_path,
+                generated_at=export_time,
+                metadata_rows=metadata_rows,
             )
-    metadata_rows = {
-        table: _export_metadata_table(conn, table=table, lake_root=lake_root)
-        for table in _METADATA_TABLES
-    }
-    _write_coverage_manifest(
-        lake_root=lake_root,
-        sqlite_path=sqlite_path,
-        generated_at=export_time,
-        metadata_rows=metadata_rows,
-    )
-    return results
+            return results
 
 
 def _export_command(
