@@ -88,18 +88,16 @@ def register_commands(app: typer.Typer, *, analysis_spec: str) -> None:
     def _aw_git_join(
         spec: str = typer.Option(analysis_spec, "--spec"),
         out: str | None = typer.Option(None, "--out"),
-        aw_db: str = typer.Option(
-            "/realm/home/.local/share/activitywatch/aw-server-rust/sqlite.db",
-            "--aw-db",
-        ),
+        aw_db: str | None = typer.Option(None, "--aw-db"),
     ) -> None:
+        from lynchpin.core.config import get_config
         from . import aw_git_join
 
         target = out or resolve_analysis_path("aw_git_join_metrics.json")
         aw_git_join.run_aw_git_join(
             spec_path=spec,
             out_file=target,
-            aw_db_path=aw_db,
+            aw_db_path=aw_db if aw_db is not None else str(get_config().activitywatch_db),
         )
 
     @app.command(

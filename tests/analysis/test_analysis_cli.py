@@ -503,3 +503,26 @@ def test_forced_refresh_runs_and_records_current_memo(monkeypatch, tmp_path):
     assert _run_dag(dag, dry_run=False, up_to=None, incremental=True, force=True) == 0
     assert ran == [True]
     assert recorded == [{'machine_telemetry_analysis': 'fixture-input'}]
+
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_aw_git_join_uses_configured_database_unless_explicitly_overridden(tmp_path, monkeypatch, explicit):
+    from lynchpin.analysis.ecosystem import aw_git_join
+    from lynchpin.core import config
+
+    configured = tmp_path / 'configured.sqlite'
+    override = tmp_path / 'override.sqlite'
+    captured = {}
+
+    def get_config():
+        assert not explicit, 'explicit database must not resolve the default'
+        return SimpleNamespace(activitywatch_db=configured)
+
+    monkeypatch.setattr(config, 'get_config', get_config)
+    monkeypatch.setattr(aw_git_join, 'run_aw_git_join', lambda **kwargs: captured.update(kwargs))
+    argv = ['aw-git-join', '--out', str(tmp_path / 'result.json')]
+    if explicit:
+        argv += ['--aw-db', str(override)]
+    result = CliRunner().invoke(build_app(), argv)
+    assert result.exit_code == 0, result.output
+    assert captured['aw_db_path'] == str(override if explicit else configured)
