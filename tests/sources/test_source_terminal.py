@@ -29,6 +29,13 @@ class TestExtractProject:
     def test_target_vision(self):
         assert _extract_project("/realm/project/sinex-target-vision") == "sinex-target-vision"
 
+    def test_retired_project_root_remains_readable_history(self):
+        assert _extract_project('/realm/projects/sinex/repo/src') == 'sinex'
+        assert _extract_project('/realm/projects/polylogue/repo') == 'polylogue'
+
+    def test_malformed_project_root_is_not_a_project(self):
+        assert _extract_project('/realm/projec/sinex/repo') is None
+
 
 class TestCategorise:
     def test_sinex(self):
@@ -45,6 +52,11 @@ class TestCategorise:
 
     def test_misc(self):
         assert _categorise_command("/tmp") == "misc"
+
+    def test_historical_project_addresses_keep_their_categories(self):
+        assert _categorise_command('/realm/projects/sinex/repo') == 'development:sinex'
+        assert _categorise_command('/realm/projects/sinnix/repo') == 'infrastructure:sinnix'
+        assert _categorise_command('/realm/projects/polylogue/repo') == 'development:other'
 
 
 class TestTimestampUnits:

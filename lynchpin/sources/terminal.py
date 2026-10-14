@@ -229,7 +229,7 @@ def _commands_from_ndjson(path: Path) -> Iterator[AtuinCommand]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 _LAST_CMD_FALLBACK = timedelta(seconds=5)
-_PROJECT_RE = re.compile(r"/realm/project?/([^/]+)")
+_PROJECT_RE = re.compile(r"/realm/projects?/([^/]+)")
 
 
 def shell_sessions(
@@ -272,11 +272,11 @@ def _extract_project(cwd: str) -> Optional[str]:
 
 def _categorise_command(cwd: str) -> str:
     lowered = cwd.strip().lower()
-    if "project/sinex" in lowered or lowered.rstrip("/").endswith("sinex"):
+    if any(root in lowered for root in ("project/sinex", "projects/sinex")) or lowered.rstrip("/").endswith("sinex"):
         return "development:sinex"
     if "sinnix" in lowered:
         return "infrastructure:sinnix"
-    if any(root in lowered for root in ("/realm/project/", "/realm/project/")):
+    if any(root in lowered for root in ("/realm/project/", "/realm/projects/")):
         return "development:other"
     if lowered.startswith(("/realm/home", "/home")):
         return "home"
