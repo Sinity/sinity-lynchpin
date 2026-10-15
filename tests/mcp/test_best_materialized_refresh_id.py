@@ -1,7 +1,8 @@
 """Tests for best_materialized_refresh_id with substrate_source_status awareness.
 
 Covers:
-  - Preferring refresh_ids with ok source_status
+  - Selecting validated ready/degraded partitions without hiding caveats
+  - Rejecting partitions whose newest source status is unsuccessful
   - Falling back to latest materialized_at when no status row exists
   - Empty table handling
 """
@@ -454,6 +455,52 @@ def test_best_materialized_refresh_id_maps_work_observation_tables_to_source_sta
         assert best_materialized_refresh_id(test_conn, "work_observation", caller="test.work_observation") == "r-old"
     finally:
         test_conn.close()
+
+
+@pytest.mark.parametrize("populated", [True, False])
+def test_degraded_work_projection_remains_queryable_with_its_caveat(populated) -> None:
+    import duckdb
+
+    with duckdb.connect() as conn:
+        conn.execute("CREATE TABLE work_observation (source_id VARCHAR, refresh_id VARCHAR)")
+        conn.execute(
+            "CREATE TABLE substrate_source_status (refresh_id VARCHAR, source VARCHAR, status VARCHAR, "
+            "reason VARCHAR, window_start DATE, window_end DATE, recorded_at TIMESTAMPTZ)"
+        )
+        if populated:
+            conn.execute("INSERT INTO work_observation VALUES ('valid-receipt', 'published')")
+        conn.execute(
+            "INSERT INTO substrate_source_status VALUES ('published', 'work_observations', 'degraded', "
+            "'one invalid historical receipt rejected', DATE '2026-01-01', DATE '2026-02-01', CURRENT_TIMESTAMP)"
+        )
+
+        selected = best_materialized_refresh_id(
+            conn, "work_observation", caller="test.degraded_work",
+            start=date(2026, 1, 1), end=date(2026, 2, 1),
+        )
+
+        assert selected == ("published" if populated else None)
+        assert conn.execute("SELECT status, reason FROM substrate_source_status").fetchall() == [
+            ("degraded", "one invalid historical receipt rejected")
+        ]
+
+
+@pytest.mark.parametrize("latest_status", ["error", "unavailable", "partial", "unknown"])
+def test_newest_status_invalidates_an_earlier_ready_observation(tmp_path, latest_status) -> None:
+    import duckdb
+
+    with duckdb.connect(str(_setup_test_db(tmp_path))) as conn:
+        conn.execute(
+            "INSERT INTO commit_fact VALUES ('receipt', 'published', TIMESTAMPTZ '2026-01-01 00:00:00+00')"
+        )
+        conn.execute(
+            "INSERT INTO substrate_source_status VALUES "
+            "('published', 'commits', 'ok', TIMESTAMPTZ '2026-01-01 00:00:00+00'), "
+            "('published', 'commits', ?, TIMESTAMPTZ '2026-01-02 00:00:00+00')",
+            [latest_status],
+        )
+
+        assert best_materialized_refresh_id(conn, "commit_fact", caller="test.newest_status") is None
 
 
 def test_best_materialized_refresh_id_maps_project_day_view_to_graph_status(tmp_path) -> None:

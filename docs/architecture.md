@@ -200,6 +200,11 @@ reuse warm decisions and single-flight identical work. They do not launch an
 uncontrolled scan of every raw source for every query. Explicit refresh-pinned
 reads remain immutable. Status surfaces report whether a result is ready,
 degraded, missing, or stale and preserve the reason.
+Typed-table selection retains validated rows from degraded partitions while
+preserving their source caveats. The newest status for a partition controls
+eligibility: an error, unavailable, partial, or unknown status cannot reuse an
+earlier ready observation. A degraded partition without rows is unavailable;
+only an explicitly empty partition establishes a measured empty result.
 
 AgentCTL or nightly semantic scheduling can call
 `python -m lynchpin.cli.converge --start YYYY-MM-DD --end YYYY-MM-DD --json`

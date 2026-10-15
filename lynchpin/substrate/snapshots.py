@@ -183,6 +183,8 @@ def best_materialized_refresh_id(
     materialization, so ordinary read defaults prefer table coverage first and
     recency second. When a window is supplied, select a candidate reaching its
     end date and return no candidate when the requested end is uncovered.
+    Degraded partitions retain their validated rows and source caveats; failed
+    or unavailable partitions cannot qualify through an earlier ready status.
     """
 
     _ = caller, ledger_path
@@ -273,7 +275,7 @@ def best_materialized_refresh_id(
             status_fields.extend(("window_start", "window_end"))
         candidates = conn.execute(
             f"SELECT {', '.join(status_fields)} FROM substrate_source_status "
-            "WHERE source = ? AND status IN ('ok', 'empty') "
+            "WHERE source = ? "
             "ORDER BY recorded_at DESC",
             [source_name],
         ).fetchall()
@@ -288,6 +290,8 @@ def best_materialized_refresh_id(
             eligible: list[tuple[str, str, Any]] = []
             for refresh_id, values in status_by_id.items():
                 status, recorded_at, *window = values
+                if status not in {"ok", "empty", "degraded"}:
+                    continue
                 if scoped and (start is not None or end is not None):
                     if has_declared_window:
                         window_start, window_end = window
