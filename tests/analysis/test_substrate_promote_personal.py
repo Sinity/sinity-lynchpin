@@ -96,6 +96,10 @@ def test_promote_personal_sources_bounds_activity_content_reads(monkeypatch, tmp
 
 
 def test_promote_personal_sources_uses_preconverged_personal_products(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lynchpin.sources.personal_signals.spotify_daily_window",
+        lambda *, start, end: (start, end),
+    )
     from lynchpin.analysis.active.substrate_promote_personal import promote_personal_sources
     from lynchpin.substrate.source_status import (
         SOURCE_PERSONAL_DAILY_SIGNAL,
@@ -220,3 +224,40 @@ def test_promote_personal_sources_translates_operator_day_window(monkeypatch) ->
     assert calls == [(date(2026, 5, 1), date(2026, 5, 1))]
     assert promoted_dates == [date(2026, 5, 1)]
     assert counts["operator_day"] == 1
+
+
+@pytest.mark.parametrize("overlap", [True, False])
+def test_spotify_promotion_keeps_export_tail_unavailable(monkeypatch, overlap) -> None:
+    from lynchpin.analysis.active.substrate_promote_personal import promote_personal_sources
+    from lynchpin.substrate.source_status import SOURCE_SPOTIFY_DAILY, SourceSelection
+
+    requested = (date(2030, 1, 1), date(2030, 1, 8))
+    clipped = (date(2030, 1, 1), date(2030, 1, 4))
+    monkeypatch.setattr("lynchpin.sources.personal_signals.spotify_daily_window", lambda **kw: clipped if overlap else None)
+    ensured, reads, statuses = [], [], []
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", lambda name, *, window: (
+        ensured.append(window) or SimpleNamespace(status="ready", reason="fixture")
+    ))
+    monkeypatch.setattr("lynchpin.sources.personal_signals.iter_spotify_daily_signals", lambda **kw: (
+        reads.append(kw) or [SimpleNamespace(date=clipped[0])]
+    ))
+    monkeypatch.setattr("lynchpin.substrate.personal.promote_spotify_daily_rows", lambda conn, **kw: len(kw["rows"]))
+    monkeypatch.setattr("lynchpin.analysis.active.substrate_promote_personal.record_source_status", lambda conn, **kw: statuses.append(kw))
+    counts = {}
+    promote_personal_sources(
+        SimpleNamespace(), refresh_id="fixture", window_start=requested[0], window_end=requested[1],
+        counts=counts, selection=SourceSelection.from_collection({SOURCE_SPOTIFY_DAILY}),
+    )
+    status = statuses[0]
+    assert (status["window_start"], status["window_end"]) == requested
+    if overlap:
+        assert ensured == [clipped]
+        assert reads == [{"start": clipped[0], "end": clipped[1], "ensure": False}]
+        assert status["status"] == "partial"
+        assert status["row_count"] == 1
+        assert "outside dates are unavailable" in status["reason"]
+    else:
+        assert ensured == reads == []
+        assert status["status"] == "unavailable"
+        assert status["row_count"] is None
+        assert "spotify_daily" not in counts

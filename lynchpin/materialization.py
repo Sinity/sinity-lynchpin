@@ -3080,11 +3080,13 @@ def _substance_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 
 def _spotify_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    from .core.input_snapshot import read_input_path
+
     path = spotify_streams_path()
     manifest = path.with_suffix(".manifest.json")
-    meta = _load_json(manifest)
+    meta = _load_json(read_input_path(manifest))
     raw_files = _spotify_input_files(cfg)
-    product_ready = _product_with_manifest_exists(path, manifest)
+    product_ready = _product_with_manifest_exists(read_input_path(path), read_input_path(manifest))
     inputs_current = _manifest_inputs_current(meta, raw_files)
     schema_current = meta.get("schema_version") == SPOTIFY_STREAMS_SCHEMA_VERSION
     if product_ready and not schema_current:

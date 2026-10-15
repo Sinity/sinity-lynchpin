@@ -683,10 +683,13 @@ def _fill_terminal(ctx: _FillContext) -> None:
 
 
 def _fill_spotify(ctx: _FillContext) -> None:
-    from ..sources.personal_signals import iter_spotify_daily_signals
+    from ..sources.personal_signals import iter_spotify_daily_signals, spotify_daily_window
 
-    _require_product("spotify_daily", window=(ctx.start, ctx.end_exclusive))
-    for d in iter_spotify_daily_signals(start=ctx.start, end=ctx.end_exclusive, ensure=False):
+    window = spotify_daily_window(start=ctx.start, end=ctx.end_exclusive)
+    if window is None:
+        return
+    _require_product("spotify_daily", window=window)
+    for d in iter_spotify_daily_signals(start=window[0], end=window[1], ensure=False):
         if d.date in ctx.rows and ctx.mark(d.date):
             ctx.rows[d.date].spotify_hours = round(d.minutes_played / 60.0, 2)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Iterator, TextIO
 
@@ -32,6 +32,7 @@ __all__ = [
     "personal_daily_signals_path",
     "spotify_daily_manifest_path",
     "spotify_daily_path",
+    "spotify_daily_window",
     "iter_activity_content_days",
     "iter_activity_title_usage",
     "iter_personal_daily_signals",
@@ -115,6 +116,33 @@ def iter_personal_daily_signals(
                 value=float(payload.get("value") or 0.0),
                 dimensions=dimensions if isinstance(dimensions, dict) else {},
             )
+
+
+def spotify_daily_window(*, start: date, end: date) -> tuple[date, date] | None:
+    """Intersect a half-open request with the current export's known bounds.
+
+    This limits demand, not validation: consumers must still require the daily
+    product to cover every date in the returned window before reading it.
+    """
+    from ..core.input_snapshot import current_input_snapshot
+    from ..materialization import audit_dataset
+
+    if end <= start:
+        raise ValueError("Spotify daily window end must be after start")
+    exported = audit_dataset("spotify")
+    snapshot = current_input_snapshot()
+    if snapshot is not None and exported is not None:
+        # Freeze the small bounds manifest, not the full streaming history.
+        snapshot.capture(tuple(
+            path for path in getattr(exported, "materialized_paths", ())
+            if path.name.endswith(".manifest.json")
+        ))
+        exported = audit_dataset("spotify")
+    if exported is None or exported.status != "ready" or exported.first_date is None or exported.last_date is None:
+        raise SourceUnavailableError("spotify", reason="current export bounds are unavailable")
+    clipped_start = max(start, exported.first_date)
+    clipped_end = min(end, exported.last_date + timedelta(days=1))
+    return (clipped_start, clipped_end) if clipped_start < clipped_end else None
 
 
 def iter_spotify_daily_signals(

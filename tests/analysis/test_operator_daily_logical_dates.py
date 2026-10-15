@@ -401,7 +401,8 @@ def test_fill_web_category_reads_preconverged_webhistory() -> None:
     assert ctx.rows[date(2026, 6, 3)].web_top_category == "dev"
 
 
-def test_fill_spotify_queries_product_half_open_end_for_public_inclusive_window() -> None:
+def test_fill_spotify_queries_product_half_open_end_for_public_inclusive_window(monkeypatch) -> None:
+    monkeypatch.setattr("lynchpin.sources.personal_signals.spotify_daily_window", lambda *, start, end: (start, end))
     ctx = _ctx()
     ensure_calls = []
     calls = []
@@ -502,3 +503,23 @@ def test_operator_daily_skip_slow_still_runs_product_backed_daily_sources(monkey
     od.operator_daily_matrix(date(2026, 6, 3), date(2026, 6, 4), skip_slow=True)
 
     assert called == ["web", "terminal", "polylogue", "irc", "spotify", "keylog_daily"]
+
+
+def test_spotify_matrix_clips_demand_and_preserves_unknown_tail(monkeypatch) -> None:
+    ctx = _ctx()
+    window = (date(2026, 6, 3), date(2026, 6, 4))
+    calls = []
+    monkeypatch.setattr("lynchpin.sources.personal_signals.spotify_daily_window", lambda **kw: window)
+    monkeypatch.setattr(od, "_require_product", lambda name, **kw: calls.append(kw["window"]))
+    monkeypatch.setattr("lynchpin.sources.personal_signals.iter_spotify_daily_signals", lambda **kw: [
+        SimpleNamespace(date=date(2026, 6, 3), minutes_played=30),
+    ])
+    od._try_fill(ctx, "spotify", lambda: od._fill_spotify(ctx))
+    assert calls == [window]
+    assert ctx.rows[date(2026, 6, 3)].spotify_hours == 0.5
+    assert ctx.rows[date(2026, 6, 4)].spotify_hours is None
+    assert "spotify" not in ctx.present[date(2026, 6, 4)]
+    monkeypatch.setattr("lynchpin.sources.personal_signals.spotify_daily_window", lambda **kw: None)
+    calls.clear()
+    od._fill_spotify(ctx)
+    assert calls == []

@@ -63,13 +63,13 @@ def promote_personal_sources(
         promote_title_classifications_from_path,
     )
 
-    def ensure_input_product(name: str) -> None:
+    def ensure_input_product(name: str, *, window: tuple[date, date] | None = None) -> None:
         from lynchpin.materialization import ensure_materialized
 
         product_start = window_start
         if name in {"activity_content", "personal_daily_signals"}:
             product_start = partition_window_start or window_start
-        result = ensure_materialized(name, window=(product_start, window_end))
+        result = ensure_materialized(name, window=window or (product_start, window_end))
         if result.status not in {"ready", "updated"}:
             raise RuntimeError(
                 f"{name} materialization unavailable for promotion: "
@@ -212,39 +212,35 @@ def promote_personal_sources(
     # ── spotify_daily: best-effort promotion from streaming history ──────
     if selection.includes(SOURCE_SPOTIFY_DAILY):
         try:
-            ensure_input_product("spotify_daily")
-            from lynchpin.sources.personal_signals import iter_spotify_daily_signals
+            from lynchpin.sources.personal_signals import iter_spotify_daily_signals, spotify_daily_window
 
-            spotify_rows = [
-                row
-                for row in iter_spotify_daily_signals(start=window_start, end=window_end, ensure=False)
-            ]
-            if spotify_rows:
-                counts["spotify_daily"] = promote_spotify_daily_rows(
-                    conn,
-                    refresh_id=refresh_id,
-                    rows=spotify_rows,
-                )
+            spotify_window = spotify_daily_window(start=window_start, end=window_end)
+            if spotify_window is None:
                 record_source_status(
-                    conn,
-                    refresh_id=refresh_id,
-                    source=SOURCE_SPOTIFY_DAILY,
-                    status="ok",
-                    reason=None,
-                    row_count=counts["spotify_daily"],
-                    window_start=window_start,
-                    window_end=window_end,
+                    conn, refresh_id=refresh_id, source=SOURCE_SPOTIFY_DAILY,
+                    status="unavailable", reason="requested window is outside Spotify export coverage",
+                    row_count=None, window_start=window_start, window_end=window_end,
                 )
             else:
+                ensure_input_product("spotify_daily", window=spotify_window)
+                spotify_rows = list(iter_spotify_daily_signals(
+                    start=spotify_window[0], end=spotify_window[1], ensure=False,
+                ))
+                if spotify_rows:
+                    counts["spotify_daily"] = promote_spotify_daily_rows(
+                        conn, refresh_id=refresh_id, rows=spotify_rows,
+                    )
+                clipped = spotify_window != (window_start, window_end)
                 record_source_status(
-                    conn,
-                    refresh_id=refresh_id,
-                    source=SOURCE_SPOTIFY_DAILY,
-                    status="empty",
-                    reason="no Spotify streams in window",
-                    row_count=0,
-                    window_start=window_start,
-                    window_end=window_end,
+                    conn, refresh_id=refresh_id, source=SOURCE_SPOTIFY_DAILY,
+                    status="partial" if clipped else ("ok" if spotify_rows else "empty"),
+                    reason=(
+                        f"Spotify export covers only [{spotify_window[0]}, {spotify_window[1]}) "
+                        f"of requested [{window_start}, {window_end}); outside dates are unavailable"
+                        if clipped else (None if spotify_rows else "no Spotify streams in window")
+                    ),
+                    row_count=counts["spotify_daily"] if spotify_rows else 0,
+                    window_start=window_start, window_end=window_end,
                 )
         except Exception as exc:
             log.warning(
@@ -256,7 +252,7 @@ def promote_personal_sources(
                 source=SOURCE_SPOTIFY_DAILY,
                 status="error",
                 reason=str(exc),
-                row_count=0,
+                row_count=None,
                 window_start=window_start,
                 window_end=window_end,
             )
