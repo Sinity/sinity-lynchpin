@@ -138,6 +138,8 @@ def run_source_handler(context: StepContext) -> Any:
     if name == "temporal_signals" and context.runtime.get("refresh_id") is not None:
         # Explicit plans own their upstream refreshes and failure decisions.
         kwargs["ensure_inputs"] = False
+    if name == "activity_content":
+        kwargs["allow_history_bootstrap"] = bool(context.runtime.get("full", False))
     if name == "activitywatch_event_index":
         kwargs["full"] = bool(context.runtime.get("full", False))
     if name in _REFRESH_ID and context.runtime.get("refresh_id") is not None:

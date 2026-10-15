@@ -35,6 +35,52 @@ RECENT_CHUNK_DAYS = 1
 RECENT_WINDOW_DAYS = 30
 
 
+def activity_content_computed_windows(manifest: dict[str, Any]) -> tuple[tuple[date, date], ...]:
+    """Validated computation domains, independent of observed row bounds."""
+    proof = manifest.get("computed_coverage")
+    versions = manifest.get("input_versions")
+    if (manifest.get("schema_version") != ACTIVITY_CONTENT_SCHEMA_VERSION
+            or not isinstance(proof, dict) or proof.get("version") != 1
+            or not isinstance(versions, list) or not versions
+            or proof.get("input_digest") != deterministic_input_digest(versions)):
+        return ()
+    windows = proof.get("windows")
+    if not isinstance(windows, list) or not windows:
+        return ()
+    parsed: list[tuple[date, date]] = []
+    try:
+        for window in windows:
+            if not isinstance(window, dict):
+                return ()
+            start = date.fromisoformat(window["start"])
+            end = date.fromisoformat(window["end"])
+            if end <= start or parsed and start <= parsed[-1][1]:
+                return ()
+            parsed.append((start, end))
+    except (KeyError, TypeError, ValueError):
+        return ()
+    return tuple(parsed)
+
+
+def _computed_coverage(previous: dict[str, Any], start: date, end: date,
+                       versions: list[dict[str, Any]]) -> dict[str, Any]:
+    # Global upstream revisions have no proven append-only/date-local contract.
+    # Preserve payload history but never relabel it as computed for a new input.
+    previous_windows = activity_content_computed_windows(previous) if previous.get("input_versions") == versions else ()
+    merged: list[tuple[date, date]] = []
+    for lower, upper in sorted((*previous_windows, (start, end))):
+        if merged and lower <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], upper))
+        else:
+            merged.append((lower, upper))
+    return {
+        "version": 1,
+        "input_digest": deterministic_input_digest(versions),
+        "windows": [{"start": lower.isoformat(), "end": upper.isoformat()} for lower, upper in merged],
+        "predecessor_generation_id": previous.get("generation_id") if previous_windows else None,
+    }
+
+
 class _TitleUsageStore:
     """Persistent, day-partitioned accumulator for high-cardinality title usage rows.
 
@@ -333,12 +379,14 @@ def _adopt_entrance(entrance: Path, link_target: Path, root: Path) -> None:
 
 def materialize_activity_content(
     *, start: date | None = None, end: date | None = None, output: Path | None = None,
+    allow_history_bootstrap: bool = False,
 ) -> dict[str, Any]:
     """Stage the accumulator and both products, then select them together.
 
     Old and interrupted generations remain recoverable. Stable file entrances
     traverse one directory pointer; readers resolve it before opening a product.
     """
+    allow_history_bootstrap = allow_history_bootstrap or (start is None and end is None)
     output = output or activity_content_daily_path()
     names = _bundle_names(output)
     root = output.parent / f".{output.stem}.generations"
@@ -391,7 +439,8 @@ def materialize_activity_content(
         else:
             _copy_bundle(previous, generation, names)
         staged_output = generation / output.name
-        manifest = _materialize_activity_content(start=start, end=end, output=staged_output)
+        manifest = _materialize_activity_content(start=start, end=end, output=staged_output,
+                                                 allow_history_bootstrap=allow_history_bootstrap)
         manifest["generation_id"] = generation.name
         write_manifest(staged_output.with_suffix(".manifest.json"), manifest)
         if not _usage_store_complete(generation / "title_usage.facts.sqlite3", _read_existing_daily(staged_output)):
@@ -436,6 +485,7 @@ def _materialize_activity_content(
     start: date | None = None,
     end: date | None = None,
     output: Path | None = None,
+    allow_history_bootstrap: bool = False,
 ) -> dict[str, Any]:
     bounded_request = start is not None and end is not None
     start, end = _default_window(start, end)
@@ -467,6 +517,11 @@ def _materialize_activity_content(
     facts_path = usage_output.with_name(f"{usage_output.stem}.facts.sqlite3")
     _migrate_usage_store(usage_partition_store, usage_output)
     if not _usage_store_complete(facts_path, existing_by_day) and existing_by_day:
+        if bounded_request and not allow_history_bootstrap:
+            raise MaterializationError(
+                "activity_content",
+                reason="incomplete historical title-usage accumulator requires explicit full repair; bounded materialization cannot widen into history",
+            )
         # A created database is not proof that bootstrap committed. Reconstruct
         # preserved daily history when the accumulator is missing or disagrees;
         # otherwise a narrow retry can silently discard earlier title facts.
@@ -610,8 +665,10 @@ def _materialize_activity_content(
         for row in merged_by_day.values():
             source_counts.update(row["source_counts"])
 
+        previous_manifest = _read_manifest(output.with_suffix(".manifest.json"))
         manifest = {
             "dataset": "lynchpin.activity_content_daily",
+            "computed_coverage": _computed_coverage(previous_manifest, start, end, acquired_versions),
             "schema_version": ACTIVITY_CONTENT_SCHEMA_VERSION,
             "materialized_path": str(output),
             "title_usage_path": str(usage_output),

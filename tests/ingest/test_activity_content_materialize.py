@@ -98,8 +98,8 @@ def _write_preserved_daily_fixture(output, day: str) -> None:
 
 
 def test_materialize_activity_content_bootstraps_persistent_store_once(monkeypatch, tmp_path):
-    """The first call against a pre-existing (old-code) product must widen
-    once to seed the new persistent title-usage store from full history.
+    """An explicit repair of a pre-existing product can seed its accumulator
+    from retained history while preserving the historical daily totals.
 
     lynchpin-d36: title_usage.ndjson is rebuilt purely from that store. If
     the very first call under the new code stayed scoped to a narrow window,
@@ -128,6 +128,7 @@ def test_materialize_activity_content_bootstraps_persistent_store_once(monkeypat
         start=date(2026, 2, 15),
         end=date(2026, 3, 2),
         output=output,
+        allow_history_bootstrap=True,
     )
 
     assert focus_calls[0]["start"].date() == date(2026, 1, 15)
@@ -308,8 +309,9 @@ def content_refresh(monkeypatch, tmp_path):
 
     monkeypatch.setattr(materializer, "focus_spans", spans)
 
-    def refresh(start=date(2026, 1, 1), end=date(2026, 1, 3)):
-        return materializer.materialize_activity_content(start=start, end=end, output=output)
+    def refresh(start=date(2026, 1, 1), end=date(2026, 1, 3), *, allow_history_bootstrap=False):
+        return materializer.materialize_activity_content(start=start, end=end, output=output,
+                                                         allow_history_bootstrap=allow_history_bootstrap)
 
     def totals():
         import sqlite3
@@ -386,10 +388,10 @@ def test_failed_bootstrap_does_not_turn_file_creation_into_completion(content_re
             raise RuntimeError("source unavailable")
         patch.setattr(materializer, "focus_spans", fail)
         with pytest.raises(RuntimeError, match="source unavailable"):
-            refresh(start=date(2026, 1, 2))
+            refresh(start=date(2026, 1, 2), allow_history_bootstrap=True)
     assert not (output.parent / "title_usage.facts.sqlite3").exists()
     monkeypatch.setattr(materializer, "focus_spans", original)
-    refresh(start=date(2026, 1, 2))
+    refresh(start=date(2026, 1, 2), allow_history_bootstrap=True)
     assert totals() == (120,) * 4
 
 
@@ -475,7 +477,7 @@ def test_bootstrap_checks_fact_days_not_only_the_grand_total(content_refresh):
     with sqlite3.connect(output.parent / "title_usage.facts.sqlite3") as connection:
         connection.execute("DELETE FROM title_usage_daily WHERE day = '2026-01-01'")
         connection.execute("UPDATE title_usage_daily SET focused_seconds = 120 WHERE day = '2026-01-02'")
-    refresh(start=date(2026, 1, 2))
+    refresh(start=date(2026, 1, 2), allow_history_bootstrap=True)
     assert totals() == (120,) * 4
 
 
@@ -511,3 +513,126 @@ def test_retired_temporal_bundle_requires_full_rebuild(content_refresh, monkeypa
     assert result["schema_version"] == materializer.ACTIVITY_CONTENT_SCHEMA_VERSION
     assert output.resolve().parent != old_selection
     assert totals() == (180, 180, 180, 180)
+
+
+def test_computed_empty_activity_content_window_is_prepared_readable(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from lynchpin import materialization
+    from lynchpin.ingest import activity_content_materialize as owner
+
+    aw, titles = tmp_path / "events.ndjson", tmp_path / "titles.ndjson"
+    aw.write_text('{}\n')
+    titles.write_text('{}\n')
+    output = tmp_path / "daily.ndjson"
+    monkeypatch.setattr(owner, "activity_content_input_files", lambda: (aw, titles))
+    monkeypatch.setattr(owner, "load_title_classification_map", lambda: {})
+    monkeypatch.setattr(owner, "focus_spans", lambda **_kwargs: iter(()))
+    first = owner.materialize_activity_content(start=date(2030, 1, 1), end=date(2030, 1, 3), output=output)
+    assert first["row_count"] == 0
+    assert first["first_date"] is None
+    assert owner.activity_content_computed_windows(first) == ((date(2030, 1, 1), date(2030, 1, 3)),)
+    monkeypatch.setattr(materialization, "activity_content_input_files", lambda: (aw, titles))
+    monkeypatch.setattr(materialization, "activity_content_daily_path", lambda: output)
+    monkeypatch.setattr(materialization, "activity_content_manifest_path", lambda: output.with_suffix('.manifest.json'))
+    monkeypatch.setattr(materialization, "activity_title_usage_path", lambda: tmp_path / "title_usage.ndjson")
+    cfg = SimpleNamespace(derived_root=tmp_path, data_root=tmp_path)
+    with materialization.prepared_product_reads():
+        result = materialization.ensure_materialized("activity_content", cfg=cfg, window=(date(2030, 1, 1), date(2030, 1, 3)))
+        assert result.status == "ready"
+        assert result.coverage["fully_covers_requested_window"] is True
+        assert result.coverage["product_has_date_bounds"] is False
+        assert result.coverage["has_computed_window_coverage"] is True
+        assert materialization.ensure_materialized("activity_content", cfg=cfg, window=(date(2030, 1, 1), date(2030, 1, 4))).status == "failed"
+
+
+def test_computed_windows_retain_only_proven_same_input_predecessor(monkeypatch, tmp_path):
+    from lynchpin.ingest import activity_content_materialize as owner
+
+    aw, titles = tmp_path / "events.ndjson", tmp_path / "titles.ndjson"
+    aw.write_text('{}\n')
+    titles.write_text('{}\n')
+    output = tmp_path / "daily.ndjson"
+    monkeypatch.setattr(owner, "activity_content_input_files", lambda: (aw, titles))
+    monkeypatch.setattr(owner, "load_title_classification_map", lambda: {})
+    monkeypatch.setattr(owner, "focus_spans", lambda **_kwargs: iter(()))
+    first = owner.materialize_activity_content(start=date(2030, 1, 1), end=date(2030, 1, 3), output=output)
+    second = owner.materialize_activity_content(start=date(2030, 1, 5), end=date(2030, 1, 6), output=output)
+    assert second["computed_coverage"]["windows"] == [
+        {"start": "2030-01-01", "end": "2030-01-03"}, {"start": "2030-01-05", "end": "2030-01-06"}]
+    assert second["computed_coverage"]["predecessor_generation_id"] == first["generation_id"]
+    titles.write_text('{"changed":true}\n')
+    third = owner.materialize_activity_content(start=date(2030, 1, 8), end=date(2030, 1, 9), output=output)
+    assert owner.activity_content_computed_windows(third) == ((date(2030, 1, 8), date(2030, 1, 9)),)
+    assert third["computed_coverage"]["predecessor_generation_id"] is None
+
+
+def test_legacy_bounds_and_mismatched_input_digest_are_not_computed_coverage():
+    from lynchpin.ingest.activity_content_materialize import (
+        ACTIVITY_CONTENT_SCHEMA_VERSION, activity_content_computed_windows,
+    )
+    manifest = {"schema_version": ACTIVITY_CONTENT_SCHEMA_VERSION,
+                "first_date": "2030-01-01", "last_date": "2030-01-09",
+                "covered_dates": ["2030-01-01"], "input_versions": [{"path": "fixture", "stat": [1]}]}
+    assert activity_content_computed_windows(manifest) == ()
+    manifest["computed_coverage"] = {"version": 1, "input_digest": "unrelated",
+                                     "windows": [{"start": "2030-01-01", "end": "2030-01-09"}]}
+    assert activity_content_computed_windows(manifest) == ()
+
+
+def test_changed_input_drops_coverage_proof_without_dropping_retained_rows(content_refresh):
+    owner, output, _seconds, refresh, totals = content_refresh
+    refresh()
+    previous_rows = output.read_bytes()
+    inputs = owner.activity_content_input_files()
+    inputs[0].write_text('{"new_input":true}\n')
+    manifest = refresh(start=date(2026, 1, 5), end=date(2026, 1, 6))
+    assert output.read_bytes() == previous_rows
+    assert totals() == (120, 120, 120, 120)
+    assert owner.activity_content_computed_windows(manifest) == ((date(2026, 1, 5), date(2026, 1, 6)),)
+
+
+@pytest.mark.parametrize("windows, expected", [
+    ([{"start": "0001-01-01", "end": "9999-12-31"}], ((date.min, date.max),)),
+    ([{"start": "2030-01-03", "end": "2030-01-01"}], ()),
+    ([{"start": "2030-01-01", "end": "2030-01-03"}, {"start": "2030-01-02", "end": "2030-01-04"}], ()),
+    ([{"start": "2030-01-01", "end": "2030-01-03"}, {"start": "2030-01-03", "end": "2030-01-04"}], ()),
+    ([{"start": "malformed", "end": "2030-01-03"}], ()),
+])
+def test_computation_window_validation_does_not_expand_calendar_days(windows, expected):
+    from lynchpin.ingest.activity_content_materialize import (
+        ACTIVITY_CONTENT_SCHEMA_VERSION, activity_content_computed_windows,
+    )
+    from lynchpin.materializers.partition_store import deterministic_input_digest
+
+    versions = [{"path": "fixture", "stat": [1]}]
+    manifest = {"schema_version": ACTIVITY_CONTENT_SCHEMA_VERSION, "input_versions": versions,
+                "computed_coverage": {"version": 1, "input_digest": deterministic_input_digest(versions), "windows": windows}}
+    assert activity_content_computed_windows(manifest) == expected
+
+
+def test_incremental_accumulator_failure_requires_explicit_full_repair(content_refresh, monkeypatch):
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.materializers import handlers, StepContext, ConvergencePlanner, ConvergenceRequest
+    from lynchpin.materializers.catalog import PRODUCT_CATALOG
+
+    owner, output, _seconds, refresh, totals = content_refresh
+    refresh()
+    previous_daily = output.read_bytes()
+    previous_manifest = output.with_suffix('.manifest.json').read_bytes()
+    selected = output.resolve().parent
+    (output.parent / "title_usage.facts.sqlite3").resolve().unlink()
+    with pytest.raises(MaterializationError, match="explicit full repair"):
+        refresh(start=date(2026, 1, 5), end=date(2026, 1, 6))
+    assert output.resolve().parent == selected
+    assert output.read_bytes() == previous_daily
+    assert output.with_suffix('.manifest.json').read_bytes() == previous_manifest
+    step = next(step for step in ConvergencePlanner(PRODUCT_CATALOG.values()).plan(
+        ConvergenceRequest(("activity_content",), (date(2026, 1, 5), date(2026, 1, 6)))
+    ).steps if step.product == "activity_content")
+    monkeypatch.setitem(handlers._SOURCE_HANDLERS, "activity_content", lambda **kwargs: owner.materialize_activity_content(output=output, **kwargs))
+    with pytest.raises(MaterializationError, match="explicit full repair"):
+        handlers.run_source_handler(StepContext(step, {}, {"window": step.window, "full": False}))
+    repaired = handlers.run_source_handler(StepContext(step, {}, {"window": step.window, "full": True}))
+    assert repaired["window_start"] == "2026-01-01"
+    assert repaired["window_end"] == "2026-01-06"
+    assert totals() == (120,) * 4

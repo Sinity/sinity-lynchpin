@@ -784,3 +784,95 @@ def test_incremental_promotion_uses_completed_rebuild_window(monkeypatch):
     assert materialize.main(["--all", "--promote", "--history", "incremental", "--progress", "quiet"]) == 0
     argv = observed["argv"]
     assert argv[argv.index("--incremental-tail-start") + 1] == "2020-05-02"
+
+
+@pytest.mark.parametrize("older_graph_gap", [False, True])
+def test_incremental_prepares_dependent_products_for_graph_replacement_before_writers(monkeypatch, tmp_path, older_graph_gap):
+    from dataclasses import replace
+    from lynchpin import materialization as audit
+    from lynchpin.cli import materialize, substrate_snapshot
+    from lynchpin.substrate import connection
+    from lynchpin.analysis.active import substrate_promote
+    from lynchpin.ingest import activity_content_materialize as content
+    from lynchpin.materializers import ConvergencePlanner, ConvergenceRequest
+    from lynchpin.materializers.catalog import PRODUCT_CATALOG
+    from lynchpin.materializers import handlers
+
+    end, source_start, graph_start = date(2026, 1, 15), date(2026, 1, 13), date(2026, 1, 8)
+    plan = ConvergencePlanner(PRODUCT_CATALOG.values()).plan(
+        ConvergenceRequest(("personal_daily_signals", "temporal_signals"), (source_start, end))
+    ).steps
+    plan = [replace(step, effective_window=(graph_start, end)) if step.product == "temporal_signals" else step for step in plan]
+    generation = connection.CandidateGeneration(
+        candidate=tmp_path / "candidate.duckdb", canonical=tmp_path / "serving.duckdb",
+        refresh_id="fixture-prepared", seed_source=tmp_path / "serving.duckdb",
+        seed_mode="reflink", seed_logical_rows=0,
+    )
+    aw, titles = tmp_path / "events.ndjson", tmp_path / "titles.ndjson"
+    aw.write_text('{}\n')
+    titles.write_text('{}\n')
+    output = tmp_path / "daily.ndjson"
+    monkeypatch.setattr(content, "activity_content_input_files", lambda: (aw, titles))
+    monkeypatch.setattr(content, "load_title_classification_map", lambda: {})
+    monkeypatch.setattr(content, "focus_spans", lambda **_kwargs: iter(()))
+    monkeypatch.setattr(content, "activity_content_daily_path", lambda: output)
+    monkeypatch.setattr(audit, "activity_content_input_files", lambda: (aw, titles))
+    monkeypatch.setattr(audit, "activity_content_daily_path", lambda: output)
+    monkeypatch.setattr(audit, "activity_content_manifest_path", lambda: output.with_suffix('.manifest.json'))
+    monkeypatch.setattr(audit, "activity_title_usage_path", lambda: tmp_path / "title_usage.ndjson")
+    monkeypatch.setattr(audit, "_record_materialization_step", lambda *_args, **_kwargs: None)
+    cfg = SimpleNamespace(derived_root=tmp_path, data_root=tmp_path)
+    observed = {}
+
+    def require_content():
+        with audit.prepared_product_reads():
+            result = audit.ensure_materialized("activity_content", cfg=cfg, window=(graph_start, end))
+            assert result.status == "ready"
+            assert result.coverage["fully_covers_requested_window"] is True
+
+    def handler(name):
+        def run(**kwargs):
+            observed[name] = kwargs
+            if name == "activity_content":
+                assert kwargs["allow_history_bootstrap"] is False
+                return content.materialize_activity_content(output=output, **kwargs)
+            if name == "personal_daily_signals":
+                require_content()  # Real predecessor receipt must already cover the consumer window.
+            return {"row_count": 0}
+        return run
+
+    for step in plan:
+        monkeypatch.setitem(handlers._SOURCE_HANDLERS, step.product, handler(step.product))
+    monkeypatch.setattr(materialize, "_all_history_window", lambda: (date(2026, 1, 1), end))
+    monkeypatch.setattr(materialize, "plan_materializations", lambda **_kwargs: plan)
+    monkeypatch.setattr(materialize, "audit_materialization", lambda: [])
+    monkeypatch.setattr(materialize, "_record_incremental_phase", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(materialize, "_incremental_graph_tail_start", lambda *_args, **_kwargs: date(2026, 1, 5) if older_graph_gap else graph_start)
+    monkeypatch.setattr(connection, "candidate_generation", lambda **_kwargs: nullcontext(generation))
+    monkeypatch.setattr(connection, "connect", lambda *_args, **_kwargs: nullcontext(None))
+    monkeypatch.setattr(connection, "generation_refresh_id", lambda *_args: generation.receipt_refresh_id)
+
+    def snapshot(argv):
+        assert argv[argv.index("--incremental-tail-start") + 1] == graph_start.isoformat()
+        require_content()
+        observed["graph"] = True
+        return 0
+
+    def typed(**kwargs):
+        assert kwargs["partition_window_start"] == graph_start
+        require_content()
+        observed["typed"] = True
+        return SimpleNamespace(status="ok", reason=None)
+
+    monkeypatch.setattr(substrate_snapshot, "main", snapshot)
+    monkeypatch.setattr(substrate_promote, "run_substrate_promote", typed)
+    result = materialize.main(["--all", "--promote", "--history", "incremental", "--snapshot-output", str(tmp_path / "snapshot.md"), "--progress", "quiet"])
+    if older_graph_gap:
+        assert result == 1
+        assert observed == {}  # No hidden historical catch-up starts before the explicit repair.
+    else:
+        assert result == 0
+        for name in ("activity_content", "personal_daily_signals"):
+            assert (observed[name]["start"], observed[name]["end"]) == (graph_start, end)
+        assert (observed["activitywatch_event_index"]["start"], observed["activitywatch_event_index"]["end"]) == (source_start, end)
+        assert observed["graph"] and observed["typed"]

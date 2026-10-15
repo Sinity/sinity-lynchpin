@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import nullcontext
+from dataclasses import replace
 import inspect
 import json
 import logging
@@ -76,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--full",
         action="store_true",
-        help="explicitly rebuild the ActivityWatch event index from live SQLite and archived databases",
+        help="explicitly rebuild the ActivityWatch index and permit historical ActivityContent accumulator repair",
     )
     parser.add_argument(
         "--rebuild-candidate-indexes",
@@ -213,6 +214,31 @@ def main(argv: list[str] | None = None) -> int:
                     generation=generation.refresh_id,
                 )
                 generation.receipt_refresh_id = publication_refresh_id
+            prepared_tail_start: date | None = None
+            if args.promote and args.history == "incremental":
+                end = date.fromisoformat(args.end)
+                full_start = date.fromisoformat(args.start)
+                requested_tail = min(
+                    (step.window[0] for step in plan if step.action == "materialize" and step.window is not None),
+                    default=max(full_start, end - timedelta(days=7)),
+                )
+                prepared_tail_start = requested_tail
+                if isinstance(generation, CandidateGeneration):
+                    from lynchpin.substrate.connection import connect
+
+                    with connect(generation.candidate, read_only=True) as conn:
+                        prepared_tail_start = _incremental_graph_tail_start(
+                            conn, refresh_id=publication_refresh_id, full_start=full_start,
+                            requested_tail_start=requested_tail,
+                        )
+                    if prepared_tail_start < requested_tail:
+                        raise _CandidateRejected(
+                            1, "published graph requires an older replacement window than the bounded source plan; "
+                            "run an explicit bounded catch-up before routine incremental promotion",
+                        )
+                plan = _align_incremental_product_windows(plan, (prepared_tail_start, end), add_missing=not bool(args.only))
+                dependency_model = materializer_dependency_model(plan)
+                planned_writer_waves = materializer_execution_waves(dependency_model)
             # Independent source reads/computations share waves; canonical
             # product writes and receipt writes are serialized by their own
             # paths/locks. Graph construction remains a barrier after them.
@@ -255,6 +281,11 @@ def main(argv: list[str] | None = None) -> int:
                                 full_start=date.fromisoformat(args.start),
                                 requested_tail_start=incremental_tail_start,
                             )
+                    if (prepared_tail_start is not None and incremental_tail_start < prepared_tail_start
+                            and any(getattr(step, "product", None) in {"activity_content", "personal_daily_signals"} for step in plan)):
+                        raise _CandidateRejected(
+                            1, "graph replacement window widened after source preparation; explicit bounded catch-up required",
+                        )
                     _progress(
                         "derived incremental graph tail: "
                         f"{incremental_tail_start.isoformat()}..{args.end}"
@@ -458,6 +489,33 @@ def _record_incremental_phase(
     generation.phase_evidence.append(payload)
     log_phase_evidence(measurement, metrics=metrics, evidence=evidence)
 
+
+
+def _align_incremental_product_windows(plan: Any, window: tuple[date, date], *, add_missing: bool = True) -> list[Any]:
+    """Prepare the dependent canonical chain for the graph's replacement domain."""
+    products = {"activity_content", "personal_daily_signals"}
+    by_product = {step.product: step for step in plan}
+    missing = products - by_product.keys()
+    if missing and add_missing:
+        # Planning is read-only. Select these consumers only; maintenance keeps
+        # its explicit archive-import and optional-source decisions unchanged.
+        for step in plan_materializations(window=window):
+            if step.product in missing:
+                by_product[step.product] = step
+    aligned = list(plan)
+    for product in sorted(products):
+        step = by_product.get(product)
+        if step is None or step.action != "materialize":
+            continue
+        adjusted = replace(
+            step, effective_window=window,
+            reason=f"graph replacement window {window[0].isoformat()}..{window[1].isoformat()}: {step.reason}",
+        )
+        aligned = [adjusted if item.product == product else item for item in aligned]
+        if all(item.product != product for item in aligned):
+            aligned.append(adjusted)
+        _progress(f"materialize: {product} ({adjusted.reason})")
+    return aligned
 
 def _incremental_graph_tail_start(
     conn: Any,

@@ -220,6 +220,8 @@ class MaterializedDataset:
     repair_required: bool = False
     #: An explicit migration is required before routine incremental maintenance.
     incremental_blocked_reason: str | None = None
+    #: Successful computation domains, including days with no output rows.
+    computed_windows: tuple[tuple[date, date], ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         contract = source_contract(self.name)
@@ -248,6 +250,9 @@ class MaterializedDataset:
             "first_date": self.first_date.isoformat() if self.first_date else None,
             "last_date": self.last_date.isoformat() if self.last_date else None,
             "covered_dates": [day.isoformat() for day in self.covered_dates],
+            "computed_windows": [
+                {"start": start.isoformat(), "end": end.isoformat()} for start, end in self.computed_windows
+            ],
             "coverage": coverage,
             "materialization_hint": self.materialization_hint,
             "reason": self.reason,
@@ -1307,7 +1312,7 @@ def _materialized_enough_for_window(
             return recently_refreshed or window[1] < logical_date(datetime.now().astimezone())
         return True
     if contract.collection_model in {"derived", "stage"} or contract.query_mode == "substrate":
-        if not row.covered_dates and (row.first_date is None or row.last_date is None):
+        if not getattr(row, "computed_windows", ()) and not row.covered_dates and (row.first_date is None or row.last_date is None):
             return False
     elif contract.collection_model != "continuous":
         return True
@@ -1603,7 +1608,9 @@ def materialized_dataset_coverage(
         collection_model = contract.collection_model
     except KeyError:
         collection_model = "event_export"
+    computed_windows = getattr(row, "computed_windows", ())
     product_dated = row.first_date is not None and row.last_date is not None
+    has_coverage_domain = bool(computed_windows) or product_dated
     precise_dates = tuple(
         day
         for day in row.covered_dates
@@ -1615,18 +1622,24 @@ def materialized_dataset_coverage(
         covered_days = 0
         overlaps = False
         fully_covers = False
-    elif not product_dated:
+    elif not has_coverage_domain:
         relation = "undated"
         covered_days = None
         overlaps = None
         fully_covers = None
     elif start is None or end is None:
         relation = "dated"
-        covered_days = len(precise_dates) if precise_dates else None
+        covered_days = (
+            sum((upper - lower).days for lower, upper in computed_windows)
+            if computed_windows else len(precise_dates) if precise_dates else None
+        )
         overlaps = None
         fully_covers = None
     else:
-        if row.name == "activitywatch_event_index":
+        if computed_windows:
+            covered_days = sum(max(0, (min(upper, end) - max(lower, start)).days)
+                               for lower, upper in computed_windows)
+        elif row.name == "activitywatch_event_index":
             # Empty logical days are valid for this sparse index.  Its bounded
             # date span is meaningful because the audit verifies it against the
             # complete canonical event row count.
@@ -1663,13 +1676,18 @@ def materialized_dataset_coverage(
         "collection_model": collection_model,
         "product_has_date_bounds": product_dated,
         "precise_covered_dates": bool(precise_dates),
+        "has_computed_window_coverage": bool(computed_windows),
         "requested_days": requested_days,
         "covered_days": covered_days,
         "coverage_ratio": ratio,
         "overlaps_requested_window": overlaps,
         "fully_covers_requested_window": fully_covers,
         "relation": relation,
-        "interpretation": _coverage_interpretation(collection_model, relation),
+        "interpretation": (
+            "requested window was computed for the recorded input revision, including empty days"
+            if computed_windows and relation == "covers_window"
+            else _coverage_interpretation(collection_model, relation)
+        ),
     }
 
 
@@ -2226,6 +2244,8 @@ def _title_metadata_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 
 def _activity_content_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    from .ingest.activity_content_materialize import activity_content_computed_windows
+
     contract = source_contract("activity_content")
     path = activity_content_daily_path().resolve()
     usage = path.with_name(activity_title_usage_path().name)
@@ -2256,6 +2276,7 @@ def _activity_content_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         materialized_paths=(path, usage, manifest),
         raw_roots=(cfg.derived_root / "title_metadata", cfg.data_root / "activity/shared/activitywatch"),
         row_count=_manifest_row_count(meta, path),
+        computed_windows=activity_content_computed_windows(meta),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
         materialization_hint=contract.materialization_hint,
