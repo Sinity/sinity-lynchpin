@@ -75,3 +75,30 @@ def test_absent_export_is_distinct_from_broken_retained_product(monkeypatch, tmp
     expected = MaterializationError if retained else SourceUnavailableError
     with pytest.raises(expected):
         spotify_daily_window(start=date(2030, 1, 1), end=date(2030, 1, 5))
+
+
+@pytest.mark.parametrize("ready", [True, False])
+def test_verified_canonical_daily_bounds_survive_absent_raw_export(monkeypatch, tmp_path, ready) -> None:
+    from lynchpin.ingest.personal_signals_materialize import SPOTIFY_DAILY_SCHEMA_VERSION
+
+    product = tmp_path / "daily.ndjson"
+    manifest = product.with_suffix(".manifest.json")
+    product.write_text('{"date":"2030-01-02","track_count":1}\n', encoding="utf-8")
+    manifest.write_text(json.dumps({
+        "schema_version": SPOTIFY_DAILY_SCHEMA_VERSION if ready else -1,
+        "row_count": 1, "first_date": "2030-01-02", "last_date": "2030-01-03",
+        "covered_dates": ["2030-01-02", "2030-01-03"],
+        "input_file_count": 0, "input_versions": [],
+    }), encoding="utf-8")
+    monkeypatch.setattr(materialization, "spotify_streams_path", lambda: tmp_path / "missing-streams.ndjson")
+    monkeypatch.setattr(materialization, "_spotify_input_files", lambda cfg: ())
+    monkeypatch.setattr(materialization, "spotify_daily_path", lambda: product)
+    monkeypatch.setattr(materialization, "spotify_daily_manifest_path", lambda: manifest)
+    monkeypatch.setattr(materialization, "spotify_daily_input_files", lambda: ())
+    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda **kwargs: pytest.fail("raw reader invoked"))
+    if not ready:
+        with pytest.raises(MaterializationError, match="not verified"):
+            spotify_daily_window(start=date(2030, 1, 1), end=date(2030, 1, 8))
+    else:
+        assert spotify_daily_window(start=date(2030, 1, 1), end=date(2030, 1, 8)) == (date(2030, 1, 2), date(2030, 1, 4))
+        assert spotify_daily_window(start=date(2030, 1, 4), end=date(2030, 1, 8)) is None

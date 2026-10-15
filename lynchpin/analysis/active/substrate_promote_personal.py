@@ -236,7 +236,7 @@ def promote_personal_sources(
                     conn, refresh_id=refresh_id, source=SOURCE_SPOTIFY_DAILY,
                     status="partial" if clipped else ("ok" if spotify_rows else "empty"),
                     reason=(
-                        f"Spotify export covers only [{spotify_window[0]}, {spotify_window[1]}) "
+                        f"Spotify evidence covers only [{spotify_window[0]}, {spotify_window[1]}) "
                         f"of requested [{window_start}, {window_end}); outside dates are unavailable"
                         if clipped else (None if spotify_rows else "no Spotify streams in window")
                     ),

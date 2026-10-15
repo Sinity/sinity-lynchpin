@@ -406,6 +406,13 @@ def test_substrate_promote_uses_derived_personal_products(
         '{"date":"2026-05-01","track_count":2,"minutes_played":5.5,"unique_artists":1,"unique_tracks":2,"top_artists":["A"],"top_tracks":["T"]}\n',
         encoding="utf-8",
     )
+    from lynchpin.ingest.personal_signals_materialize import SPOTIFY_DAILY_SCHEMA_VERSION
+
+    (spotify / "daily.manifest.json").write_text(json.dumps({
+        "schema_version": SPOTIFY_DAILY_SCHEMA_VERSION,
+        "row_count": 1, "first_date": "2026-05-01", "last_date": "2026-05-01",
+        "covered_dates": ["2026-05-01"], "input_file_count": 0, "input_versions": [],
+    }), encoding="utf-8")
     monkeypatch.setattr(
         "lynchpin.sources.spotify.iter_streams",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("raw streams must not be read")),

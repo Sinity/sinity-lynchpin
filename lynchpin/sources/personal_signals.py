@@ -119,7 +119,7 @@ def iter_personal_daily_signals(
 
 
 def spotify_daily_window(*, start: date, end: date) -> tuple[date, date] | None:
-    """Intersect a half-open request with the current export's known bounds.
+    """Intersect a request with export or verified canonical daily bounds.
 
     This limits demand, not validation: consumers must still require the daily
     product to cover every date in the returned window before reading it.
@@ -148,7 +148,19 @@ def spotify_daily_window(*, start: date, end: date) -> tuple[date, date] | None:
             retained_artifact = True
             break
         if not retained_artifact:
-            raise SourceUnavailableError("spotify", reason="no Spotify export product is available")
+            # A retained, independently ready daily product remains a valid
+            # canonical read surface when the raw export is no longer present.
+            daily = audit_dataset("spotify_daily")
+            if daily is not None and daily.status == "ready":
+                exported = daily
+            else:
+                for path in getattr(daily, "materialized_paths", ()):
+                    try:
+                        read_input_path(path).stat()
+                    except FileNotFoundError:
+                        continue
+                    raise MaterializationError("spotify_daily", reason="retained daily product is not verified")
+                raise SourceUnavailableError("spotify", reason="no Spotify export or verified daily product is available")
     if exported is None or exported.status != "ready" or exported.first_date is None or exported.last_date is None:
         raise MaterializationError("spotify_daily", reason="current export bounds are unavailable or invalid")
     clipped_start = max(start, exported.first_date)
