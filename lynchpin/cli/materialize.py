@@ -507,17 +507,43 @@ def _align_incremental_product_windows(plan: Any, window: tuple[date, date], *, 
     while True:
         expanded = set(selected)
         for product in selected:
-            expanded.update(dependency for dependency in candidates[product].dependencies
-                            if dependency in requested)
+            expanded.update(
+                dependency for dependency in candidates[product].dependencies
+                if dependency in requested and requested[dependency].action == "materialize"
+                and (requested[dependency].raw_read_permission == "none"
+                     or dependency in existing and existing[dependency].action == "materialize")
+            )
         # A producer selected by either plan also invalidates its prepared
         # canonical consumers; do not leave an earlier reused sibling stale.
+        actual_writers = selected | {product for product, step in existing.items() if step.action == "materialize"}
         expanded.update(product for product, step in candidates.items()
-                        if product in canonical and (add_missing or product in existing)
-                        and any(dependency in selected for dependency in step.dependencies))
+                        if product in canonical and step.action in {"materialize", "skip"}
+                        and (add_missing or product in existing)
+                        and any(dependency in actual_writers for dependency in step.dependencies))
         if expanded == selected:
             break
         selected = expanded
     aligned = dict(existing)
+    # Keep required reuse/refusal outcomes visible. An explicit graph window
+    # cannot authorize a native import omitted or withheld by maintenance.
+    for product in selected:
+        for dependency in candidates[product].dependencies:
+            needed = requested.get(dependency)
+            if needed is None:
+                continue
+            original = existing.get(dependency)
+            if (needed.action == "materialize" and needed.raw_read_permission != "none"
+                    and (original is None or original.action != "materialize")):
+                refusal = replace(
+                    original or needed,
+                    action=original.action if original is not None else "check-only",
+                    status="partial",
+                    reason="native dependency requires source-local preparation; graph-window planning cannot authorize its import",
+                )
+                aligned[dependency] = refusal
+                _progress(f"{refusal.action}: {dependency} ({refusal.reason})")
+            elif needed.action != "materialize":
+                aligned.setdefault(dependency, needed)
     for product in sorted(selected):
         original = existing.get(product)
         # Native/source-local writers keep their own maintenance tail. Newly

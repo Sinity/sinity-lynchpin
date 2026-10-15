@@ -922,3 +922,52 @@ def test_incremental_prepares_dependent_products_for_graph_replacement_before_wr
             assert "activitywatch_derived" not in observed
             assert output.resolve().parent == selected
             assert observed["graph"] and observed["typed"]
+
+
+@pytest.mark.parametrize("reuse_action", ["skip", "check-only"])
+def test_graph_window_does_not_rebuild_a_verified_dependency_or_its_siblings(monkeypatch, reuse_action):
+    from dataclasses import replace
+    from lynchpin.cli import materialize
+    from lynchpin.materializers import ConvergencePlanner, ConvergenceRequest
+    from lynchpin.materializers.catalog import PRODUCT_CATALOG
+
+    window = (date(2030, 1, 1), date(2030, 1, 8))
+    steps = ConvergencePlanner(PRODUCT_CATALOG.values()).plan(
+        ConvergenceRequest(("personal_daily_signals", "temporal_signals", "sleep_productivity"), window)
+    ).steps
+    products = {"activity_content", "personal_daily_signals", "title_metadata", "activitywatch_derived", "temporal_signals", "sleep_productivity"}
+    initial = [replace(step, action="materialize" if step.product in {"activity_content", "personal_daily_signals", "title_metadata"} else reuse_action,
+                       status="ready") for step in steps if step.product in products]
+    monkeypatch.setattr(materialize, "plan_materializations", lambda **_kwargs: initial)
+    aligned = materialize._align_incremental_product_windows(initial, window)
+    writers = {step.product for step in aligned if step.action == "materialize"}
+    assert writers == {"activity_content", "personal_daily_signals", "title_metadata"}
+    assert {step.product: step.action for step in aligned}["activitywatch_derived"] == reuse_action
+
+
+@pytest.mark.parametrize("native_action", ["check-only", "materialize"])
+def test_missing_native_window_dependency_remains_nonwriting_and_blocks_its_consumer(monkeypatch, native_action):
+    from dataclasses import replace
+    from lynchpin import materialization as audit
+    from lynchpin.cli import materialize
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.materializers import ConvergencePlanner, ConvergenceRequest, production
+    from lynchpin.materializers.catalog import PRODUCT_CATALOG
+
+    window = (date(2030, 1, 1), date(2030, 1, 8))
+    steps = {step.product: step for step in ConvergencePlanner(PRODUCT_CATALOG.values()).plan(
+        ConvergenceRequest(("personal_daily_signals",), window)
+    ).steps}
+    initial = [replace(steps[name], action="materialize" if name == "personal_daily_signals" else "check-only", status="ready")
+               for name in ("personal_daily_signals", "activity_content", "activitywatch_derived", "title_metadata")]
+    native = replace(steps["communications"], action=native_action, status="partial", reason="explicit import required")
+    assert native.raw_read_permission != "none"
+    monkeypatch.setattr(materialize, "plan_materializations", lambda **_kwargs: [*initial, native])
+    aligned = materialize._align_incremental_product_windows(initial, window)
+    assert next(step for step in aligned if step.product == "communications").action == "check-only"
+    assert {step.product for step in aligned if step.action == "materialize"} == {"personal_daily_signals"}
+    monkeypatch.setattr(audit, "_record_materialization_step", lambda *_args, **_kwargs: None)
+    # The actual executor must see the unavailable prerequisite, rather than
+    # silently ignoring the omitted native dependency and running its consumer.
+    with pytest.raises(MaterializationError, match="dependency communications unavailable"):
+        production.run_materialization_plan(aligned)
