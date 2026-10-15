@@ -120,9 +120,8 @@ class PolylogueVerificationSnapshot:
     generation: Mapping[str, Any]
     observations: tuple[PolylogueVerificationObservation, ...]
     superseded_rows: int
-    #: Rows that parse as receipts but describe no real run (e.g. a test
-    #: fixture's placeholder commit). They are excluded, never ingested, and
-    #: reported so the source's status can say so.
+    #: Invalid non-null revisions or contradictory run times are excluded
+    #: and reported. An absent commit instead leaves an unqualified run.
     rejected: tuple[tuple[str, str], ...] = ()
 
 
@@ -167,7 +166,7 @@ def read_verification_snapshot(path: Path | None = None) -> PolylogueVerificatio
         except json.JSONDecodeError as error:
             raise PolylogueVerificationContractError(f"{lane}:{number} is not valid JSON") from error
         observation = _observation(payload, location=f"{lane}:{number}", lane=lane)
-        invalid = _invalidity(observation)
+        invalid = _invalidity(observation, raw_revision=payload.get("source_revision"))
         if invalid is not None:
             rejected.append((f"{lane}:{number}", invalid))
             continue
@@ -190,10 +189,10 @@ def read_verification_snapshot(path: Path | None = None) -> PolylogueVerificatio
     )
 
 
-def _invalidity(row: PolylogueVerificationObservation) -> str | None:
-    """Why a well-formed receipt cannot describe a real run, or None."""
-    if row.git_commit is None or not _COMMIT_RE.match(row.git_commit):
-        return f"source_revision {row.git_commit!r} is not a git commit"
+def _invalidity(row: PolylogueVerificationObservation, *, raw_revision: object) -> str | None:
+    """Reject malformed revision metadata and contradictory execution times."""
+    if raw_revision is not None and (row.git_commit is None or not _COMMIT_RE.match(row.git_commit)):
+        return f"source_revision {raw_revision!r} is not a git commit"
     if row.ended_at is not None and row.ended_at < row.started_at:
         return "finished_at precedes started_at"
     if row.duration_s is not None and row.duration_s < 0:
@@ -233,6 +232,9 @@ def _observation(payload: Any, *, location: str, lane: Path) -> PolylogueVerific
 
     terminal = status in _TERMINAL_STATUSES
     caveats: list[str] = []
+    git_commit = _optional_text(payload.get("source_revision"))
+    if git_commit is None:
+        caveats.append("unqualified run observation: no tested Git commit is established by this receipt")
     if not terminal:
         caveats.append(f"Polylogue run status is {status}; it must not be interpreted as a result")
     if status == "interrupted":
@@ -291,8 +293,8 @@ def _observation(payload: Any, *, location: str, lane: Path) -> PolylogueVerific
         status=_SHARED_STATUS.get(status, status),
         exit_code=exit_code,
         host="unknown",
-        git_commit=_optional_text(payload.get("source_revision")),
-        git_dirty=None,
+        git_commit=git_commit,
+        git_dirty=payload.get("git_dirty") if isinstance(payload.get("git_dirty"), bool) else None,
         git_branch=_optional_text(payload.get("branch")) or _optional_text(payload.get("git_branch")),
         live_stage=semantic_status,
         args_json=_json(args),

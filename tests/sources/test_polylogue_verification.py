@@ -315,3 +315,37 @@ def test_snapshot_recorder_preserves_degraded_verification_status(tmp_path, monk
         expected = "error" if hard_failure else "degraded"
         assert actual == (expected, audit.reason, 1)
         assert _run_status(_source_statuses(conn, refresh_id)) == expected
+
+
+@pytest.mark.parametrize("dirty", [True, False, None])
+def test_unqualified_run_keeps_receipt_identity_and_null_git_commit(tmp_path, dirty):
+    import duckdb
+    from lynchpin.substrate.connection import apply_schema
+    from lynchpin.substrate.work_observations import promote_polylogue_verification_observations
+
+    lane = _write(tmp_path / "unqualified.jsonl", [
+        _receipt("20260927T100000Z-quick-10-aaaa", source_revision=None, git_dirty=dirty),
+    ])
+    snapshot = read_verification_snapshot(lane)
+    assert snapshot.rejected == ()
+    (row,) = snapshot.observations
+    assert row.git_commit is None
+    assert row.git_dirty is dirty
+    assert row.source_revision.startswith("sha256:") and len(row.source_revision) == 71
+    assert any("unqualified" in caveat for caveat in json.loads(row.caveats_json))
+    with duckdb.connect() as conn:
+        apply_schema(conn)
+        assert promote_polylogue_verification_observations(conn, refresh_id="fixture", rows=[row]) == 1
+        assert conn.execute("SELECT git_commit,git_dirty,source_revision FROM work_observation").fetchone() == (None, dirty, row.source_revision)
+
+
+@pytest.mark.parametrize("revision", ["abc123", "", 42, False, [], {}])
+def test_malformed_non_null_commit_is_not_treated_as_unknown(tmp_path, revision):
+    lane = _write(tmp_path / "invalid.jsonl", [
+        _receipt("20260927T100000Z-quick-10-aaaa"),
+        _receipt("20260927T100100Z-quick-11-bbbb", source_revision=revision),
+    ])
+    snapshot = read_verification_snapshot(lane)
+    assert len(snapshot.observations) == 1
+    assert len(snapshot.rejected) == 1
+    assert "git commit" in snapshot.rejected[0][1]
