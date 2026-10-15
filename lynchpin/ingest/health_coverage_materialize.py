@@ -532,6 +532,15 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
                 "earliest": _iso(group.earliest),
                 "latest": _iso(group.latest),
                 "last_provider_write": _iso(group.last_modified),
+                # Neither Health Connect's provider write time nor a cloud
+                # fetch establishes completion of a physical device sync.
+                "last_physical_device_sync": None,
+                "physical_device_sync_status": "unknown",
+                "physical_device_sync_basis": (
+                    "No device-sync completion timestamp is available; provider "
+                    "lastModified and cloud fetch times do not establish physical "
+                    "device sync completion."
+                ),
                 "last_emitted": _iso(group.last_emitted),
             }
         )

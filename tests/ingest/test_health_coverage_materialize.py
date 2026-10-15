@@ -109,6 +109,11 @@ def test_coverage_counts_records_not_events(monkeypatch, tmp_path) -> None:
     assert band_hr["earliest"] == "2026-08-16T18:00:00Z"
     assert band_hr["latest"] == "2026-08-22T19:00:00Z"
     assert band_hr["last_provider_write"] == "2026-08-22T19:33:00Z"
+    assert band_hr["last_physical_device_sync"] is None
+    assert band_hr["physical_device_sync_status"] == "unknown"
+    assert "provider lastModified and cloud fetch times do not establish" in band_hr[
+        "physical_device_sync_basis"
+    ]
 
     # The 1970 record must not stretch any group's bounds...
     shealth_hr = next(
