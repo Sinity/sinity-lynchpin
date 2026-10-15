@@ -229,7 +229,7 @@ def load_operator_day_window(
     conn: "duckdb.DuckDBPyConnection",
     *,
     refresh_id: str,
-) -> tuple[Any, ...] | None:
+) -> tuple[date | None, date | None, int]:
     """Return (min_date, max_date, count) for operator_day at refresh_id."""
     from .personal import load_operator_day_rows
 

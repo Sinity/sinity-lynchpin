@@ -213,11 +213,9 @@ def promote_personal_sources(
                 conn,
                 refresh_id=refresh_id,
                 rows=operator_rows,
-                **({
-                    "previous_refresh_id": predecessor,
-                    "replacement_start": operator_start,
-                    "replacement_end": window_end,
-                } if bounded else {}),
+                previous_refresh_id=predecessor,
+                replacement_start=operator_start if bounded else None,
+                replacement_end=window_end if bounded else None,
             )
 
             from lynchpin.substrate.readers_signals import load_operator_day_window

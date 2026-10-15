@@ -194,7 +194,8 @@ def test_promote_personal_sources_translates_operator_day_window(monkeypatch) ->
             SimpleNamespace(date=date(2026, 5, 2)),
         ]
 
-    def fake_promote_operator_day_rows(_conn, *, refresh_id, rows):
+    def fake_promote_operator_day_rows(_conn, *, refresh_id, rows, previous_refresh_id, replacement_start, replacement_end):
+        assert (previous_refresh_id, replacement_start, replacement_end) == (None, None, None)
         del refresh_id
         materialized = list(rows)
         promoted_dates.extend(row.date for row in materialized)
@@ -202,6 +203,10 @@ def test_promote_personal_sources_translates_operator_day_window(monkeypatch) ->
 
     monkeypatch.setattr("lynchpin.analysis.operator_daily.operator_daily_matrix", fake_operator_daily_matrix)
     monkeypatch.setattr("lynchpin.substrate.personal.promote_operator_day_rows", fake_promote_operator_day_rows)
+    monkeypatch.setattr(
+        "lynchpin.substrate.readers_signals.load_operator_day_window",
+        lambda _conn, *, refresh_id: (date(2026, 5, 1), date(2026, 5, 1), 1),
+    )
     monkeypatch.setattr(
         "lynchpin.analysis.active.substrate_promote_personal.record_source_status",
         lambda *_args, **_kwargs: None,
