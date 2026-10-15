@@ -209,8 +209,12 @@ Nightly tail maintenance checks the code snapshot state but leaves Chisel
 portfolio builds to an explicit `just chisel` or code-snapshot materialization;
 a Git ref moving does not schedule a full portfolio rebuild overnight.
 `agentctl job start lynchpin materialize_plan` previews this bounded maintenance
-selection, including check-only products. An explicit all-products plan is
-available through `python -m lynchpin.cli.materialize --all --plan-json`.
+selection, including check-only products. Its effective windows include graph
+consumer preparation, resolved against one read-only selected serving generation.
+It neither clones a candidate nor writes products. This is an observation, not a
+reservation: execution rechecks the graph domain under its candidate. A missing
+compatible baseline or an older unprepared gap is an explicit preview failure.
+An explicit all-products source plan is available through `python -m lynchpin.cli.materialize --all --plan-json`.
 The live machine telemetry SQLite database serves machine reads and graph
 promotion; nightly maintenance checks that source without rebuilding the large
 NDJSON offline copy. `python -m lynchpin.ingest.machine_materialize` can refresh

@@ -167,6 +167,23 @@ def main(argv: list[str] | None = None) -> int:
     dependency_model = materializer_dependency_model(plan)
     planned_writer_waves = materializer_execution_waves(dependency_model)
     if args.plan_json:
+        if args.promote and args.history == "incremental":
+            import duckdb
+            from lynchpin.substrate.connection import serving_generation
+
+            try:
+                with serving_generation() as serving:
+                    full_start, end = date.fromisoformat(args.start), date.fromisoformat(args.end)
+                    tail = _bounded_incremental_graph_tail(
+                        # Preview has no current candidate to exclude; an
+                        # existing same-period generation is a valid baseline.
+                        serving.connection, refresh_id=None, full_start=full_start,
+                        requested_tail_start=_incremental_source_tail(plan, full_start=full_start, end=end),
+                    )
+                    plan = _align_incremental_product_windows(plan, (tail, end), add_missing=not bool(args.only))
+            except (_CandidateRejected, MaterializationError, OSError, duckdb.Error) as exc:
+                sys.stderr.write(f"incremental plan unavailable: {exc}\n")
+                return 1
         sys.stdout.write(json.dumps([step.to_json() for step in plan], indent=2, sort_keys=True) + "\n")
         return 0
     for step in plan:
@@ -218,23 +235,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.promote and args.history == "incremental":
                 end = date.fromisoformat(args.end)
                 full_start = date.fromisoformat(args.start)
-                requested_tail = min(
-                    (step.window[0] for step in plan if step.action == "materialize" and step.window is not None),
-                    default=max(full_start, end - timedelta(days=7)),
-                )
+                requested_tail = _incremental_source_tail(plan, full_start=full_start, end=end)
                 prepared_tail_start = requested_tail
                 if isinstance(generation, CandidateGeneration):
                     from lynchpin.substrate.connection import connect
 
                     with connect(generation.candidate, read_only=True) as conn:
-                        prepared_tail_start = _incremental_graph_tail_start(
+                        prepared_tail_start = _bounded_incremental_graph_tail(
                             conn, refresh_id=publication_refresh_id, full_start=full_start,
                             requested_tail_start=requested_tail,
-                        )
-                    if prepared_tail_start < requested_tail:
-                        raise _CandidateRejected(
-                            1, "published graph requires an older replacement window than the bounded source plan; "
-                            "run an explicit bounded catch-up before routine incremental promotion",
                         )
                 plan = _align_incremental_product_windows(plan, (prepared_tail_start, end), add_missing=not bool(args.only))
                 dependency_model = materializer_dependency_model(plan)
@@ -490,6 +499,27 @@ def _record_incremental_phase(
     log_phase_evidence(measurement, metrics=metrics, evidence=evidence)
 
 
+
+
+def _incremental_source_tail(plan: Any, *, full_start: date, end: date) -> date:
+    return min(
+        (step.window[0] for step in plan if step.action == "materialize" and step.window is not None),
+        default=max(full_start, end - timedelta(days=7)),
+    )
+
+
+def _bounded_incremental_graph_tail(
+    conn: Any, *, refresh_id: str | None, full_start: date, requested_tail_start: date,
+) -> date:
+    tail = _incremental_graph_tail_start(
+        conn, refresh_id=refresh_id, full_start=full_start, requested_tail_start=requested_tail_start,
+    )
+    if tail < requested_tail_start:
+        raise _CandidateRejected(
+            1, "published graph requires an older replacement window than the bounded source plan; "
+            "run an explicit bounded catch-up before routine incremental promotion",
+        )
+    return tail
 
 def _align_incremental_product_windows(plan: Any, window: tuple[date, date], *, add_missing: bool = True) -> list[Any]:
     """Recheck graph consumers and include their required window dependencies."""

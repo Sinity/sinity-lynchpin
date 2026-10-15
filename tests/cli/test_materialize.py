@@ -971,3 +971,67 @@ def test_missing_native_window_dependency_remains_nonwriting_and_blocks_its_cons
     # silently ignoring the omitted native dependency and running its consumer.
     with pytest.raises(MaterializationError, match="dependency communications unavailable"):
         production.run_materialization_plan(aligned)
+
+
+@pytest.mark.parametrize("baseline", ["ready", "missing", "older_gap"])
+def test_incremental_preview_aligns_effective_windows_without_candidate_or_product_writes(monkeypatch, tmp_path, capsys, baseline):
+    from contextlib import contextmanager
+    from dataclasses import replace
+    from lynchpin.cli import materialize
+    from lynchpin.materializers import ConvergencePlanner, ConvergenceRequest
+    from lynchpin.materializers.catalog import PRODUCT_CATALOG
+    from lynchpin.substrate import connection
+
+    end, graph_start = date(2026, 1, 15), date(2026, 1, 8)
+    source_window = (date(2026, 1, 13), end)
+    steps = ConvergencePlanner(PRODUCT_CATALOG.values()).plan(
+        ConvergenceRequest(("personal_daily_signals", "temporal_signals"), source_window)
+    ).steps
+    plan = [replace(step, effective_window=(graph_start, end)) if step.product == "temporal_signals" else step for step in steps]
+    from lynchpin.cli.substrate_snapshot import _snapshot_refresh_id
+    published = _snapshot_refresh_id(start=date(2026, 1, 1), end=end, projects=())
+    database = tmp_path / "serving.duckdb"
+    with duckdb.connect(str(database)) as conn:
+        connection.apply_schema(conn)
+        if baseline != "missing":
+            conn.execute("INSERT INTO evidence_graph_build "
+                         "(refresh_id,start_date,end_date,mode,projects,node_count,edge_count,caveats,generated_at) "
+                         "VALUES (?, ?, ?, 'materialized', [], 1, 0, '[]', now())",
+                         [published, date(2026, 1, 1), date(2026, 1, 5) if baseline == "older_gap" else end])
+            conn.execute("INSERT INTO substrate_promotion_run "
+                         "(refresh_id,status,counts,started_at,finished_at) "
+                         "VALUES (?, 'ok', '{}', now(), now())", [published])
+            conn.execute("INSERT INTO substrate_source_status "
+                         "(refresh_id,source,kind,status,reason,row_count,recorded_at) "
+                         "VALUES (?, 'evidence_graph', 'graph', 'ok', NULL, 1, now())", [published])
+    before = database.read_bytes()
+    real_serving = connection.serving_generation
+    reads = []
+
+    @contextmanager
+    def selected():
+        with real_serving(database) as serving:
+            reads.append(serving.database_path)
+            yield serving
+
+    monkeypatch.setattr(connection, "serving_generation", selected)
+    monkeypatch.setattr(connection, "candidate_generation", lambda **_kwargs: pytest.fail("preview cloned a candidate"))
+    monkeypatch.setattr(connection, "bootstrap_candidate_generation", lambda **_kwargs: pytest.fail("preview bootstrapped a candidate"))
+    monkeypatch.setattr(materialize, "run_materialization_plan", lambda *_args, **_kwargs: pytest.fail("preview wrote products"))
+    monkeypatch.setattr(materialize, "_all_history_window", lambda: (date(2026, 1, 1), end))
+    monkeypatch.setattr(materialize, "plan_materializations", lambda **_kwargs: plan)
+    result = materialize.main(["--all", "--promote", "--history", "incremental", "--plan-json", "--progress", "quiet"])
+    captured = capsys.readouterr()
+    assert reads == [database]
+    assert database.read_bytes() == before
+    if baseline == "ready":
+        assert result == 0
+        rendered = {step["product"]: step for step in json.loads(captured.out)}
+        for name in ("activity_content", "personal_daily_signals"):
+            assert rendered[name]["effective_window"] == {"start": graph_start.isoformat(), "end": end.isoformat()}
+        assert rendered["activitywatch_event_index"]["effective_window"] == {"start": source_window[0].isoformat(), "end": source_window[1].isoformat()}
+    else:
+        assert result == 1
+        assert captured.out == ""
+        assert "incremental plan unavailable" in captured.err
+        assert ("no compatible published graph predecessor" if baseline == "missing" else "explicit bounded catch-up") in captured.err
