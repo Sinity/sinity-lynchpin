@@ -334,6 +334,9 @@ def test_webhistory_raw_and_dedup_reports_use_logical_date_bounds(tmp_path):
     )
     assert len(retained.stem.rsplit("_", 1)[1]) == 64
     assert retained.suffix == ".ndjson"
+    import hashlib
+
+    assert retained.stem.rsplit("_", 1)[1] == hashlib.sha256(retained.read_bytes()).hexdigest()
     assert dedup_report["first_date"] == "2026-01-01"
     assert dedup_report["first_timestamp_date"] == "2026-01-02"
     assert dedup_report["date_boundary"] == "logical_06:00_local"

@@ -365,33 +365,27 @@ def dedup_raw_files(
         # Date bounds are not a content identity: a later live snapshot can
         # contain new visits on exactly the same dates. Never overwrite the
         # earlier subset that still contributes retained canonical history.
-        digest = hashlib.sha256()
-        for visit in unique:
-            digest.update(
-                json.dumps(
-                    [visit.timestamp.isoformat(), visit.url, visit.title, visit.source],
+        def serialized_rows() -> Iterator[str]:
+            for visit in unique:
+                yield json.dumps(
+                    {
+                        "iso_time": visit.timestamp.isoformat(),
+                        "url": visit.url,
+                        "title": visit.title,
+                        "source": visit.source,
+                    },
                     ensure_ascii=False,
-                ).encode()
-            )
-            digest.update(b"\n")
+                )
+
+        digest = hashlib.sha256()
+        for row in serialized_rows():
+            digest.update((row + "\n").encode("utf-8"))
         out_path = (
             data_dir / f"{stem}_unique_{start}_to_{end}_{digest.hexdigest()}.ndjson"
         )
 
         if not dry_run:
-            atomic_write_ndjson(
-                out_path,
-                (
-                    {
-                        "iso_time": v.timestamp.isoformat(),
-                        "url": v.url,
-                        "title": v.title,
-                        "source": v.source,
-                    }
-                    for v in unique
-                ),
-                dumps=lambda row: json.dumps(row, ensure_ascii=False),
-            )
+            atomic_write_ndjson(out_path, serialized_rows(), dumps=str)
 
         reports.append(
             {
