@@ -492,30 +492,47 @@ def _record_incremental_phase(
 
 
 def _align_incremental_product_windows(plan: Any, window: tuple[date, date], *, add_missing: bool = True) -> list[Any]:
-    """Prepare the dependent canonical chain for the graph's replacement domain."""
-    products = {"activity_content", "personal_daily_signals"}
-    by_product = {step.product: step for step in plan}
-    missing = products - by_product.keys()
-    if missing and add_missing:
-        # Planning is read-only. Select these consumers only; maintenance keeps
-        # its explicit archive-import and optional-source decisions unchanged.
-        for step in plan_materializations(window=window):
-            if step.product in missing:
-                by_product[step.product] = step
-    aligned = list(plan)
-    for product in sorted(products):
-        step = by_product.get(product)
-        if step is None or step.action != "materialize":
+    """Recheck graph consumers and include their required window dependencies."""
+    roots = {"activity_content", "personal_daily_signals"}
+    canonical = roots | {"activitywatch_derived", "temporal_signals", "sleep_productivity"}
+    existing = {step.product: step for step in plan}
+    requested = {step.product: step for step in plan_materializations(window=window)}
+    candidates = {**existing, **requested}
+    selected = {
+        product for product in roots
+        if (product in existing and existing[product].action == "materialize")
+        or (product in requested and requested[product].action == "materialize"
+            and (add_missing or product in existing))
+    }
+    while True:
+        expanded = set(selected)
+        for product in selected:
+            expanded.update(dependency for dependency in candidates[product].dependencies
+                            if dependency in requested)
+        # A producer selected by either plan also invalidates its prepared
+        # canonical consumers; do not leave an earlier reused sibling stale.
+        expanded.update(product for product, step in candidates.items()
+                        if product in canonical and (add_missing or product in existing)
+                        and any(dependency in selected for dependency in step.dependencies))
+        if expanded == selected:
+            break
+        selected = expanded
+    aligned = dict(existing)
+    for product in sorted(selected):
+        original = existing.get(product)
+        # Native/source-local writers keep their own maintenance tail. Newly
+        # required dependencies use the explicit bounded planner's contract.
+        if product not in canonical and original is not None:
             continue
+        step = candidates[product]
         adjusted = replace(
-            step, effective_window=window,
+            step, action="materialize",
+            effective_window=window if product in canonical else step.effective_window,
             reason=f"graph replacement window {window[0].isoformat()}..{window[1].isoformat()}: {step.reason}",
         )
-        aligned = [adjusted if item.product == product else item for item in aligned]
-        if all(item.product != product for item in aligned):
-            aligned.append(adjusted)
+        aligned[product] = adjusted
         _progress(f"materialize: {product} ({adjusted.reason})")
-    return aligned
+    return list(aligned.values())
 
 def _incremental_graph_tail_start(
     conn: Any,

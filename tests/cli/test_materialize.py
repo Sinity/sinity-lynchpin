@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from datetime import date
+from datetime import date, timedelta
 import json
 from pathlib import Path
 import signal
@@ -786,8 +786,8 @@ def test_incremental_promotion_uses_completed_rebuild_window(monkeypatch):
     assert argv[argv.index("--incremental-tail-start") + 1] == "2020-05-02"
 
 
-@pytest.mark.parametrize("older_graph_gap", [False, True])
-def test_incremental_prepares_dependent_products_for_graph_replacement_before_writers(monkeypatch, tmp_path, older_graph_gap):
+@pytest.mark.parametrize("mode", ["materialize", "reuse", "older_gap"])
+def test_incremental_prepares_dependent_products_for_graph_replacement_before_writers(monkeypatch, tmp_path, mode):
     from dataclasses import replace
     from lynchpin import materialization as audit
     from lynchpin.cli import materialize, substrate_snapshot
@@ -796,7 +796,7 @@ def test_incremental_prepares_dependent_products_for_graph_replacement_before_wr
     from lynchpin.ingest import activity_content_materialize as content
     from lynchpin.materializers import ConvergencePlanner, ConvergenceRequest
     from lynchpin.materializers.catalog import PRODUCT_CATALOG
-    from lynchpin.materializers import handlers
+    from lynchpin.materializers import handlers, production
 
     end, source_start, graph_start = date(2026, 1, 15), date(2026, 1, 13), date(2026, 1, 8)
     plan = ConvergencePlanner(PRODUCT_CATALOG.values()).plan(
@@ -822,7 +822,11 @@ def test_incremental_prepares_dependent_products_for_graph_replacement_before_wr
     monkeypatch.setattr(audit, "activity_title_usage_path", lambda: tmp_path / "title_usage.ndjson")
     monkeypatch.setattr(audit, "_record_materialization_step", lambda *_args, **_kwargs: None)
     cfg = SimpleNamespace(derived_root=tmp_path, data_root=tmp_path)
+    monkeypatch.setattr(handlers, "activitywatch_derived_refresh_window", lambda window: window)
     observed = {}
+    source_domains = {"activitywatch_derived": (source_start, end), "personal_daily_signals": (source_start, end)}
+    if mode == "reuse":
+        content.materialize_activity_content(start=source_start, end=end, output=output)
 
     def require_content():
         with audit.prepared_product_reads():
@@ -838,16 +842,45 @@ def test_incremental_prepares_dependent_products_for_graph_replacement_before_wr
                 return content.materialize_activity_content(output=output, **kwargs)
             if name == "personal_daily_signals":
                 require_content()  # Real predecessor receipt must already cover the consumer window.
+            if name in source_domains:
+                source_domains[name] = (kwargs["start"], kwargs["end"])
             return {"row_count": 0}
         return run
 
     for step in plan:
         monkeypatch.setitem(handlers._SOURCE_HANDLERS, step.product, handler(step.product))
     monkeypatch.setattr(materialize, "_all_history_window", lambda: (date(2026, 1, 1), end))
-    monkeypatch.setattr(materialize, "plan_materializations", lambda **_kwargs: plan)
+    def rows(**_kwargs):
+        result = []
+        for step in plan:
+            if step.product == "activity_content":
+                result.append(audit._activity_content_dataset(cfg))
+                continue
+            lower, upper = source_domains.get(step.product, (date(2026, 1, 1), end))
+            result.append(audit.MaterializedDataset(
+                name=step.product, status="ready", authority="fixture", query_surface="fixture",
+                materialized_paths=(), raw_roots=(), row_count=1, first_date=lower,
+                last_date=upper - timedelta(days=1), materialization_hint="fixture", reason="fixture",
+                covered_dates=tuple(lower + timedelta(days=offset) for offset in range((upper - lower).days)),
+            ))
+        return result
+
+    def planning(**kwargs):
+        if mode != "reuse":
+            return plan
+        if kwargs.get("maintenance"):
+            # A fresh but too-narrow receipt can enter the initial plan as reuse.
+            return [replace(step, action="skip", status="ready") if step.product != "temporal_signals" else step
+                    for step in plan if step.product in {"activity_content", "personal_daily_signals", "temporal_signals"}]
+        return production.plan_materializations(**kwargs)
+
+    if mode == "reuse":
+        monkeypatch.setattr(audit, "audit_materialization", rows)
+        monkeypatch.setattr(audit, "get_config", lambda: cfg)
+    monkeypatch.setattr(materialize, "plan_materializations", planning)
     monkeypatch.setattr(materialize, "audit_materialization", lambda: [])
     monkeypatch.setattr(materialize, "_record_incremental_phase", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(materialize, "_incremental_graph_tail_start", lambda *_args, **_kwargs: date(2026, 1, 5) if older_graph_gap else graph_start)
+    monkeypatch.setattr(materialize, "_incremental_graph_tail_start", lambda *_args, **_kwargs: date(2026, 1, 5) if mode == "older_gap" else graph_start)
     monkeypatch.setattr(connection, "candidate_generation", lambda **_kwargs: nullcontext(generation))
     monkeypatch.setattr(connection, "connect", lambda *_args, **_kwargs: nullcontext(None))
     monkeypatch.setattr(connection, "generation_refresh_id", lambda *_args: generation.receipt_refresh_id)
@@ -867,12 +900,25 @@ def test_incremental_prepares_dependent_products_for_graph_replacement_before_wr
     monkeypatch.setattr(substrate_snapshot, "main", snapshot)
     monkeypatch.setattr(substrate_promote, "run_substrate_promote", typed)
     result = materialize.main(["--all", "--promote", "--history", "incremental", "--snapshot-output", str(tmp_path / "snapshot.md"), "--progress", "quiet"])
-    if older_graph_gap:
+    if mode == "older_gap":
         assert result == 1
         assert observed == {}  # No hidden historical catch-up starts before the explicit repair.
     else:
         assert result == 0
         for name in ("activity_content", "personal_daily_signals"):
             assert (observed[name]["start"], observed[name]["end"]) == (graph_start, end)
-        assert (observed["activitywatch_event_index"]["start"], observed["activitywatch_event_index"]["end"]) == (source_start, end)
+        if mode == "materialize":
+            assert (observed["activitywatch_event_index"]["start"], observed["activitywatch_event_index"]["end"]) == (source_start, end)
+        else:
+            # This dependency was absent from the maintenance plan and must run
+            # before the newly required consumer, under the explicit window.
+            assert (observed["activitywatch_derived"]["start"], observed["activitywatch_derived"]["end"]) == (graph_start, end)
         assert observed["graph"] and observed["typed"]
+        if mode == "reuse":
+            selected = output.resolve().parent
+            observed.clear()
+            assert materialize.main(["--all", "--promote", "--history", "incremental", "--snapshot-output", str(tmp_path / "repeat.md"), "--progress", "quiet"]) == 0
+            assert "activity_content" not in observed and "personal_daily_signals" not in observed
+            assert "activitywatch_derived" not in observed
+            assert output.resolve().parent == selected
+            assert observed["graph"] and observed["typed"]
