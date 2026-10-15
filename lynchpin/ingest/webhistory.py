@@ -12,19 +12,21 @@ data from the canonical paths.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import re
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from ..core.cache import input_versions
 from ..core.config import get_config
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
-from ..core.primitives import logical_date
+from ..core.primitives import date_to_dt_range, logical_date
+from ..core.parse import as_local
 from ..sources.browser_db import iter_browser_db_visits
 from ..sources.google_takeout import (
     discover_takeout_archives,
@@ -38,7 +40,13 @@ from ..sources.web import (
     normalize_url,
 )
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import _read_manifest_dict, atomic_write_ndjson, atomic_write_text, guard_incremental_shrinkage, write_manifest
+from ._manifest import (
+    _read_manifest_dict,
+    atomic_write_ndjson,
+    atomic_write_text,
+    guard_incremental_shrinkage,
+    write_manifest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,63 +119,89 @@ def extract_browser_data(
     *,
     raw_dir: Path | None = None,
     dry_run: bool = False,
+    start: date | None = None,
+    end: date | None = None,
 ) -> list[dict[str, Any]]:
     """Extract visits from all new browser sources, write raw NDJSON to *raw_dir*.
 
-    Returns a list of report dicts describing each extracted source.
+    Supplying both date bounds selects only live profiles; historical sources
+    are acquired only by the explicit unbounded route. Returns source reports.
     """
     cfg = get_config()
     raw_dir = raw_dir or cfg.webhistory_raw_dir
     raw_dir.mkdir(parents=True, exist_ok=True)
 
+    bounded = start is not None and end is not None
+    if (start is None) != (end is None) or (bounded and end <= start):
+        raise MaterializationError(
+            "webhistory",
+            reason="live extraction requires an increasing half-open date window",
+        )
     reports: list[dict[str, Any]] = []
 
-    # Browser SQLite DBs
-    for path, kind, label in _discover_browser_dbs():
-        visits = list(iter_browser_db_visits(path, kind=kind, source_label=label))
-        report = _write_raw_batch(raw_dir, path.name, visits, dry_run=dry_run)
-        report["kind"] = kind
-        reports.append(report)
+    if not bounded:
+        # Browser SQLite DBs
+        for path, kind, label in _discover_browser_dbs():
+            visits = list(iter_browser_db_visits(path, kind=kind, source_label=label))
+            report = _write_raw_batch(raw_dir, path.name, visits, dry_run=dry_run)
+            report["kind"] = kind
+            reports.append(report)
 
     # Live Chromium-family profiles (Chrome retains only ~90 days of visits;
     # snapshotting them into raw on every ingest run is what makes the history
     # durable). The profile DB is locked while the browser runs, so extraction
     # reads a temp copy. Configure via LYNCHPIN_CHROME_PROFILE_DBS.
-    from ..sources.chrome_profile import discover_profile_history_dbs, snapshot_history_db
+    from ..sources.chrome_profile import (
+        discover_profile_history_dbs,
+        snapshot_history_db,
+    )
 
+    timestamp_window: dict[str, datetime] = {}
+    if start is not None and end is not None:
+        lower, upper = date_to_dt_range(start, end - timedelta(days=1))
+        timestamp_window = {"start": as_local(lower), "end": as_local(upper)}
     for path, profile_label in discover_profile_history_dbs():
         with snapshot_history_db(path) as snap:
             visits = list(
                 iter_browser_db_visits(
-                    snap, kind="chromium", source_label=f"live_profile:{profile_label}"
+                    snap,
+                    kind="chromium",
+                    source_label=f"live_profile:{profile_label}",
+                    **timestamp_window,
                 )
             )
         report = _write_raw_batch(
-            raw_dir, f"live_{profile_label.replace('/', '_')}_history", visits, dry_run=dry_run
+            raw_dir,
+            f"live_{profile_label.replace('/', '_')}_history",
+            visits,
+            dry_run=dry_run,
         )
         report["kind"] = "live_profile"
         report["profile"] = profile_label
         report["source_path"] = str(path)
         reports.append(report)
 
-    for batch in iter_chrome_history_batches():
-        report = _write_raw_batch(
-            raw_dir,
-            f"{batch.archive.stem}_{Path(batch.member).name}",
-            list(batch.visits),
-            dry_run=dry_run,
-        )
-        report["kind"] = "takeout_chrome_archive"
-        report["archive"] = str(batch.archive)
-        report["member"] = batch.member
-        reports.append(report)
+    if not bounded:
+        for batch in iter_chrome_history_batches():
+            report = _write_raw_batch(
+                raw_dir,
+                f"{batch.archive.stem}_{Path(batch.member).name}",
+                list(batch.visits),
+                dry_run=dry_run,
+            )
+            report["kind"] = "takeout_chrome_archive"
+            report["archive"] = str(batch.archive)
+            report["member"] = batch.member
+            reports.append(report)
 
-    for path in _discover_manual_history_exports():
-        visits = list(iter_file_visits(path))
-        report = _write_raw_batch(raw_dir, f"manual_{path.name}", visits, dry_run=dry_run)
-        report["kind"] = "manual_history_export"
-        report["source_path"] = str(path)
-        reports.append(report)
+        for path in _discover_manual_history_exports():
+            visits = list(iter_file_visits(path))
+            report = _write_raw_batch(
+                raw_dir, f"manual_{path.name}", visits, dry_run=dry_run
+            )
+            report["kind"] = "manual_history_export"
+            report["source_path"] = str(path)
+            reports.append(report)
 
     return reports
 
@@ -238,6 +272,9 @@ def dedup_raw_files(
     data_dir: Path | None = None,
     tolerance_seconds: int = DEFAULT_DEDUP_TOLERANCE_S,
     dry_run: bool = False,
+    raw_paths: tuple[Path, ...] | None = None,
+    start: date | None = None,
+    end: date | None = None,
 ) -> list[dict[str, Any]]:
     """Dedup raw NDJSON files against existing canonical segments.
 
@@ -254,7 +291,25 @@ def dedup_raw_files(
     # Build seen-set from existing canonical segments
     seen: dict[tuple[str, datetime], bool] = {}
     if data_dir.is_dir():
-        for visit in iter_gestalt_events(data_dir):
+        if start is not None and end is not None:
+            # Adjacent logical days can contain a visit within dedup tolerance.
+            paths = _candidate_segment_files(
+                data_dir, start=start - timedelta(days=1), end=end + timedelta(days=1)
+            )
+            lower, upper = map(
+                as_local, date_to_dt_range(start, end - timedelta(days=1))
+            )
+            lower -= timedelta(seconds=tolerance_seconds)
+            upper += timedelta(seconds=tolerance_seconds)
+            visits = (
+                visit
+                for path in paths
+                for visit in iter_file_visits(path)
+                if lower <= visit.timestamp < upper
+            )
+        else:
+            visits = iter_gestalt_events(data_dir)
+        for visit in visits:
             key = _make_dedup_key(normalize_url(visit.url), visit.timestamp)
             seen[key] = True
 
@@ -262,7 +317,7 @@ def dedup_raw_files(
     if not raw_dir.is_dir():
         return reports
 
-    for raw_path in sorted(raw_dir.iterdir()):
+    for raw_path in sorted(raw_paths if raw_paths is not None else raw_dir.iterdir()):
         if raw_path.suffix not in (".json", ".csv", ".ndjson", ".jsonl"):
             continue
         if "_unique_" in raw_path.name:
@@ -292,12 +347,14 @@ def dedup_raw_files(
             unique.append(v)
 
         if not unique:
-            reports.append({
-                "file": str(raw_path),
-                "unique": 0,
-                "duplicates": duplicates,
-                "kept_path": None,
-            })
+            reports.append(
+                {
+                    "file": str(raw_path),
+                    "unique": 0,
+                    "duplicates": duplicates,
+                    "kept_path": None,
+                }
+            )
             continue
 
         unique.sort(key=lambda v: v.timestamp)
@@ -305,7 +362,21 @@ def dedup_raw_files(
         start = bounds["first_date"]
         end = bounds["last_date"]
         stem = raw_path.stem.rsplit(".", 1)[0]
-        out_path = data_dir / f"{stem}_unique_{start}_to_{end}.ndjson"
+        # Date bounds are not a content identity: a later live snapshot can
+        # contain new visits on exactly the same dates. Never overwrite the
+        # earlier subset that still contributes retained canonical history.
+        digest = hashlib.sha256()
+        for visit in unique:
+            digest.update(
+                json.dumps(
+                    [visit.timestamp.isoformat(), visit.url, visit.title, visit.source],
+                    ensure_ascii=False,
+                ).encode()
+            )
+            digest.update(b"\n")
+        out_path = (
+            data_dir / f"{stem}_unique_{start}_to_{end}_{digest.hexdigest()}.ndjson"
+        )
 
         if not dry_run:
             atomic_write_ndjson(
@@ -322,15 +393,17 @@ def dedup_raw_files(
                 dumps=lambda row: json.dumps(row, ensure_ascii=False),
             )
 
-        reports.append({
-            "file": str(raw_path),
-            "unique": len(unique),
-            "duplicates": duplicates,
-            "kept_path": str(out_path),
-            "start": start,
-            "end": end,
-            **bounds,
-        })
+        reports.append(
+            {
+                "file": str(raw_path),
+                "unique": len(unique),
+                "duplicates": duplicates,
+                "kept_path": str(out_path),
+                "start": start,
+                "end": end,
+                **bounds,
+            }
+        )
 
     return reports
 
@@ -448,6 +521,11 @@ def build_full_history(
                 dataset="webhistory.full_history",
             )
 
+        # Finish the input guard before atomic_write_ndjson publishes its
+        # temporary file, so a refused source race retains the serving pair.
+        if not dry_run and input_versions(all_input_files) != initial_input_versions:
+            raise MaterializationError("webhistory", reason="source segments changed during materialization")
+
     if dry_run:
         for _row in deduplicated_rows():
             pass
@@ -502,8 +580,6 @@ def build_full_history(
     report["input_versions"] = initial_input_versions
 
     if not dry_run:
-        if input_versions(all_input_files) != initial_input_versions:
-            raise MaterializationError("webhistory", reason="source segments changed during materialization")
         _write_full_history_manifest(output, report)
 
     return report
@@ -555,33 +631,40 @@ def _load_segment_visits(
     return visits
 
 
-def _load_existing_full_history(path: Path) -> list[WebHistoryRow]:
+def _existing_full_history_rows(path: Path) -> Iterator[WebHistoryRow]:
     if not path.exists():
-        return []
-    rows: list[WebHistoryRow] = []
+        return
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
                 continue
             try:
                 payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+            except json.JSONDecodeError as exc:
+                raise MaterializationError(
+                    "webhistory", reason="canonical history contains malformed JSON"
+                ) from exc
             if not isinstance(payload, dict):
-                continue
+                raise MaterializationError(
+                    "webhistory", reason="canonical history contains a non-object row"
+                )
             timestamp = payload_timestamp(payload)
             if timestamp is None:
-                continue
-            rows.append(
-                (
-                    timestamp,
-                    str(payload.get("url") or ""),
-                    str(payload.get("title") or ""),
-                    str(payload.get("source") or path),
-                    str(path),
+                raise MaterializationError(
+                    "webhistory",
+                    reason="canonical history contains an invalid timestamp",
                 )
+            yield (
+                timestamp,
+                str(payload.get("url") or ""),
+                str(payload.get("title") or ""),
+                str(payload.get("source") or path),
+                str(path),
             )
-    return rows
+
+
+def _load_existing_full_history(path: Path) -> list[WebHistoryRow]:
+    return list(_existing_full_history_rows(path))
 
 
 def _candidate_segment_files(data_dir: Path, *, start: date | None, end: date | None) -> list[Path]:
@@ -695,6 +778,40 @@ def _visit_date_bounds(timestamps: list[datetime]) -> dict[str, str]:
 # ── orchestration ─────────────────────────────────────────────────────
 
 
+def _bounded_baseline(
+    data_dir: Path, output: Path
+) -> tuple[tuple[Path, ...], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Require an unchanged retained canonical base before any live writes."""
+    manifest_path = full_history_manifest_path(output)
+    manifest = _read_manifest_dict(manifest_path)
+    paths = tuple(
+        path
+        for path in _candidate_segment_files(data_dir, start=None, end=None)
+        if path not in {output, manifest_path}
+    )
+    versions = input_versions(paths)
+    if (
+        not output.is_file()
+        or manifest.get("schema_version") != WEBHISTORY_FULL_HISTORY_SCHEMA_VERSION
+        or manifest.get("input_versions") != versions
+        or any(row.get("stat") is None for row in versions)
+    ):
+        raise MaterializationError(
+            "webhistory",
+            reason="retained canonical history inputs are unverified or changed; run explicit merge-only repair before live maintenance",
+        )
+    base_versions = input_versions((output, manifest_path))
+    count = sum(1 for _ in _existing_full_history_rows(output))
+    if (
+        count != manifest.get("row_count")
+        or input_versions((output, manifest_path)) != base_versions
+    ):
+        raise MaterializationError(
+            "webhistory", reason="canonical history differs from its retained manifest"
+        )
+    return paths, versions, base_versions
+
+
 def run(
     *,
     raw_dir: Path | None = None,
@@ -706,27 +823,83 @@ def run(
     end: date | None = None,
     report_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Full pipeline: extract → dedup → merge.
+    """Acquire browser visits, deduplicate, and merge canonical history.
 
-    Returns a summary dict suitable for JSON serialization.
+    A bounded request acquires only the live profiles in that logical window.
+    Historical databases, archives and manual exports require explicit unbounded
+    acquisition; their already-canonical contributions remain in the merge.
     """
+    if (start is None) != (end is None) or (
+        start is not None and end is not None and end <= start
+    ):
+        raise MaterializationError(
+            "webhistory",
+            reason="webhistory materialization requires an increasing half-open date window",
+        )
+    cfg = get_config()
+    raw_dir = raw_dir or cfg.webhistory_raw_dir
+    data_dir = data_dir or cfg.webhistory_dir
+    output = output or cfg.webhistory_ndjson or Path(str(raw_dir).replace("/raw", "/derived")) / "full_history.ndjson"
+    bounded = start is not None and end is not None
     started_at = datetime.now(timezone.utc)
     try:
+        baseline = _bounded_baseline(data_dir, output) if bounded else None
         # 1. Extract new browser data → raw NDJSON
-        extract_reports = extract_browser_data(raw_dir=raw_dir, dry_run=dry_run)
+        extract_reports = extract_browser_data(
+            raw_dir=raw_dir,
+            dry_run=dry_run,
+            **({"start": start, "end": end} if bounded else {}),
+        )
         total_extracted = sum(r["visits"] for r in extract_reports)
 
         # 2. Dedup → canonical segments
         dedup_reports = dedup_raw_files(
-            raw_dir=raw_dir, data_dir=data_dir,
-            tolerance_seconds=tolerance_seconds, dry_run=dry_run,
+            raw_dir=raw_dir,
+            data_dir=data_dir,
+            tolerance_seconds=tolerance_seconds,
+            dry_run=dry_run,
+            **(
+                {
+                    "raw_paths": tuple(
+                        Path(row["path"])
+                        for row in extract_reports
+                        if row.get("path") and row.get("written")
+                    ),
+                    "start": start,
+                    "end": end,
+                }
+                if bounded
+                else {}
+            ),
         )
+        if baseline is not None:
+            paths, versions, base_versions = baseline
+            allowed = set(paths) | {
+                Path(row["kept_path"]) for row in dedup_reports if row.get("kept_path")
+            }
+            current = {
+                path
+                for path in _candidate_segment_files(data_dir, start=None, end=None)
+                if path not in {output, full_history_manifest_path(output)}
+            }
+            if (
+                input_versions(paths) != versions
+                or current != allowed
+                or input_versions((output, full_history_manifest_path(output)))
+                != base_versions
+            ):
+                raise MaterializationError(
+                    "webhistory",
+                    reason="canonical history changed during live acquisition; previous merged history retained",
+                )
         total_unique = sum(r["unique"] for r in dedup_reports)
 
         # 3. Regenerate merged full_history.ndjson
         merge_report = build_full_history(
-            data_dir=data_dir, output=output,
-            tolerance_seconds=tolerance_seconds, dry_run=dry_run,
+            data_dir=data_dir,
+            output=output,
+            tolerance_seconds=tolerance_seconds,
+            dry_run=dry_run,
             start=start,
             end=end,
         )
@@ -752,6 +925,12 @@ def run(
             },
             "merge": merge_report,
             "dry_run": dry_run,
+            "archive_acquisition": {
+                "status": "not_admitted" if bounded else "explicit_import",
+                "reason": "bounded maintenance retains canonical contributions; raw historical inputs are not inspected or admitted"
+                if bounded
+                else "explicit unbounded source acquisition",
+            },
         }
     except Exception as exc:
         _write_run_report(

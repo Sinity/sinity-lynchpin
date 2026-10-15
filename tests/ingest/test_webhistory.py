@@ -286,6 +286,7 @@ class _FixedDateTime(datetime):
     def now(cls, tz=None):
         return cls.current.astimezone(tz) if tz else cls.current.replace(tzinfo=None)
 
+
 def test_merge_only_cli_uses_retained_merge_without_raw_extraction(monkeypatch, tmp_path):
     def unexpected_raw(**kwargs):
         raise AssertionError("merge-only must not extract raw inputs")
@@ -318,3 +319,293 @@ def test_candidate_merge_does_not_reimport_the_serving_carrier(monkeypatch, tmp_
     assert report["row_count"] == 1
     assert report["input_files"] == [str(segment)]
     assert old.exists()
+
+
+def _bounded_history_fixture(monkeypatch, tmp_path):
+    from datetime import date
+    from types import SimpleNamespace
+    from lynchpin.materializers import handlers
+    from lynchpin.sources import chrome_profile
+
+    cfg = SimpleNamespace(
+        webhistory_raw_dir=tmp_path / "raw",
+        webhistory_dir=tmp_path / "segments",
+        webhistory_ndjson=tmp_path / "derived/full_history.ndjson",
+        webhistory_report_dir=tmp_path / "reports",
+    )
+    cfg.webhistory_dir.mkdir()
+    cfg.webhistory_raw_dir.mkdir()
+    old = cfg.webhistory_dir / "archive_unique_2020-01-01_to_2026-05-02.ndjson"
+    old.write_text(
+        "".join(
+            json.dumps({"iso_time": stamp, "url": url, "source": "takeout:retained"})
+            + "\n"
+            for stamp, url in (
+                ("2020-01-01T12:00:00+00:00", "https://old.example/"),
+                ("2026-05-02T12:00:00+00:00", "https://archive.example/recent"),
+            )
+        )
+    )
+    monkeypatch.setattr(webhistory, "get_config", lambda: cfg)
+    monkeypatch.setattr(handlers, "get_config", lambda: cfg)
+    webhistory.build_full_history(
+        data_dir=cfg.webhistory_dir, output=cfg.webhistory_ndjson
+    )
+    db = tmp_path / "History"
+    c = sqlite3.connect(db)
+    c.executescript(
+        "CREATE TABLE urls(id INTEGER PRIMARY KEY,url TEXT,title TEXT); CREATE TABLE visits(id INTEGER PRIMARY KEY,url INTEGER,visit_time INTEGER);"
+    )
+    epoch = datetime(1601, 1, 1, tzinfo=timezone.utc)
+    for i, stamp in enumerate(
+        (
+            datetime(2020, 1, 1, 12, tzinfo=timezone.utc),
+            datetime(2026, 5, 2, 13, tzinfo=timezone.utc),
+        ),
+        1,
+    ):
+        c.execute(
+            "INSERT INTO urls VALUES(?,?,?)",
+            (i, f"https://live.example/{i}", "Fixture"),
+        )
+        c.execute(
+            "INSERT INTO visits VALUES(?,?,?)",
+            (i, i, int((stamp - epoch).total_seconds() * 1e6)),
+        )
+    c.commit()
+    c.close()
+    monkeypatch.setattr(
+        chrome_profile, "discover_profile_history_dbs", lambda: [(db, "fixture")]
+    )
+    monkeypatch.setattr(webhistory, "_discover_browser_dbs", lambda: [])
+    monkeypatch.setattr(webhistory, "_discover_manual_history_exports", lambda: [])
+
+    def archive_trap():
+        raise AssertionError("bounded maintenance opened a historical Takeout archive")
+
+    monkeypatch.setattr(webhistory, "iter_chrome_history_batches", archive_trap)
+    return cfg, old, db, date(2026, 5, 1), date(2026, 5, 3)
+
+
+def test_webhistory_production_tail_uses_live_sql_and_retained_archive_rows(
+    monkeypatch, tmp_path
+):
+    from lynchpin.materializers import handlers
+    from lynchpin.sources import browser_db, web
+
+    cfg, old, db, start, end = _bounded_history_fixture(monkeypatch, tmp_path)
+    old_bytes = old.read_bytes()
+    original_connect = sqlite3.connect
+
+    class ObservedConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=(), /):
+            if "FROM visits v" in sql:
+                assert (
+                    "WHERE" in sql
+                    and "v.visit_time >=" in sql
+                    and "v.visit_time <" in sql
+                )
+                assert len(parameters) == 2
+            return super().execute(sql, parameters)
+
+    monkeypatch.setattr(
+        browser_db.sqlite3,
+        "connect",
+        lambda *a, **kw: original_connect(*a, factory=ObservedConnection, **kw),
+    )
+    handlers._materialize_webhistory(start=start, end=end)
+    assert {v.url for v in web.iter_file_visits(cfg.webhistory_ndjson)} == {
+        "https://old.example/",
+        "https://archive.example/recent",
+        "https://live.example/2",
+    }
+    assert old.read_bytes() == old_bytes
+    receipt = json.loads((cfg.webhistory_report_dir / "last_run.json").read_text())
+    assert receipt["archive_acquisition"]["status"] == "not_admitted"
+    assert [i["kind"] for i in receipt["extract"]["details"]] == ["live_profile"]
+
+
+def test_webhistory_bounded_tail_refuses_changed_baseline_before_live_writes(
+    monkeypatch, tmp_path
+):
+    from lynchpin.materializers import handlers
+    from lynchpin.core.errors import MaterializationError
+    import pytest
+
+    cfg, old, db, start, end = _bounded_history_fixture(monkeypatch, tmp_path)
+    before = cfg.webhistory_ndjson.read_bytes()
+    manifest = webhistory.full_history_manifest_path(cfg.webhistory_ndjson)
+    manifest_before = manifest.read_bytes()
+    old.write_text(old.read_text() + "\n")
+    with pytest.raises(MaterializationError, match="canonical"):
+        handlers._materialize_webhistory(start=start, end=end)
+    assert cfg.webhistory_ndjson.read_bytes() == before
+    assert manifest.read_bytes() == manifest_before
+    assert list(cfg.webhistory_raw_dir.iterdir()) == []
+
+
+def test_webhistory_bounded_tail_never_discovers_historical_inputs(
+    monkeypatch, tmp_path
+):
+    from lynchpin.materializers import handlers
+
+    cfg, old, db, start, end = _bounded_history_fixture(monkeypatch, tmp_path)
+
+    def forbidden():
+        raise AssertionError("historical acquisition is not admitted by maintenance")
+
+    monkeypatch.setattr(webhistory, "_discover_browser_dbs", forbidden)
+    monkeypatch.setattr(webhistory, "_discover_manual_history_exports", forbidden)
+    handlers._materialize_webhistory(start=start, end=end)
+
+
+def test_webhistory_repeated_same_day_tail_preserves_prior_unique_segment(
+    monkeypatch, tmp_path
+):
+    from lynchpin.materializers import handlers
+    from lynchpin.sources.web import iter_file_visits
+
+    cfg, old, db, start, end = _bounded_history_fixture(monkeypatch, tmp_path)
+    handlers._materialize_webhistory(start=start, end=end)
+    before = {p: p.read_bytes() for p in cfg.webhistory_dir.iterdir()}
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO urls VALUES(3,'https://live.example/3','Later')")
+        stamp = datetime(2026, 5, 2, 14, tzinfo=timezone.utc)
+        micros = int(
+            (stamp - datetime(1601, 1, 1, tzinfo=timezone.utc)).total_seconds() * 1e6
+        )
+        conn.execute("INSERT INTO visits VALUES(3,3,?)", (micros,))
+    handlers._materialize_webhistory(start=start, end=end)
+    assert all(p.read_bytes() == value for p, value in before.items())
+    assert {v.url for v in iter_file_visits(cfg.webhistory_ndjson)} == {
+        "https://old.example/",
+        "https://archive.example/recent",
+        "https://live.example/2",
+        "https://live.example/3",
+    }
+
+
+def test_webhistory_invalid_merged_base_refuses_before_live_writes(
+    monkeypatch, tmp_path
+):
+    import pytest
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.materializers import handlers
+
+    cfg, old, db, start, end = _bounded_history_fixture(monkeypatch, tmp_path)
+    cfg.webhistory_ndjson.write_text("{damaged\n")
+    manifest = webhistory.full_history_manifest_path(cfg.webhistory_ndjson)
+    before = cfg.webhistory_ndjson.read_bytes(), manifest.read_bytes()
+    with pytest.raises(MaterializationError, match="canonical"):
+        handlers._materialize_webhistory(start=start, end=end)
+    assert (cfg.webhistory_ndjson.read_bytes(), manifest.read_bytes()) == before
+    assert list(cfg.webhistory_raw_dir.iterdir()) == []
+
+
+def test_webhistory_live_read_failure_preserves_canonical_pair(monkeypatch, tmp_path):
+    import pytest
+    from lynchpin.materializers import handlers
+
+    cfg, old, db, start, end = _bounded_history_fixture(monkeypatch, tmp_path)
+    manifest = webhistory.full_history_manifest_path(cfg.webhistory_ndjson)
+    before = cfg.webhistory_ndjson.read_bytes(), manifest.read_bytes()
+    db.write_bytes(b"broken SQLite")
+    with pytest.raises(sqlite3.DatabaseError):
+        handlers._materialize_webhistory(start=start, end=end)
+    assert (cfg.webhistory_ndjson.read_bytes(), manifest.read_bytes()) == before
+    assert list(cfg.webhistory_raw_dir.iterdir()) == []
+
+
+def test_webhistory_browser_sql_timestamp_bounds_are_exact_and_half_open(tmp_path):
+    from zoneinfo import ZoneInfo
+    from lynchpin.sources.browser_db import iter_browser_db_visits
+
+    for kind in ("chromium", "firefox"):
+        db = tmp_path / kind
+        epoch = datetime(
+            1601 if kind == "chromium" else 1970, 1, 1, tzinfo=timezone.utc
+        )
+        start = datetime(2030, 3, 30, 6, tzinfo=ZoneInfo("Europe/Warsaw"))
+        end = datetime(2030, 4, 1, 6, tzinfo=ZoneInfo("Europe/Warsaw"))
+
+        def micros(value):
+            d = value.astimezone(timezone.utc) - epoch
+            return (d.days * 86400 + d.seconds) * 1_000_000 + d.microseconds
+
+        lower, upper = micros(start), micros(end)
+        with sqlite3.connect(db) as conn:
+            if kind == "chromium":
+                conn.executescript(
+                    "CREATE TABLE urls(id INTEGER PRIMARY KEY,url TEXT,title TEXT);CREATE TABLE visits(id INTEGER PRIMARY KEY,url INTEGER,visit_time INTEGER);"
+                )
+                urls, visits = "urls", "visits"
+            else:
+                conn.executescript(
+                    "CREATE TABLE moz_places(id INTEGER PRIMARY KEY,url TEXT,title TEXT);CREATE TABLE moz_historyvisits(id INTEGER PRIMARY KEY,place_id INTEGER,visit_date INTEGER);"
+                )
+                urls, visits = "moz_places", "moz_historyvisits"
+            for i, t in enumerate((lower - 1, lower, upper - 1, upper), 1):
+                conn.execute(
+                    f"INSERT INTO {urls} VALUES(?,?,?)",
+                    (i, f"https://boundary.example/{i}", "Fixture"),
+                )
+                conn.execute(f"INSERT INTO {visits} VALUES(?,?,?)", (i, i, t))
+        assert [
+            v.url for v in iter_browser_db_visits(db, kind=kind, start=start, end=end)
+        ] == ["https://boundary.example/2", "https://boundary.example/3"]
+
+
+def test_webhistory_changed_source_during_merge_preserves_published_pair(monkeypatch, tmp_path):
+    import pytest
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.materializers import handlers
+    cfg, old, db, start, end = _bounded_history_fixture(monkeypatch, tmp_path)
+    manifest = webhistory.full_history_manifest_path(cfg.webhistory_ndjson)
+    before = cfg.webhistory_ndjson.read_bytes(), manifest.read_bytes()
+    publish = webhistory.atomic_write_ndjson
+    def mutate_before_publication(path, rows, **kwargs):
+        if path == cfg.webhistory_ndjson:
+            old.write_bytes(old.read_bytes() + b"\n")
+        return publish(path, rows, **kwargs)
+    monkeypatch.setattr(webhistory, "atomic_write_ndjson", mutate_before_publication)
+    with pytest.raises(MaterializationError, match="source segments changed"):
+        handlers._materialize_webhistory(start=start, end=end)
+    assert (cfg.webhistory_ndjson.read_bytes(), manifest.read_bytes()) == before
+
+
+def test_webhistory_explicit_unbounded_import_keeps_archive_and_historical_routes(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from lynchpin.materializers import handlers
+    from lynchpin.sources.web import WebHistoryVisit, iter_file_visits
+    cfg, old, db, start, end = _bounded_history_fixture(monkeypatch, tmp_path)
+    opened = []
+    def archives():
+        opened.append('archive')
+        yield SimpleNamespace(
+            archive=tmp_path/'takeout-archive.tgz', member='Takeout/Chrome/History.json',
+            visits=(WebHistoryVisit(timestamp=datetime(2021,1,1,12,tzinfo=timezone.utc),
+                                    url='https://explicit-archive.example/', title='Archive', source='takeout:explicit'),),
+        )
+    monkeypatch.setattr(webhistory, 'iter_chrome_history_batches', archives)
+    monkeypatch.setattr(webhistory, '_discover_browser_dbs', lambda: [(db,'chromium','historical:fixture')])
+    handlers._materialize_webhistory()
+    assert opened == ['archive']
+    urls = {v.url for v in iter_file_visits(cfg.webhistory_ndjson)}
+    assert {'https://explicit-archive.example/', 'https://live.example/1',
+            'https://live.example/2', 'https://old.example/', 'https://archive.example/recent'} <= urls
+    receipt = json.loads((cfg.webhistory_report_dir/'last_run.json').read_text())
+    assert receipt['archive_acquisition']['status'] == 'explicit_import'
+    assert {row['kind'] for row in receipt['extract']['details']} == {'chromium','live_profile','takeout_chrome_archive'}
+
+
+def test_webhistory_bounded_dry_run_does_not_read_retained_raw(monkeypatch, tmp_path):
+    cfg, old, db, start, end = _bounded_history_fixture(monkeypatch, tmp_path)
+    stale_raw = cfg.webhistory_raw_dir / "live_fixture_history_2026-05-02_to_2026-05-02.ndjson"
+    stale_raw.write_text("{invalid old extraction\n")
+    manifest = webhistory.full_history_manifest_path(cfg.webhistory_ndjson)
+    before = {p: p.read_bytes() for p in (cfg.webhistory_ndjson, manifest, old, stale_raw)}
+    report = webhistory.run(start=start, end=end, dry_run=True)
+    assert report["dry_run"] is True
+    assert report["dedup"]["details"] == []
+    assert all(p.read_bytes() == value for p, value in before.items())
+    assert list(cfg.webhistory_raw_dir.iterdir()) == [stale_raw]

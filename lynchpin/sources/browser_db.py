@@ -60,6 +60,8 @@ def iter_browser_db_visits(
     *,
     kind: str = "chromium",
     source_label: str | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
 ) -> Iterator[WebHistoryVisit]:
     """Yield WebHistoryVisit objects from a browser SQLite database.
 
@@ -67,8 +69,28 @@ def iter_browser_db_visits(
         path: Path to the SQLite database file.
         kind: ``"chromium"`` (Chrome/Edge/Vivaldi/Opera) or ``"firefox"``.
         source_label: Optional label for the ``source`` field.
+        start, end: Optional timezone-aware, half-open SQL timestamp bounds.
     """
+    if (start is None) != (end is None):
+        raise ValueError("browser history requires both timestamp bounds")
     sql = _CHROMIUM_SQL if kind == "chromium" else _FIREFOX_SQL
+    parameters: tuple[int, int] | tuple[()] = ()
+    if start is not None and end is not None:
+        if start.tzinfo is None or end.tzinfo is None or end <= start:
+            raise ValueError(
+                "browser history requires an increasing timezone-aware window"
+            )
+        epoch = _WEBKIT_EPOCH if kind == "chromium" else _UNIX_EPOCH
+
+        def micros(value: datetime) -> int:
+            delta = value.astimezone(timezone.utc) - epoch
+            return (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
+
+        column = "v.visit_time" if kind == "chromium" else "h.visit_date"
+        sql = sql.replace(
+            "    ORDER BY", f"    WHERE {column} >= ? AND {column} < ?\n    ORDER BY"
+        )
+        parameters = (micros(start), micros(end))
     convert = _webkit_to_datetime if kind == "chromium" else _unix_micros_to_datetime
 
     path = Path(path)
@@ -76,7 +98,7 @@ def iter_browser_db_visits(
 
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
-        for ts_raw, url, title in conn.execute(sql):
+        for ts_raw, url, title in conn.execute(sql, parameters):
             if not url:
                 continue
             try:

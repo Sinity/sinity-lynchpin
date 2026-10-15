@@ -8,6 +8,7 @@ import sqlite3
 import pytest
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 from lynchpin.core.cache import input_versions
@@ -327,9 +328,12 @@ def test_webhistory_raw_and_dedup_reports_use_logical_date_bounds(tmp_path):
 
     dedup_report = dedup_raw_files(raw_dir=raw_dir, data_dir=data_dir)[0]
 
-    assert dedup_report["kept_path"].endswith(
-        "manual_history_2026-01-01_to_2026-01-01_unique_2026-01-01_to_2026-01-01.ndjson"
+    retained = Path(dedup_report["kept_path"])
+    assert retained.name.startswith(
+        "manual_history_2026-01-01_to_2026-01-01_unique_2026-01-01_to_2026-01-01_"
     )
+    assert len(retained.stem.rsplit("_", 1)[1]) == 64
+    assert retained.suffix == ".ndjson"
     assert dedup_report["first_date"] == "2026-01-01"
     assert dedup_report["first_timestamp_date"] == "2026-01-02"
     assert dedup_report["date_boundary"] == "logical_06:00_local"
