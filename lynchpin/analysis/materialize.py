@@ -182,6 +182,7 @@ def _promote_operator_day(*, start: date | None, end: date | None) -> dict:
     from contextlib import nullcontext
     from lynchpin.substrate.connection import apply_schema, candidate_generation, connect, in_candidate_generation
     from lynchpin.substrate.personal import promote_operator_day_rows
+    from lynchpin.materialization import prepared_product_reads
     from lynchpin.substrate.source_status import record_source_status
 
     resolved_start, resolved_end = _rolling_window(start=start, end=end, days=90)
@@ -192,7 +193,8 @@ def _promote_operator_day(*, start: date | None, end: date | None) -> dict:
     with publication:
         with connect() as conn:
             apply_schema(conn)
-            rows = operator_daily_matrix(resolved_start, resolved_end, connection=conn)
+            with prepared_product_reads():
+                rows = operator_daily_matrix(resolved_start, resolved_end, connection=conn)
             n = promote_operator_day_rows(conn, refresh_id=refresh_id, rows=rows)
             record_source_status(
                 conn,

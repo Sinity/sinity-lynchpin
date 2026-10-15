@@ -260,8 +260,18 @@ def test_explicit_operator_day_bootstrap_uses_existing_single_step(monkeypatch, 
             conn.execute("INSERT INTO evidence_graph_build (refresh_id,start_date,end_date,mode,generated_at) VALUES ('prior','2025-01-01','2025-02-01','materialized',now())")
     before_manifest = json.loads(db.with_suffix(".manifest.json").read_text())
     calls = []
+    from lynchpin import materialization as products
+    unavailable = products.MaterializedDataset(
+        name="activitywatch_event_index", status="partial", authority="fixture",
+        query_surface="fixture", materialized_paths=(), raw_roots=(), row_count=0,
+        first_date=None, last_date=None, materialization_hint="fixture", reason="stale fixture",
+    )
+    monkeypatch.setattr(products, "_audit_one", lambda *_args, **_kwargs: unavailable)
+    monkeypatch.setattr(products, "_ensure_materialized_once", lambda *_args, **_kwargs: pytest.fail("operator-day repair must not launch an upstream writer"))
     def matrix(start, end, *, skip_slow=False, connection=None):
         calls.append((start, end, skip_slow, connection is not None))
+        admission = products.ensure_materialized("activitywatch_event_index", window=(start, end + timedelta(days=1)))
+        assert admission.status == "failed" and not admission.changed
         return [OperatorDay(date=start, spotify_hours=None)]
     monkeypatch.setattr(materialize, "operator_daily_matrix", matrix)
     start, end = date(2026, 1, 1), date(2026, 1, 3)
