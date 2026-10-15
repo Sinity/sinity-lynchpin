@@ -1431,7 +1431,7 @@ def test_dataset_status_mapping_is_shared() -> None:
     assert dataset_status_to_substrate_status("partial") == "unavailable"
     # "stale" was removed from DatasetStatus — unknown values now route to error
     assert dataset_status_to_substrate_status("stale") == "error"
-    assert dataset_status_to_substrate_status("degraded") == "error"
+    assert dataset_status_to_substrate_status("degraded") == "degraded"
     assert dataset_status_to_substrate_status("error") == "error"
 
 
