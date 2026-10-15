@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from ..core.config import LynchpinConfig
+from ..core.errors import SourceUnavailableError
 from ..core.parse import parse_datetime
 from ..core.source import SourceReadiness, read_jsonl_with
 
@@ -115,10 +116,8 @@ def _hydrate(payload: dict[str, Any]) -> Optional[XiaomiEnvelope]:
 
 
 def _day_files(root: Path) -> list[Path]:
-    if not root.exists():
-        return []
     dated: list[tuple[str, Path]] = []
-    for path in root.glob("xiaomi-cloud-*.jsonl"):
+    for path in root.iterdir():
         match = _DAY_FILE_RE.search(path.name)
         if match is None:
             continue
@@ -128,22 +127,38 @@ def _day_files(root: Path) -> list[Path]:
 
 def readiness(root: Optional[Path] = None) -> SourceReadiness:
     base = _lane_root(root)
-    if not base.exists():
+    try:
+        files = _day_files(base)
+    except FileNotFoundError:
         return SourceReadiness(
-            status="missing", reason=f"{base} does not exist", path=base, row_count=0,
+            status="missing", reason=f"{base} does not exist", path=base, row_count=None,
         )
-    files = _day_files(base)
+    except OSError as exc:
+        return SourceReadiness(
+            status="error", reason=f"could not list {base}: {exc}", path=base, row_count=None,
+        )
     if not files:
         return SourceReadiness(
             status="empty", reason="lane present but no day files yet", path=base, row_count=0,
         )
     total = 0
+    readable = 0
+    read_errors: list[str] = []
     for path in files:
         try:
             with path.open(encoding="utf-8") as fh:
                 total += sum(1 for line in fh if line.strip())
-        except OSError:
-            continue
+            readable += 1
+        except (OSError, UnicodeError) as exc:
+            read_errors.append(f"{path.name}: {exc}")
+    if read_errors:
+        return SourceReadiness(
+            status="partial" if readable else "error",
+            reason="could not read day files: " + "; ".join(read_errors)
+            + ("; row count covers readable files only" if readable else ""),
+            path=base,
+            row_count=total if readable else None,
+        )
     if total == 0:
         return SourceReadiness(
             status="empty", reason="day files present but no envelopes yet", path=base, row_count=0,
@@ -152,8 +167,14 @@ def readiness(root: Optional[Path] = None) -> SourceReadiness:
     # vendor_sync_pass receipt. Append order is authoritative when fetchedAt
     # ties; a trailing non-receipt means the newest pass did not complete.
     latest: XiaomiEnvelope | None = None
-    for envelope in xiaomi_envelopes(root=base):
-        latest = envelope
+    try:
+        for envelope in xiaomi_envelopes(root=base):
+            latest = envelope
+    except SourceUnavailableError as exc:
+        return SourceReadiness(
+            status="error", reason=f"lane changed or became unreadable: {exc}",
+            path=base, row_count=None,
+        )
     if latest is not None and latest.kind == "vendor_sync_pass":
         failures = latest.payload.get("failures")
         if isinstance(failures, int) and failures > 0:
@@ -183,8 +204,25 @@ def readiness(root: Optional[Path] = None) -> SourceReadiness:
 
 def xiaomi_envelopes(*, root: Optional[Path] = None) -> Iterator[XiaomiEnvelope]:
     """Yield every envelope revision, in append order across day files."""
-    for path in _day_files(_lane_root(root)):
-        yield from read_jsonl_with(path, _hydrate, source_name=path.name)
+    base = _lane_root(root)
+    try:
+        files = _day_files(base)
+    except FileNotFoundError as exc:
+        # The vendor witness is optional unless a caller supplies its root.
+        # Readiness still reports the absent default lane as missing.
+        if root is None:
+            return
+        raise SourceUnavailableError("xiaomi_cloud", path=str(base), reason=str(exc)) from exc
+    except OSError as exc:
+        raise SourceUnavailableError("xiaomi_cloud", path=str(base), reason=str(exc)) from exc
+    for path in files:
+        try:
+            # Check explicitly before the shared reader's optional-file guard:
+            # Path.exists() can suppress access errors on newer Python versions.
+            path.stat()
+            yield from read_jsonl_with(path, _hydrate, source_name=path.name)
+        except (OSError, UnicodeError) as exc:
+            raise SourceUnavailableError("xiaomi_cloud", path=str(path), reason=str(exc)) from exc
 
 
 def latest_envelopes(
