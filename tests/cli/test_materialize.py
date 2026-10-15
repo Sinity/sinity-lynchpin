@@ -786,7 +786,7 @@ def test_incremental_promotion_uses_completed_rebuild_window(monkeypatch):
     assert argv[argv.index("--incremental-tail-start") + 1] == "2020-05-02"
 
 
-@pytest.mark.parametrize("mode", ["materialize", "reuse", "older_gap"])
+@pytest.mark.parametrize("mode", ["materialize", "reuse", "backlog", "boundary", "older_gap"])
 def test_incremental_prepares_dependent_products_for_graph_replacement_before_writers(monkeypatch, tmp_path, mode):
     from dataclasses import replace
     from lynchpin import materialization as audit
@@ -798,11 +798,13 @@ def test_incremental_prepares_dependent_products_for_graph_replacement_before_wr
     from lynchpin.materializers.catalog import PRODUCT_CATALOG
     from lynchpin.materializers import handlers, production
 
-    end, source_start, graph_start = date(2026, 1, 15), date(2026, 1, 13), date(2026, 1, 8)
+    end, source_start, source_tail = date(2026, 1, 15), date(2026, 1, 13), date(2026, 1, 8)
+    graph_start = {"backlog": date(2026, 1, 7), "boundary": date(2026, 1, 1),
+                   "older_gap": date(2025, 12, 31)}.get(mode, source_tail)
     plan = ConvergencePlanner(PRODUCT_CATALOG.values()).plan(
         ConvergenceRequest(("personal_daily_signals", "temporal_signals"), (source_start, end))
     ).steps
-    plan = [replace(step, effective_window=(graph_start, end)) if step.product == "temporal_signals" else step for step in plan]
+    plan = [replace(step, effective_window=(source_tail, end)) if step.product == "temporal_signals" else step for step in plan]
     generation = connection.CandidateGeneration(
         candidate=tmp_path / "candidate.duckdb", canonical=tmp_path / "serving.duckdb",
         refresh_id="fixture-prepared", seed_source=tmp_path / "serving.duckdb",
@@ -849,7 +851,7 @@ def test_incremental_prepares_dependent_products_for_graph_replacement_before_wr
 
     for step in plan:
         monkeypatch.setitem(handlers._SOURCE_HANDLERS, step.product, handler(step.product))
-    monkeypatch.setattr(materialize, "_all_history_window", lambda: (date(2026, 1, 1), end))
+    monkeypatch.setattr(materialize, "_all_history_window", lambda: (date(2025, 12, 1), end))
     def rows(**_kwargs):
         result = []
         for step in plan:
@@ -880,7 +882,7 @@ def test_incremental_prepares_dependent_products_for_graph_replacement_before_wr
     monkeypatch.setattr(materialize, "plan_materializations", planning)
     monkeypatch.setattr(materialize, "audit_materialization", lambda: [])
     monkeypatch.setattr(materialize, "_record_incremental_phase", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(materialize, "_incremental_graph_tail_start", lambda *_args, **_kwargs: date(2026, 1, 5) if mode == "older_gap" else graph_start)
+    monkeypatch.setattr(materialize, "_incremental_graph_tail_start", lambda *_args, **_kwargs: graph_start)
     monkeypatch.setattr(connection, "candidate_generation", lambda **_kwargs: nullcontext(generation))
     monkeypatch.setattr(connection, "connect", lambda *_args, **_kwargs: nullcontext(None))
     monkeypatch.setattr(connection, "generation_refresh_id", lambda *_args: generation.receipt_refresh_id)
@@ -973,7 +975,7 @@ def test_missing_native_window_dependency_remains_nonwriting_and_blocks_its_cons
         production.run_materialization_plan(aligned)
 
 
-@pytest.mark.parametrize("baseline", ["ready", "missing", "older_gap"])
+@pytest.mark.parametrize("baseline", ["ready", "missing", "backlog", "boundary", "older_gap"])
 def test_incremental_preview_aligns_effective_windows_without_candidate_or_product_writes(monkeypatch, tmp_path, capsys, baseline):
     from contextlib import contextmanager
     from dataclasses import replace
@@ -982,12 +984,14 @@ def test_incremental_preview_aligns_effective_windows_without_candidate_or_produ
     from lynchpin.materializers.catalog import PRODUCT_CATALOG
     from lynchpin.substrate import connection
 
-    end, graph_start = date(2026, 1, 15), date(2026, 1, 8)
+    end, source_tail = date(2026, 1, 15), date(2026, 1, 8)
+    graph_start = {"backlog": date(2026, 1, 7), "boundary": date(2026, 1, 1),
+                   "older_gap": date(2025, 12, 31)}.get(baseline, source_tail)
     source_window = (date(2026, 1, 13), end)
     steps = ConvergencePlanner(PRODUCT_CATALOG.values()).plan(
         ConvergenceRequest(("personal_daily_signals", "temporal_signals"), source_window)
     ).steps
-    plan = [replace(step, effective_window=(graph_start, end)) if step.product == "temporal_signals" else step for step in steps]
+    plan = [replace(step, effective_window=(source_tail, end)) if step.product == "temporal_signals" else step for step in steps]
     from lynchpin.cli.substrate_snapshot import _snapshot_refresh_id
     published = _snapshot_refresh_id(start=date(2026, 1, 1), end=end, projects=())
     database = tmp_path / "serving.duckdb"
@@ -997,7 +1001,7 @@ def test_incremental_preview_aligns_effective_windows_without_candidate_or_produ
             conn.execute("INSERT INTO evidence_graph_build "
                          "(refresh_id,start_date,end_date,mode,projects,node_count,edge_count,caveats,generated_at) "
                          "VALUES (?, ?, ?, 'materialized', [], 1, 0, '[]', now())",
-                         [published, date(2026, 1, 1), date(2026, 1, 5) if baseline == "older_gap" else end])
+                         [published, date(2025, 12, 1), graph_start if baseline in {"backlog", "boundary", "older_gap"} else end])
             conn.execute("INSERT INTO substrate_promotion_run "
                          "(refresh_id,status,counts,started_at,finished_at) "
                          "VALUES (?, 'ok', '{}', now(), now())", [published])
@@ -1018,13 +1022,13 @@ def test_incremental_preview_aligns_effective_windows_without_candidate_or_produ
     monkeypatch.setattr(connection, "candidate_generation", lambda **_kwargs: pytest.fail("preview cloned a candidate"))
     monkeypatch.setattr(connection, "bootstrap_candidate_generation", lambda **_kwargs: pytest.fail("preview bootstrapped a candidate"))
     monkeypatch.setattr(materialize, "run_materialization_plan", lambda *_args, **_kwargs: pytest.fail("preview wrote products"))
-    monkeypatch.setattr(materialize, "_all_history_window", lambda: (date(2026, 1, 1), end))
+    monkeypatch.setattr(materialize, "_all_history_window", lambda: (date(2025, 12, 1), end))
     monkeypatch.setattr(materialize, "plan_materializations", lambda **_kwargs: plan)
     result = materialize.main(["--all", "--promote", "--history", "incremental", "--plan-json", "--progress", "quiet"])
     captured = capsys.readouterr()
     assert reads == [database]
     assert database.read_bytes() == before
-    if baseline == "ready":
+    if baseline in {"ready", "backlog", "boundary"}:
         assert result == 0
         rendered = {step["product"]: step for step in json.loads(captured.out)}
         for name in ("activity_content", "personal_daily_signals"):

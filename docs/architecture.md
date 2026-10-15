@@ -213,7 +213,7 @@ selection, including check-only products. Its effective windows include graph
 consumer preparation, resolved against one read-only selected serving generation.
 It neither clones a candidate nor writes products. This is an observation, not a
 reservation: execution rechecks the graph domain under its candidate. A missing
-compatible baseline or an older unprepared gap is an explicit preview failure.
+compatible baseline or a backlog exceeding one maintenance span is an explicit preview failure.
 An explicit all-products source plan is available through `python -m lynchpin.cli.materialize --all --plan-json`.
 The live machine telemetry SQLite database serves machine reads and graph
 promotion; nightly maintenance checks that source without rebuilding the large
@@ -289,8 +289,10 @@ automatically apply to the new input. Bounded promotion must recompute its
 requested replacement window; legacy row bounds do not establish such proof.
 Incremental promotion resolves its graph replacement domain before canonical
 writes and prepares ActivityContent and personal daily signals for that same
-domain. Native source tails retain their own scope. An older graph gap or a
-later expansion requires an explicit bounded catch-up. A missing historical
+domain. Native source tails retain their own scope. A publication backlog may
+extend the derived window by at most one current maintenance span (the interval
+from its planned source tail to its end, with a one-day minimum). Larger gaps or
+a later expansion require an explicit bounded catch-up. A missing historical
 title-usage accumulator cannot silently turn a bounded job into a full rebuild;
 only explicit full or unbounded owner repair permits that bootstrap.
 

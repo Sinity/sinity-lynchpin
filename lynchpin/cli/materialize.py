@@ -177,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
                     tail = _bounded_incremental_graph_tail(
                         # Preview has no current candidate to exclude; an
                         # existing same-period generation is a valid baseline.
-                        serving.connection, refresh_id=None, full_start=full_start,
+                        serving.connection, refresh_id=None, full_start=full_start, end=end,
                         requested_tail_start=_incremental_source_tail(plan, full_start=full_start, end=end),
                     )
                     plan = _align_incremental_product_windows(plan, (tail, end), add_missing=not bool(args.only))
@@ -242,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
 
                     with connect(generation.candidate, read_only=True) as conn:
                         prepared_tail_start = _bounded_incremental_graph_tail(
-                            conn, refresh_id=publication_refresh_id, full_start=full_start,
+                            conn, refresh_id=publication_refresh_id, full_start=full_start, end=end,
                             requested_tail_start=requested_tail,
                         )
                 plan = _align_incremental_product_windows(plan, (prepared_tail_start, end), add_missing=not bool(args.only))
@@ -509,15 +509,20 @@ def _incremental_source_tail(plan: Any, *, full_start: date, end: date) -> date:
 
 
 def _bounded_incremental_graph_tail(
-    conn: Any, *, refresh_id: str | None, full_start: date, requested_tail_start: date,
+    conn: Any, *, refresh_id: str | None, full_start: date, end: date, requested_tail_start: date,
 ) -> date:
     tail = _incremental_graph_tail_start(
         conn, refresh_id=refresh_id, full_start=full_start, requested_tail_start=requested_tail_start,
     )
-    if tail < requested_tail_start:
+    # A missed publication can leave a small gap before the normal source
+    # tail. Recompute derived consumers across it without changing native tails,
+    # but never turn a routine run into an unbounded historical bootstrap.
+    maintenance_span = max(timedelta(days=1), end - requested_tail_start)
+    if requested_tail_start - tail > maintenance_span:
         raise _CandidateRejected(
-            1, "published graph requires an older replacement window than the bounded source plan; "
-            "run an explicit bounded catch-up before routine incremental promotion",
+            1, f"published graph backlog {tail.isoformat()}..{requested_tail_start.isoformat()} "
+            f"exceeds one maintenance span ({maintenance_span.days} days); "
+            "explicit bounded catch-up is required",
         )
     return tail
 
