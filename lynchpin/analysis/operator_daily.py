@@ -442,23 +442,36 @@ def _require_product(name: str, *, window: tuple[date, date]) -> None:
         raise RuntimeError(f"{name} unavailable: {result.status}: {result.reason}")
 
 
+def _product_read_window(name: str, start: date, end: date) -> tuple[date, date] | None:
+    """Limit demand to the canonical computation domain, then require it."""
+    from ..materialization import audit_dataset
+
+    product = audit_dataset(name)
+    if product is None or not (product.status == "ready" or product.tail_stale):
+        # Preserve the strict reader's unavailable/schema failure rather than
+        # hiding it as an empty intersection.
+        return start, end
+    if product.computed_windows:
+        first = min(window[0] for window in product.computed_windows)
+        last_exclusive = max(window[1] for window in product.computed_windows)
+    else:
+        first = product.first_date
+        last_exclusive = product.last_date + timedelta(days=1) if product.last_date is not None else None
+    available_start = max(start, first) if first is not None else start
+    available_end = min(end, last_exclusive) if last_exclusive is not None else end
+    # This envelope never authorizes an internal gap. Each caller still runs
+    # strict ensure validation over every date in the returned interval.
+    return (available_start, available_end) if available_start < available_end else None
+
+
 def _fill_aw(ctx: _FillContext) -> None:
     from ..sources.activitywatch_derived import iter_derived_daily_activity
     from ..core.primitives import logical_date
-    from ..materialization import audit_dataset
 
-    available_start, available_end = ctx.start, ctx.end_exclusive
-    product = audit_dataset("activitywatch_derived")
-    if product is not None and (product.status == "ready" or product.tail_stale):
-        # The panoramic matrix can predate this capture or extend beyond its
-        # computed tail. Limit demand, then validate every intervening date;
-        # outer bounds never authorize an internal gap or a failed product.
-        if product.first_date is not None:
-            available_start = max(available_start, product.first_date)
-        if product.last_date is not None:
-            available_end = min(available_end, product.last_date + timedelta(days=1))
-        if available_end <= available_start:
-            return
+    window = _product_read_window("activitywatch_derived", ctx.start, ctx.end_exclusive)
+    if window is None:
+        return
+    available_start, available_end = window
     try:
         _require_product("activitywatch_derived", window=(available_start, available_end))
     except RuntimeError:
@@ -674,8 +687,11 @@ def _fill_polylogue(ctx: _FillContext) -> None:
 def _fill_web(ctx: _FillContext) -> None:
     from ..sources.web import daily_browsing
 
-    _require_product("webhistory", window=(ctx.start, ctx.end_exclusive))
-    daily = daily_browsing(start=ctx.start, end=ctx.end, ensure=False)
+    window = _product_read_window("webhistory", ctx.start, ctx.end_exclusive)
+    if window is None:
+        return
+    _require_product("webhistory", window=window)
+    daily = daily_browsing(start=window[0], end=window[1] - timedelta(days=1), ensure=False)
     for d in daily:
         if d.date in ctx.rows and ctx.mark(d.date):
             r = ctx.rows[d.date]
@@ -686,8 +702,11 @@ def _fill_web(ctx: _FillContext) -> None:
 def _fill_terminal(ctx: _FillContext) -> None:
     from ..sources.terminal import daily_terminal_activity
 
-    _require_product("atuin", window=(ctx.start, ctx.end_exclusive))
-    daily = daily_terminal_activity(start=ctx.start, end=ctx.end, ensure=False)
+    window = _product_read_window("atuin", ctx.start, ctx.end_exclusive)
+    if window is None:
+        return
+    _require_product("atuin", window=window)
+    daily = daily_terminal_activity(start=window[0], end=window[1] - timedelta(days=1), ensure=False)
     for d in daily:
         if d.date in ctx.rows and ctx.mark(d.date):
             r = ctx.rows[d.date]
@@ -714,9 +733,12 @@ def _fill_keylog(ctx: _FillContext) -> None:
 def _fill_keylog_daily(ctx: _FillContext) -> None:
     from ..sources.personal_signals import iter_personal_daily_signals
 
-    _require_product("personal_daily_signals", window=(ctx.start, ctx.end_exclusive))
+    window = _product_read_window("personal_daily_signals", ctx.start, ctx.end_exclusive)
+    if window is None:
+        return
+    _require_product("personal_daily_signals", window=window)
     metrics_by_day: dict[date, dict[str, float]] = {}
-    for row in iter_personal_daily_signals(start=ctx.start, end=ctx.end_exclusive, ensure=False):
+    for row in iter_personal_daily_signals(start=window[0], end=window[1], ensure=False):
         if row.source != "keylog":
             continue
         metrics_by_day.setdefault(row.date, {})[row.metric] = row.value
@@ -772,7 +794,11 @@ def _fill_keylog_keybinds(ctx: _FillContext) -> None:
 
 
 def _keylog_keybind_usage_rows(start: date, end: date) -> list[dict[str, Any]] | None:
-    _require_product("keylog_analysis", window=(start, end + timedelta(days=1)))
+    window = _product_read_window("keylog_analysis", start, end + timedelta(days=1))
+    if window is None:
+        return []
+    start, end = window[0], window[1] - timedelta(days=1)
+    _require_product("keylog_analysis", window=window)
     artifact_rows = _keylog_artifact_keybind_usage_rows(start, end)
     if artifact_rows is not None:
         return artifact_rows

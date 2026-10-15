@@ -147,6 +147,7 @@ def test_fill_irc_converges_product_daily_rollup() -> None:
         return daily
 
     with (
+        patch("lynchpin.materialization.audit_dataset", lambda _name: None),
         patch(
             "lynchpin.materialization.ensure_materialized",
             lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
@@ -252,6 +253,7 @@ def test_fill_keylog_adds_keybind_usage_counts() -> None:
     )
 
     with (
+        patch("lynchpin.materialization.audit_dataset", lambda _name: None),
         patch(
             "lynchpin.analysis.operator_daily._fill_keylog_daily",
             lambda inner_ctx: (
@@ -297,6 +299,7 @@ def test_fill_keylog_reuses_covering_keylog_analysis_artifact() -> None:
         raise AssertionError("covering keylog_analysis artifact should avoid live keylog scan")
 
     with (
+        patch("lynchpin.materialization.audit_dataset", lambda _name: None),
         patch("lynchpin.analysis.operator_daily._fill_keylog_daily", lambda inner_ctx: None),
         patch("lynchpin.core.io.load_json_if_exists", return_value=payload),
         patch("lynchpin.core.io.resolve_analysis_path", lambda name: name),
@@ -334,6 +337,7 @@ def test_fill_keylog_daily_converges_personal_daily_signals_product() -> None:
         return iter(rows)
 
     with (
+        patch("lynchpin.materialization.audit_dataset", lambda _name: None),
         patch(
             "lynchpin.materialization.ensure_materialized",
             lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
@@ -365,6 +369,7 @@ def test_fill_web_converges_webhistory_product() -> None:
         return daily
 
     with (
+        patch("lynchpin.materialization.audit_dataset", lambda _name: None),
         patch(
             "lynchpin.materialization.ensure_materialized",
             lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
@@ -419,6 +424,7 @@ def test_fill_spotify_queries_product_half_open_end_for_public_inclusive_window(
         return daily
 
     with (
+        patch("lynchpin.materialization.audit_dataset", lambda _name: None),
         patch(
             "lynchpin.materialization.ensure_materialized",
             lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
@@ -450,6 +456,7 @@ def test_fill_terminal_converges_atuin_product() -> None:
         return daily
 
     with (
+        patch("lynchpin.materialization.audit_dataset", lambda _name: None),
         patch(
             "lynchpin.materialization.ensure_materialized",
             lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
@@ -577,3 +584,68 @@ def test_operator_daily_prepared_aw_clips_demand_to_computed_bounds(monkeypatch,
     assert not by_date[date(2026, 6, 1)].has_source("activitywatch")
     assert not by_date[date(2026, 6, 5)].has_source("activitywatch")
     assert calls == [{"start": first, "end": last, "ensure": False}]
+
+
+@pytest.mark.parametrize("lane,product_name,source", [
+    ("web", "webhistory", "web"), ("terminal", "atuin", "terminal"),
+    ("keylog", "personal_daily_signals", "keylog"), ("keybinds", "keylog_analysis", "keylog"),
+])
+@pytest.mark.parametrize("case", ["covered", "gap", "unavailable"])
+def test_prepared_matrix_product_consumers_keep_unknown_bounds(monkeypatch, lane, product_name, source, case):
+    from lynchpin import materialization
+
+    first, last = date(2026, 6, 3), date(2026, 6, 4)
+    if case == "gap":
+        last = date(2026, 6, 5)
+    covered = (first, last)
+    computed = ()
+    if lane == "keylog":
+        computed = ((first, last + od.timedelta(days=1)),) if case != "gap" else (
+            (first, first + od.timedelta(days=1)), (last, last + od.timedelta(days=1)))
+    product = materialization.MaterializedDataset(
+        name=product_name, status="partial" if case == "unavailable" else "ready",
+        authority="fixture", query_surface="fixture", materialized_paths=(), raw_roots=(),
+        row_count=2, first_date=date(2026, 6, 1) if computed else first, last_date=last,
+        materialization_hint="fixture", reason="invalid schema" if case == "unavailable" else "product present",
+        covered_dates=covered, computed_windows=computed,
+    )
+    monkeypatch.setattr(materialization, "_audit_one", lambda *_args, **_kwargs: product)
+    monkeypatch.setattr(materialization, "audit_dataset", lambda *_args, **_kwargs: product)
+    monkeypatch.setattr(materialization, "get_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(materialization, "_ensure_materialized_once", lambda *_args, **_kwargs: pytest.fail("prepared read launched a writer"))
+    monkeypatch.setattr(od, "_load_coverage_bounds", lambda: {})
+    real_try_fill = od._try_fill
+    monkeypatch.setattr(od, "_try_fill", lambda ctx, label, fn: real_try_fill(ctx, label, fn) if label == source else None)
+    calls = []
+    def daily(**kwargs):
+        calls.append(kwargs)
+        if lane == "web":
+            return [SimpleNamespace(date=first, visit_count=4, unique_domains=2)]
+        if lane == "terminal":
+            return [SimpleNamespace(date=first, command_count=4)]
+        return [SimpleNamespace(source="keylog", date=first, metric="keypress_count", value=4)]
+    monkeypatch.setattr("lynchpin.sources.web.daily_browsing", daily)
+    monkeypatch.setattr("lynchpin.sources.terminal.daily_terminal_activity", daily)
+    monkeypatch.setattr("lynchpin.sources.personal_signals.iter_personal_daily_signals", daily)
+    if lane == "keybinds":
+        monkeypatch.setattr(od, "_fill_keylog_daily", lambda _ctx: None)
+        def artifact(start, end):
+            calls.append({"start": start, "end": end})
+            return [{"date": first, "count": 4, "chord": "SUPER+KEY_A", "family": "navigation"}]
+        monkeypatch.setattr(od, "_keylog_artifact_keybind_usage_rows", artifact)
+    with materialization.prepared_product_reads():
+        rows = od.operator_daily_matrix(date(2026, 6, 1), date(2026, 6, 6), skip_slow=lane != "keybinds")
+    if case != "covered":
+        assert calls == []
+        assert not any(row.has_source(source) for row in rows)
+        return
+    by_date = {row.date: row for row in rows}
+    assert by_date[first].has_source(source)
+    assert not by_date[date(2026, 6, 1)].has_source(source)
+    assert not by_date[date(2026, 6, 5)].has_source(source)
+    if lane == "keylog":
+        assert calls == [{"start": first, "end": last + od.timedelta(days=1), "ensure": False}]
+    elif lane == "keybinds":
+        assert calls == [{"start": first, "end": last}]
+    else:
+        assert calls == [{"start": first, "end": last, "ensure": False}]
