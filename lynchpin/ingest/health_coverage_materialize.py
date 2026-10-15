@@ -359,9 +359,9 @@ def _token_observation(state: dict[str, Any], record_type: str) -> dict[str, Any
 
 def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, Any]:
     groups: dict[tuple[str, str, str, str], _Group] = defaultdict(_Group)
-    # Unique-record measurement times per (kind, source), for gap analysis.
+    # Keep gaps within the same source/device/method boundary as counts.
     # Keyed per record_id so a record emitted 473 times contributes once.
-    gap_times: dict[tuple[str, str], dict[str, datetime]] = defaultdict(dict)
+    gap_times: dict[tuple[str, str, str, str], dict[str, datetime]] = defaultdict(dict)
     sweeps: dict[str, dict[str, Any]] = {}
     # Last-wins: the newest state record is the current answer.
     lane_state: dict[str, Any] = {}
@@ -485,7 +485,7 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
             if group.latest is None or measured > group.latest:
                 group.latest = measured
             if isinstance(rid, str) and rid:
-                gap_times[(kind, source)].setdefault(rid, measured)
+                gap_times[(kind, source, device, method)].setdefault(rid, measured)
             # Witness collectors accept rid-less records: every pre-metadata-
             # rewrite event lacks record_id (all 259 historical sleep sessions
             # do), and requiring one would report false vendor/HC divergence.
@@ -545,7 +545,7 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
             }
         )
 
-    for (kind, source), times in sorted(gap_times.items()):
+    for (kind, source, device, method), times in sorted(gap_times.items()):
         ordered = sorted(times.values())
         histogram: Counter[str] = Counter()
         largest: Optional[float] = None
@@ -561,6 +561,8 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
                 "row": "gap",
                 "kind": kind,
                 "source": source,
+                "device_model": device,
+                "recording_method": method,
                 "unique_records": len(ordered),
                 "largest_gap_seconds": largest,
                 "largest_gap_from": _iso(largest_from),

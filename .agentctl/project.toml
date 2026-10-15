@@ -35,6 +35,13 @@ pool = "pytest"
 result = "exit"
 cache = "tree+environment"
 
+[operations.verify_health_coverage]
+description = "Verify device-qualified health coverage, gaps and token observations"
+exec = ["pytest", "-q", "tests/ingest/test_health_coverage_materialize.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
 [operations.verify_runtime_status]
 description = "Verify nightly failure and serving freshness status"
 exec = ["pytest", "-q", "tests/core/test_freshness.py", "tests/mcp/test_mcp_substrate.py", "-k", "materialization_status or materialization_health or nightly_status or runtime_status"]

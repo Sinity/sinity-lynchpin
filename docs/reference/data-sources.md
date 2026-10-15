@@ -173,7 +173,8 @@ plane's `health_*` records (the sinnix app's Health Connect capture) into
 package × device model × recording-method groups it reports canonical
 unique-record counts (by Health Connect `record_id`), event totals and the
 events-per-record ratio (a duplication-defect signal), measurement-time
-bounds, largest internal gap plus a gap histogram over unique records,
+bounds, largest internal gap plus a gap histogram over unique records within
+the same source, device and recording-method group,
 sweep completion/failure receipts per record type, an explicit unknown
 physical-device-sync completion time (provider writes and cloud fetches do not
 establish it), lane-block reasons,

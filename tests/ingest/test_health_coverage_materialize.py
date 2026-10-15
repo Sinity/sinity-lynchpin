@@ -408,3 +408,30 @@ def test_historical_lane_state_does_not_manufacture_token_metadata(monkeypatch, 
     assert row["token_present"] is None
     assert row["token_status"] == "unknown"
     assert row["token_age_seconds"] is None
+
+
+def test_gaps_do_not_merge_devices_or_recording_methods(monkeypatch, tmp_path) -> None:
+    from lynchpin.ingest.health_coverage_materialize import materialize_health_coverage
+
+    events = []
+    for device, method, hours in (
+        ("device-a", "automatic", (0, 12)),
+        ("device-b", "automatic", (4, 8)),
+        ("device-a", "manual", (3, 9)),
+    ):
+        for index, hour in enumerate(hours):
+            timestamp = f"2026-06-01T{hour:02d}:00:00Z"
+            events.append(_event("health_heart_rate", timestamp,
+                record_id=f"{device}-{method}-{index}", start=timestamp,
+                source="neutral.provider", device_model=device, recording_method=method))
+    monkeypatch.setattr("lynchpin.ingest.health_coverage_materialize.phone_events", lambda: iter(events))
+    monkeypatch.setattr("lynchpin.sources.xiaomi_cloud.latest_envelopes", lambda **_kwargs: {})
+    output = tmp_path / "coverage.ndjson"
+    materialize_health_coverage(output=output)
+    gaps = _rows_by_kind(output)["gap"]
+    assert len(gaps) == 3
+    actual = {(row["device_model"], row["recording_method"]): row for row in gaps}
+    for key, hours in ((('device-a', 'automatic'), 12), (('device-b', 'automatic'), 4), (('device-a', 'manual'), 6)):
+        assert actual[key]["largest_gap_seconds"] == hours * 3600
+        assert actual[key]["unique_records"] == 2
+        assert sum(actual[key]["gap_histogram"].values()) == 1
