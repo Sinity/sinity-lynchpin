@@ -4,6 +4,8 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from lynchpin.analysis import operator_daily as od
 
 
@@ -69,6 +71,7 @@ def test_fill_aw_reads_preconverged_activitywatch_derived() -> None:
         return iter(daily)
 
     with (
+        patch("lynchpin.materialization.audit_dataset", lambda _name: None),
         patch(
             "lynchpin.materialization.ensure_materialized",
             lambda name, *, window: (ensure_calls.append((name, window)) or SimpleNamespace(status="ready", reason="fixture")),
@@ -523,3 +526,54 @@ def test_spotify_matrix_clips_demand_and_preserves_unknown_tail(monkeypatch) -> 
     calls.clear()
     od._fill_spotify(ctx)
     assert calls == []
+
+
+@pytest.mark.parametrize("case", ["closed", "current_computed", "current_uncomputed", "gap", "missing_partition", "schema_mismatch"])
+def test_operator_daily_prepared_aw_clips_demand_to_computed_bounds(monkeypatch, case):
+    from lynchpin import materialization
+    from lynchpin.core.coverage import CoverageBounds
+
+    first = date(2026, 6, 3)
+    last = first if case == "current_uncomputed" else date(2026, 6, 4)
+    covered = (first,) if last == first else (first, last)
+    if case == "gap":
+        last, covered = date(2026, 6, 5), (first, date(2026, 6, 5))
+    unavailable = case in {"missing_partition", "schema_mismatch"}
+    product = materialization.MaterializedDataset(
+        name="activitywatch_derived", status="partial" if unavailable else "ready", authority="fixture", query_surface="fixture",
+        materialized_paths=(), raw_roots=(), row_count=2, first_date=first, last_date=last,
+        materialization_hint="fixture", reason=case if unavailable else "ActivityWatch derived graph products are present",
+        covered_dates=covered,
+    )
+    monkeypatch.setattr(materialization, "_audit_one", lambda *_args, **_kwargs: product)
+    monkeypatch.setattr(materialization, "audit_dataset", lambda *_args, **_kwargs: product)
+    monkeypatch.setattr(materialization, "get_config", lambda: SimpleNamespace())
+    today = date(2026, 6, 4) if case.startswith("current_") else date(2026, 6, 6)
+    monkeypatch.setattr(materialization, "logical_date", lambda _now: today)
+    monkeypatch.setattr(materialization, "_ensure_materialized_once", lambda *_args, **_kwargs: pytest.fail("prepared read launched a writer"))
+    monkeypatch.setattr(od, "_load_coverage_bounds", lambda: {"activitywatch": CoverageBounds(source="activitywatch", first=first, last=last, kind="capture")})
+    real_try_fill = od._try_fill
+    monkeypatch.setattr(od, "_try_fill", lambda ctx, source, fn: real_try_fill(ctx, source, fn) if source == "activitywatch" else None)
+    calls = []
+    def daily(**kwargs):
+        calls.append(kwargs)
+        return iter(SimpleNamespace(date=day, active_hours=4.0, deep_work_min=30.0,
+            fragmentation_score=0.2, dominant_project="fixture", outage_hours=0.0,
+            presence_active_hours=4.0, presence_typing_hours=2.0, presence_data_gap_hours=0.0) for day in covered)
+    monkeypatch.setattr("lynchpin.sources.activitywatch_derived.iter_derived_daily_activity", daily)
+    with materialization.prepared_product_reads():
+        rows = od.operator_daily_matrix(date(2026, 6, 1), date(2026, 6, 6), skip_slow=True)
+    by_date = {row.date: row for row in rows}
+    if unavailable or case == "gap":
+        assert not any(row.has_source("activitywatch") for row in rows)
+        assert calls == []
+        return
+    assert by_date[first].has_source("activitywatch")
+    assert by_date[first].aw_active_hours == 4.0
+    if case == "current_computed":
+        assert by_date[today].has_source("activitywatch")
+    elif case == "current_uncomputed":
+        assert not by_date[today].has_source("activitywatch")
+    assert not by_date[date(2026, 6, 1)].has_source("activitywatch")
+    assert not by_date[date(2026, 6, 5)].has_source("activitywatch")
+    assert calls == [{"start": first, "end": last, "ensure": False}]

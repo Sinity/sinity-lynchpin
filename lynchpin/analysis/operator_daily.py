@@ -445,16 +445,28 @@ def _require_product(name: str, *, window: tuple[date, date]) -> None:
 def _fill_aw(ctx: _FillContext) -> None:
     from ..sources.activitywatch_derived import iter_derived_daily_activity
     from ..core.primitives import logical_date
+    from ..materialization import audit_dataset
 
-    available_end = ctx.end_exclusive
+    available_start, available_end = ctx.start, ctx.end_exclusive
+    product = audit_dataset("activitywatch_derived")
+    if product is not None and (product.status == "ready" or product.tail_stale):
+        # The panoramic matrix can predate this capture or extend beyond its
+        # computed tail. Limit demand, then validate every intervening date;
+        # outer bounds never authorize an internal gap or a failed product.
+        if product.first_date is not None:
+            available_start = max(available_start, product.first_date)
+        if product.last_date is not None:
+            available_end = min(available_end, product.last_date + timedelta(days=1))
+        if available_end <= available_start:
+            return
     try:
-        _require_product("activitywatch_derived", window=(ctx.start, available_end))
+        _require_product("activitywatch_derived", window=(available_start, available_end))
     except RuntimeError:
         available_end = min(available_end, logical_date(datetime.now().astimezone()))
-        if available_end <= ctx.start:
+        if available_end <= available_start:
             raise
-        _require_product("activitywatch_derived", window=(ctx.start, available_end))
-    daily = iter_derived_daily_activity(start=ctx.start, end=available_end - timedelta(days=1), ensure=False)
+        _require_product("activitywatch_derived", window=(available_start, available_end))
+    daily = iter_derived_daily_activity(start=available_start, end=available_end - timedelta(days=1), ensure=False)
     for d in daily:
         if d.date in ctx.rows and ctx.mark(d.date):
             r = ctx.rows[d.date]
