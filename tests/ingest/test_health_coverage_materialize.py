@@ -313,3 +313,30 @@ def test_lane_state_answers_swept_when_no_receipt_survived(monkeypatch, tmp_path
     assert summary["types_unswept"] == 1
     assert summary["types_ungranted"] == 1
     assert summary["lane_state_at"] == "2026-08-17T10:05:00Z"
+
+
+
+def test_timezone_missing_measurement_is_explicit_without_aborting_report(monkeypatch, tmp_path):
+    from lynchpin.ingest import health_coverage_materialize as coverage
+    events = [
+        _event("health_heart_rate", "2030-01-02T00:00:00Z", record_id="invalid",
+               start="2030-01-01T10:00:00", modified="2030-01-01T11:00:00",
+               source="com.example.sensor", device_model="FixtureBand"),
+        _event("health_heart_rate", "2030-01-02T01:00:00Z", record_id="valid",
+               start="2030-01-01T14:00:00+02:00", modified="2030-01-01T15:00:00+02:00",
+               source="com.example.sensor", device_model="FixtureBand"),
+    ]
+    monkeypatch.setattr(coverage, "phone_events", lambda: iter(events))
+    monkeypatch.setattr(coverage, "_witness_rows", lambda *_: [])
+    output = tmp_path / "coverage.ndjson"
+    coverage.materialize_health_coverage(output=output)
+    rows = _rows_by_kind(output)
+    group = rows["group"][0]
+    assert group["unique_records"] == 2 and group["events"] == 2
+    assert group["earliest"] == group["latest"] == "2030-01-01T12:00:00Z"
+    assert group["last_provider_write"] == "2030-01-01T13:00:00Z"
+    anomaly = rows["anomaly"][0]
+    assert anomaly["record_id"] == "invalid" and anomaly["measured"] is None
+    assert anomaly["source_time"] == "2030-01-01T10:00:00"
+    assert "UTC offset" in anomaly["reason"]
+    assert rows["summary"][0]["anomalies"] == 1

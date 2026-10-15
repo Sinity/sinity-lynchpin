@@ -133,9 +133,12 @@ def _parse_ts(value: Any) -> Optional[datetime]:
     if not isinstance(value, str) or not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # Health Connect emits instants. A missing offset is unknown, never an
+    # instruction to apply this workstation's local timezone.
+    return parsed if parsed.utcoffset() is not None else None
 
 
 def _measurement_time(payload: dict[str, Any]) -> Optional[datetime]:
@@ -422,23 +425,32 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
             group.record_ids.add(rid)
 
         measured = _measurement_time(payload)
-        if measured is None:
-            pass
-        elif measured < _ANOMALY_FLOOR:
-            key = (kind, source, rid, _iso(measured))
-            row = anomalies.setdefault(
-                key,
-                {
-                    "row": "anomaly",
-                    "kind": kind,
-                    "source": source,
-                    "record_id": rid,
-                    "measured": _iso(measured),
-                    "events": 0,
-                    "reason": "measurement time before 2000-01-01; excluded from bounds and gaps",
-                },
-            )
-            row["events"] += 1
+        if measured is None or measured < _ANOMALY_FLOOR:
+            source_time = payload.get("start") or payload.get("time")
+            # Absent timestamps remain unknown. Present but unusable values
+            # get the same explicit anomaly treatment as epoch corruption.
+            if measured is not None or source_time is not None:
+                raw_time = source_time if isinstance(source_time, str) else None
+                record_id = rid if isinstance(rid, str) else None
+                key = (kind, source, record_id, _iso(measured) or raw_time)
+                row = anomalies.setdefault(
+                    key,
+                    {
+                        "row": "anomaly",
+                        "kind": kind,
+                        "source": source,
+                        "record_id": record_id,
+                        "measured": _iso(measured),
+                        "source_time": raw_time,
+                        "events": 0,
+                        "reason": (
+                            "measurement time before 2000-01-01; excluded from bounds and gaps"
+                            if measured is not None else
+                            "measurement time invalid or missing UTC offset; excluded from bounds and gaps"
+                        ),
+                    },
+                )
+                row["events"] += 1
         else:
             if group.earliest is None or measured < group.earliest:
                 group.earliest = measured
