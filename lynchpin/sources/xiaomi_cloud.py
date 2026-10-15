@@ -175,6 +175,11 @@ def readiness(root: Optional[Path] = None) -> SourceReadiness:
             status="error", reason=f"lane changed or became unreadable: {exc}",
             path=base, row_count=None,
         )
+    if latest is None:
+        return SourceReadiness(
+            status="error", reason="nonempty day files contain no valid envelopes",
+            path=base, row_count=None,
+        )
     if latest is not None and latest.kind == "vendor_sync_pass":
         failures = latest.payload.get("failures")
         if isinstance(failures, int) and failures > 0:

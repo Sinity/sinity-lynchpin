@@ -14,6 +14,17 @@ def write(root: Path, *rows: dict[str, object]) -> None:
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
 
+@pytest.mark.parametrize("contents", ["broken\n", "{}\n", "null\n", "[]\n"])
+def test_nonempty_invalid_lane_is_not_healthy(tmp_path: Path, contents: str) -> None:
+    (tmp_path / "xiaomi-cloud-20300101.jsonl").write_text(contents, encoding="utf-8")
+
+    report = readiness(tmp_path)
+
+    assert report.status == "error"
+    assert report.row_count is None
+    assert "no valid envelopes" in report.reason
+
+
 def test_readiness_reports_latest_failed_capture(tmp_path: Path) -> None:
     write(
         tmp_path,
