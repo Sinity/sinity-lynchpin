@@ -6,7 +6,7 @@ the SQL in the typed reader layer. All functions are SELECT-only.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -231,10 +231,11 @@ def load_operator_day_window(
     refresh_id: str,
 ) -> tuple[Any, ...] | None:
     """Return (min_date, max_date, count) for operator_day at refresh_id."""
-    return conn.execute(
-        "SELECT MIN(date), MAX(date), COUNT(*) FROM operator_day WHERE refresh_id = ?",
-        [refresh_id],
-    ).fetchone()
+    from .personal import load_operator_day_rows
+
+    rows = load_operator_day_rows(conn, refresh_id=refresh_id, columns=["date"])
+    dates = [row["date"] for row in rows]
+    return min(dates) if dates else None, max(dates) if dates else None, len(dates)
 
 
 def load_operator_day_lag_correlation(
@@ -246,19 +247,22 @@ def load_operator_day_lag_correlation(
     lag: int,
 ) -> tuple[Any, ...] | None:
     """Return (pearson_r, n) for a specific lag between two operator_day metrics."""
-    # Note: metric_a and metric_b are pre-validated against the whitelist in the tool.
+    from .personal import load_operator_day_rows
+
+    # Resolve the same dated product as row readers, including predecessor
+    # dates and empty replacement windows. DuckDB retains Pearson semantics.
+    rows = load_operator_day_rows(
+        conn, refresh_id=refresh_id, columns=["date", metric_a, metric_b],
+    )
+    by_date = {row["date"]: row for row in rows}
+    pairs = []
+    for row in rows:
+        other = by_date.get(row["date"] + timedelta(days=lag))
+        if other is not None and row[metric_a] is not None and other[metric_b] is not None:
+            pairs.append((other[metric_b], row[metric_a]))
     return conn.execute(
-        f"""
-        SELECT corr(b."{metric_b}", a."{metric_a}"), COUNT(*)
-        FROM operator_day a
-        JOIN operator_day b
-          ON b.refresh_id = a.refresh_id
-         AND b.date = a.date + INTERVAL ({lag}) DAY
-        WHERE a.refresh_id = ?
-          AND a."{metric_a}" IS NOT NULL
-          AND b."{metric_b}" IS NOT NULL
-        """,
-        [refresh_id],
+        "SELECT corr(b, a), COUNT(*) FROM (SELECT unnest(?::DOUBLE[]) AS b, unnest(?::DOUBLE[]) AS a)",
+        [[pair[0] for pair in pairs], [pair[1] for pair in pairs]],
     ).fetchone()
 
 

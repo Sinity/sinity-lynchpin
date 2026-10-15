@@ -214,3 +214,85 @@ def test_promote_operator_day_source_status_enables_best_refresh_id(tmp_path):
         found = best_materialized_refresh_id(conn, "operator_day", caller="test")
 
     assert found == "op-test"
+
+
+def test_operator_day_legacy_full_partition_and_lag_readers(tmp_path):
+    import pytest
+    from lynchpin.analysis.operator_daily import OperatorDay
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.personal import promote_operator_day_rows, load_operator_day_rows
+    from lynchpin.substrate.readers_signals import load_operator_day_lag_correlation, load_operator_day_window
+    with connect(tmp_path / "legacy.duckdb") as conn:
+        apply_schema(conn)
+        promote_operator_day_rows(conn, refresh_id="legacy", rows=[
+            OperatorDay(date=date(2026, 1, 1), git_commits=1, spotify_hours=None),
+            OperatorDay(date=date(2026, 1, 2), git_commits=2, spotify_hours=0),
+            OperatorDay(date=date(2026, 1, 3), git_commits=3, spotify_hours=2),
+        ])
+        conn.execute("DELETE FROM substrate_product_lineage WHERE product='operator_day'")
+        assert len(load_operator_day_rows(conn, refresh_id="legacy")) == 3
+        assert load_operator_day_window(conn, refresh_id="legacy") == (date(2026, 1, 1), date(2026, 1, 3), 3)
+        positive, n = load_operator_day_lag_correlation(conn, refresh_id="legacy", metric_a="git_commits", metric_b="spotify_hours", lag=1)
+        assert positive == pytest.approx(1)
+        assert n == 2  # genuine zero remains a pair; absent spotify stays NULL
+        assert load_operator_day_lag_correlation(conn, refresh_id="legacy", metric_a="git_commits", metric_b="spotify_hours", lag=-1)[1] == 1
+        assert load_operator_day_lag_correlation(conn, refresh_id="missing", metric_a="git_commits", metric_b="spotify_hours", lag=0) == (None, 0)
+        with pytest.raises(ValueError, match="lineage"):
+            promote_operator_day_rows(conn, refresh_id="new", rows=[], previous_refresh_id="legacy", replacement_start=date(2026, 1, 2), replacement_end=date(2026, 1, 4))
+
+
+def test_explicit_operator_day_bootstrap_uses_existing_single_step(monkeypatch, tmp_path):
+    import json
+    import pytest
+    from dataclasses import replace
+    from lynchpin.analysis import materialize
+    from lynchpin.analysis.operator_daily import OperatorDay
+    from lynchpin.core import config
+    from lynchpin.substrate.connection import bootstrap_candidate_generation, connect, substrate_path, generation_refresh_id, substrate_read_snapshot_path
+    from lynchpin.substrate.personal import load_operator_day_rows
+    from lynchpin.substrate.source_status import record_source_status
+    monkeypatch.setattr(config, "_CONFIG", replace(config.get_config(), local_root=tmp_path))
+    db = substrate_path()
+    with bootstrap_candidate_generation():
+        with connect() as conn:
+            conn.execute("INSERT INTO substrate_promotion_run (refresh_id, status, mode, counts, started_at, finished_at) VALUES ('prior', 'ok', 'test', '{}', now(), now())")
+            record_source_status(conn, refresh_id="prior", source="fixture", status="ok", reason=None, row_count=1)
+            conn.execute("INSERT INTO evidence_graph_build (refresh_id,start_date,end_date,mode,generated_at) VALUES ('prior','2025-01-01','2025-02-01','materialized',now())")
+    before_manifest = json.loads(db.with_suffix(".manifest.json").read_text())
+    calls = []
+    def matrix(start, end, *, skip_slow=False, connection=None):
+        calls.append((start, end, skip_slow, connection is not None))
+        return [OperatorDay(date=start, spotify_hours=None)]
+    monkeypatch.setattr(materialize, "operator_daily_matrix", matrix)
+    start, end = date(2026, 1, 1), date(2026, 1, 3)
+    result = materialize._promote_operator_day(start=start, end=end)
+    assert calls == [(start, end, False, True)]
+    with connect(read_only=True) as conn:
+        assert load_operator_day_rows(conn, refresh_id=result["refresh_id"])[0]["spotify_hours"] is None
+        assert conn.execute("SELECT predecessor_refresh_id FROM substrate_product_lineage WHERE product='operator_day'").fetchone() == (None,)
+        assert conn.execute("SELECT window_start, window_end FROM substrate_source_status WHERE source='operator_day'").fetchone() == (start, end + timedelta(days=1))
+        assert conn.execute("SELECT refresh_id FROM substrate_promotion_run").fetchall() == [("prior",)]
+        assert conn.execute("SELECT refresh_id,start_date,end_date FROM evidence_graph_build").fetchall() == [("prior", date(2025, 1, 1), date(2025, 2, 1))]
+    assert generation_refresh_id(db) == generation_refresh_id(substrate_read_snapshot_path()) == "prior"
+    after_manifest = json.loads(db.with_suffix(".manifest.json").read_text())
+    assert after_manifest["latest_refresh_id"] == before_manifest["latest_refresh_id"]
+    assert after_manifest.get("latest_graph_refresh_id") == before_manifest.get("latest_graph_refresh_id")
+    before = {p: p.read_bytes() for p in (db, db.with_suffix(".manifest.json"), substrate_read_snapshot_path())}
+    def failure(*args, **kwargs):
+        raise RuntimeError("synthetic source failure")
+    monkeypatch.setattr(materialize, "operator_daily_matrix", failure)
+    with pytest.raises(RuntimeError, match="synthetic source failure"):
+        materialize._promote_operator_day(start=start, end=end)
+    assert all(p.read_bytes() == content for p, content in before.items())
+
+
+def test_operator_day_lineage_reader_keeps_calendar_order(tmp_path):
+    from lynchpin.analysis.operator_daily import OperatorDay
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.personal import load_operator_day_rows, promote_operator_day_rows
+
+    days = [date(2025, 12, 31), date(2026, 2, 1), date(2026, 10, 1)]
+    with connect(tmp_path / "ordered.duckdb") as conn:
+        apply_schema(conn)
+        promote_operator_day_rows(conn, refresh_id="ordered", rows=[OperatorDay(date=day) for day in reversed(days)])
+        assert [row["date"] for row in load_operator_day_rows(conn, refresh_id="ordered")] == days

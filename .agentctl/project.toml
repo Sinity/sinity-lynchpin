@@ -70,6 +70,13 @@ pool = "pytest"
 result = "exit"
 cache = "tree+environment"
 
+[operations.verify_operator_day]
+description = "Verify bounded operator-day promotion and lineage-aware readers"
+exec = ["pytest", "-q", "tests/substrate/test_operator_day.py", "tests/analysis/test_substrate_promote_personal.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
 [operations.verify_webhistory_base]
 description = "Verify retained-segment candidate merge and input identity contracts"
 exec = ["pytest", "-q", "tests/ingest/test_webhistory.py", "tests/test_materialization.py", "tests/sources/test_google_takeout.py", "tests/sources/test_activitywatch_derived.py::test_missing_manifest_partitions_are_named_gaps_not_empty_days", "-k", "webhistory or chrome or missing_manifest_partitions"]
@@ -153,6 +160,15 @@ cache = "none"
 # finishes in seconds. The budget covers a cold cache, which reparses the whole
 # 14-day window at roughly 11 MB/s.
 timeout_seconds = 1800
+
+[operations.repair_operator_day]
+description = "Explicitly rebuild operator days for a requested inclusive date range in a verified candidate"
+exec = ["python", "-m", "lynchpin.analysis", "materialize-current-state", "--up-to", "current_state_operator_day"]
+arguments = "required"
+pool = "bulk"
+result = "exit"
+cache = "none"
+timeout_seconds = 3600
 
 [operations.repair_webhistory_base]
 description = "Merge retained browser segments into an explicit candidate output without raw extraction"

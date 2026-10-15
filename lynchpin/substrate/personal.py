@@ -289,6 +289,9 @@ def promote_operator_day_rows(
     *,
     refresh_id: str,
     rows: Iterable[Any],
+    previous_refresh_id: str | None = None,
+    replacement_start: date | None = None,
+    replacement_end: date | None = None,
 ) -> int:
     """INSERT pre-materialized OperatorDay rows (wide cross-source daily matrix).
 
@@ -297,13 +300,8 @@ def promote_operator_day_rows(
     is stored as a VARCHAR[] so consumers can tell which sources actually
     contributed each day.
     """
-    return promote_rows(
-        conn,
-        table="operator_day",
-        columns=_OPERATOR_DAY_COLUMNS,
-        refresh_id=refresh_id,
-        rows=rows,
-        extractor=lambda r: (
+    def extract(r: Any) -> tuple[Any, ...]:
+        return (
             r.date,
             r.aw_active_hours,
             r.aw_deep_work_min,
@@ -362,7 +360,15 @@ def promote_operator_day_rows(
             r.spo2_pct,
             r.skin_temp_c,
             sorted(r.sources_present),
-        ),
+        )
+
+    return _promote_dated_product(
+        conn, product="operator_day", table="operator_day",
+        columns=_OPERATOR_DAY_COLUMNS, refresh_id=refresh_id,
+        rows=(extract(row) for row in rows),
+        previous_refresh_id=previous_refresh_id,
+        replacement_start=replacement_start, replacement_end=replacement_end,
+        row_date=lambda row: row[0],
     )
 
 
@@ -412,20 +418,33 @@ def load_operator_day_rows(
         bad = [c for c in columns if c not in valid]
         if bad:
             raise ValueError(f"unknown operator_day columns: {bad!r}")
-        select_cols = ", ".join(columns)
-    else:
-        select_cols = ", ".join(_OPERATOR_DAY_COLUMNS)
-    sql = f"SELECT {select_cols} FROM operator_day WHERE refresh_id = ?"
-    params: list[Any] = [refresh_id]
-    if start:
-        sql += " AND date >= ?"
-        params.append(start)
-    if end:
-        sql += " AND date <= ?"
-        params.append(end)
-    sql += " ORDER BY date"
     col_names = list(columns) if columns else list(_OPERATOR_DAY_COLUMNS)
-    return [dict(zip(col_names, row)) for row in conn.execute(sql, params).fetchall()]
+    selected = tuple(dict.fromkeys(("date", *col_names)))
+    lineage = conn.execute(
+        "SELECT 1 FROM substrate_product_lineage WHERE product = 'operator_day' AND refresh_id = ?",
+        [refresh_id],
+    ).fetchone()
+    if lineage is None:
+        # Retained partitions from before dated-product lineage are standalone
+        # full partitions. Reading them does not qualify them for inheritance.
+        rows = conn.execute(
+            f"SELECT {', '.join(selected)} FROM operator_day WHERE refresh_id = ? ORDER BY date",
+            [refresh_id],
+        ).fetchall()
+    else:
+        rows = _resolved_rows(
+            conn, product="operator_day", refresh_id=refresh_id,
+            table="operator_day", columns=selected, key=lambda row: row[0],
+        )
+    result = []
+    for row in sorted(rows, key=lambda row: row[0]):
+        values = dict(zip(selected, row))
+        if start is not None and values["date"] < start:
+            continue
+        if end is not None and values["date"] > end:
+            continue
+        result.append({name: values[name] for name in col_names})
+    return result
 
 
 def load_personal_daily_signals(

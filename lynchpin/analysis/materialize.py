@@ -179,26 +179,31 @@ def _rolling_window(
 
 
 def _promote_operator_day(*, start: date | None, end: date | None) -> dict:
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from contextlib import nullcontext
+    from lynchpin.substrate.connection import apply_schema, candidate_generation, connect, in_candidate_generation
     from lynchpin.substrate.personal import promote_operator_day_rows
     from lynchpin.substrate.source_status import record_source_status
 
     resolved_start, resolved_end = _rolling_window(start=start, end=end, days=90)
     refresh_id = f"operator-day:{resolved_start.isoformat()}:{resolved_end.isoformat()}"
-    rows = operator_daily_matrix(resolved_start, resolved_end, skip_slow=True)
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
-        n = promote_operator_day_rows(conn, refresh_id=refresh_id, rows=rows)
-        record_source_status(
-            conn,
-            refresh_id=refresh_id,
-            source="operator_day",
-            status="ok" if n > 0 else "empty",
-            reason=None,
-            row_count=n,
-            window_start=resolved_start,
-            window_end=resolved_end,
-        )
+    # This explicit full-window writer uses the same local source acquisition
+    # as typed promotion. Ordinary incremental promotion supplies its own tail.
+    publication = nullcontext() if in_candidate_generation() else candidate_generation(changed_products=("operator_day",))
+    with publication:
+        with connect() as conn:
+            apply_schema(conn)
+            rows = operator_daily_matrix(resolved_start, resolved_end, connection=conn)
+            n = promote_operator_day_rows(conn, refresh_id=refresh_id, rows=rows)
+            record_source_status(
+                conn,
+                refresh_id=refresh_id,
+                source="operator_day",
+                status="ok" if n > 0 else "empty",
+                reason=None,
+                row_count=n,
+                window_start=resolved_start,
+                window_end=resolved_end + timedelta(days=1),
+            )
     return {"refresh_id": refresh_id, "rows_promoted": n}
 
 

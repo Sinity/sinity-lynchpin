@@ -188,27 +188,54 @@ def promote_personal_sources(
             )
 
     # ── operator_day: materialize the wide cross-source daily matrix ─────
-    # Full refresh builds this derived cross-source product. Targeted source
-    # selections should not pay for the global operator_daily/coverage scan
-    # unless operator_day gets its own explicit promotion source.
+    # Source-wide promotion computes only its replacement tail when supplied.
+    # Targeted source selections do not build this cross-source product.
     if selection.sources is None:
         try:
             from lynchpin.analysis.operator_daily import operator_daily_matrix
-            from lynchpin.substrate.personal import promote_operator_day_rows
+            from lynchpin.substrate.personal import _lineage, promote_operator_day_rows
 
+            operator_start = partition_window_start or window_start
+            if not window_start <= operator_start < window_end:
+                raise ValueError("operator_day replacement must be inside its promotion window")
+            bounded = operator_start > window_start
+            predecessor = _latest_product_refresh(conn, "operator_day", refresh_id) if bounded else None
+            if bounded and predecessor is None:
+                raise ValueError("bounded operator_day requires a verified predecessor; run explicit full bootstrap first")
+            if predecessor is not None:
+                _lineage(conn, product="operator_day", refresh_id=predecessor)
             operator_rows = [
                 r
-                for r in operator_daily_matrix(window_start, window_end - timedelta(days=1), connection=conn)
-                if window_start <= r.date < window_end
+                for r in operator_daily_matrix(operator_start, window_end - timedelta(days=1), connection=conn)
+                if operator_start <= r.date < window_end
             ]
-            if operator_rows:
-                counts["operator_day"] = promote_operator_day_rows(
-                    conn,
-                    refresh_id=refresh_id,
-                    rows=operator_rows,
-                )
+            counts["operator_day"] = promote_operator_day_rows(
+                conn,
+                refresh_id=refresh_id,
+                rows=operator_rows,
+                **({
+                    "previous_refresh_id": predecessor,
+                    "replacement_start": operator_start,
+                    "replacement_end": window_end,
+                } if bounded else {}),
+            )
+
+            from lynchpin.substrate.readers_signals import load_operator_day_window
+
+            logical_count = load_operator_day_window(conn, refresh_id=refresh_id)[2]
+            record_source_status(
+                conn, refresh_id=refresh_id, source="operator_day",
+                status="ok" if logical_count else "empty", reason=None,
+                row_count=logical_count, window_start=operator_start,
+                window_end=window_end,
+            )
         except Exception as exc:
             log.warning("substrate_promote: operator_day promotion skipped: %s", exc)
+            record_source_status(
+                conn, refresh_id=refresh_id, source="operator_day",
+                status="error", reason=str(exc), row_count=0,
+                window_start=partition_window_start or window_start, window_end=window_end,
+            )
 
     # ── spotify_daily: best-effort promotion from streaming history ──────
     if selection.includes(SOURCE_SPOTIFY_DAILY):

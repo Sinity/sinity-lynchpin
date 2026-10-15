@@ -291,3 +291,81 @@ def test_spotify_optional_absence_does_not_hide_broken_daily_product(monkeypatch
     )
     assert statuses[0]["status"] == ("unavailable" if failure == "absent-export" else "error")
     assert statuses[0]["row_count"] is None
+
+
+@pytest.mark.parametrize("empty_tail", [False, True])
+def test_operator_day_incremental_promoter_reads_tail_and_retains_predecessor(monkeypatch, tmp_path, empty_tail):
+    from lynchpin.analysis.active.substrate_promote_personal import promote_personal_sources
+    from lynchpin.analysis.operator_daily import OperatorDay
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.personal import promote_operator_day_rows, load_operator_day_rows
+    from lynchpin.substrate.readers_signals import load_operator_day_window, load_operator_day_lag_correlation
+
+    calls = []
+    start, end = date(2026, 10, 8), date(2026, 10, 16)
+    def matrix(lower, upper, *, connection):
+        calls.append((lower, upper))
+        assert (lower, upper) == (start, date(2026, 10, 15))
+        return [] if empty_tail else [OperatorDay(date=date(2026, 10, 12), git_commits=3, web_visits=6, spotify_hours=None, sources_present=frozenset({"git"}))]
+    monkeypatch.setattr("lynchpin.analysis.operator_daily.operator_daily_matrix", matrix)
+    only_operator = SimpleNamespace(sources=None, includes=lambda *sources: len(sources) > 1)
+    with connect(tmp_path / "operator.duckdb") as conn:
+        apply_schema(conn)
+        promote_operator_day_rows(conn, refresh_id="base", rows=[
+            OperatorDay(date=date(2026, 10, 1), git_commits=1, web_visits=2),
+            OperatorDay(date=date(2026, 10, 10), git_commits=99, web_visits=99, spotify_hours=0),
+            OperatorDay(date=date(2026, 10, 20), git_commits=5, web_visits=10),
+        ])
+        counts = {}
+        promote_personal_sources(conn, refresh_id="tail", window_start=date(2011, 1, 1), window_end=end,
+                                 partition_window_start=start, counts=counts, selection=only_operator)
+        assert calls == [(start, date(2026, 10, 15))]
+        assert counts["operator_day"] == (0 if empty_tail else 1)
+        from lynchpin.substrate.snapshots import best_materialized_refresh_id
+        assert best_materialized_refresh_id(conn, "operator_day", caller="test") == "tail"
+        assert best_materialized_refresh_id(conn, "operator_day", caller="test", start=start, end=end) == "tail"
+        rows = load_operator_day_rows(conn, refresh_id="tail")
+        expected = [date(2026, 10, 1), date(2026, 10, 20)] if empty_tail else [date(2026, 10, 1), date(2026, 10, 12), date(2026, 10, 20)]
+        assert [r["date"] for r in rows] == expected
+        assert conn.execute("SELECT status,row_count FROM substrate_source_status WHERE refresh_id='tail' AND source='operator_day'").fetchone() == ("ok", len(expected))
+        assert load_operator_day_window(conn, refresh_id="tail") == (expected[0], expected[-1], len(expected))
+        correlation, n = load_operator_day_lag_correlation(conn, refresh_id="tail", metric_a="git_commits", metric_b="web_visits", lag=0)
+        assert n == len(expected)
+        assert correlation == pytest.approx(1)
+        if not empty_tail:
+            assert rows[1]["spotify_hours"] is None
+            assert rows[1]["sources_present"] == ["git"]
+        assert conn.execute("SELECT COUNT(*) FROM operator_day WHERE refresh_id='tail'").fetchone()[0] == (0 if empty_tail else 1)
+
+
+def test_operator_day_incremental_without_verified_base_never_bootstraps_history(monkeypatch, tmp_path, caplog):
+    from lynchpin.analysis.active.substrate_promote_personal import promote_personal_sources
+    from lynchpin.substrate.connection import apply_schema, connect
+    calls = []
+    def forbidden(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("incremental request must not bootstrap global history")
+    monkeypatch.setattr("lynchpin.analysis.operator_daily.operator_daily_matrix", forbidden)
+    only_operator = SimpleNamespace(sources=None, includes=lambda *sources: len(sources) > 1)
+    with connect(tmp_path / "empty.duckdb") as conn:
+        apply_schema(conn)
+        counts = {}
+        promote_personal_sources(conn, refresh_id="tail", window_start=date(2011, 1, 1), window_end=date(2026, 10, 16),
+                                 partition_window_start=date(2026, 10, 8), counts=counts, selection=only_operator)
+        assert calls == []
+        assert "operator_day" not in counts
+        assert "predecessor" in caplog.text
+
+
+@pytest.mark.parametrize("partition_start", [date(2026, 10, 16), date(2010, 1, 1)])
+def test_operator_day_invalid_replacement_refuses_before_matrix(monkeypatch, tmp_path, partition_start):
+    from lynchpin.analysis.active.substrate_promote_personal import promote_personal_sources
+    from lynchpin.substrate.connection import apply_schema, connect
+    calls = []
+    monkeypatch.setattr("lynchpin.analysis.operator_daily.operator_daily_matrix", lambda *args, **kwargs: calls.append(args))
+    with connect(tmp_path / "invalid.duckdb") as conn:
+        apply_schema(conn)
+        promote_personal_sources(conn, refresh_id="invalid", window_start=date(2011, 1, 1), window_end=date(2026, 10, 16),
+                                 partition_window_start=partition_start, counts={}, selection=SimpleNamespace(sources=None, includes=lambda *sources: len(sources) > 1))
+        assert calls == []
+        assert conn.execute("SELECT status FROM substrate_source_status WHERE source='operator_day'").fetchone() == ("error",)

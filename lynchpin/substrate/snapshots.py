@@ -489,6 +489,7 @@ LINEAGE_PARTITION_TABLES: dict[str, str] = {
     "machine_process_memory_sample": "substrate_product_lineage:machine_process_memory_sample",
     "machine_service_state": "substrate_product_lineage:machine_service_state",
     "personal_daily_signal": "substrate_product_lineage:personal_daily_signals",
+    "operator_day": "substrate_product_lineage:operator_day",
     "title_classification": "substrate_product_lineage:title_metadata",
     "activity_content_day": "substrate_product_lineage:activity_content_day",
     "activity_content_bucket": "substrate_product_lineage:activity_content_bucket",
