@@ -623,3 +623,96 @@ def test_pinned_read_metadata_never_enters_convergence(monkeypatch) -> None:
         "caller": "test.pinned",
         "refresh_id": "historical-1",
     }
+
+
+def test_prepared_health_coverage_uses_captured_phone_input_boundary(tmp_path, monkeypatch):
+    import json
+    import os
+    from datetime import datetime
+    from types import SimpleNamespace
+    from lynchpin.core.input_snapshot import input_snapshot
+    from lynchpin.ingest import health_coverage_materialize as health
+    from lynchpin.sources.phone_events import phone_events
+
+    root = tmp_path / "events"
+    root.mkdir()
+    day = root / "events-20300101.jsonl"
+    event = {"kind": "health_steps", "ts": "2030-01-01T10:00:00Z", "time": "2030-01-01T09:00:00Z", "record_id": "fixture-1", "source": "com.example.sensor"}
+    day.write_text(json.dumps(event) + "\n")
+    cfg = SimpleNamespace(phone_events_dir=root, derived_root=tmp_path / "products")
+    monkeypatch.setattr("lynchpin.sources.phone_events.LynchpinConfig.from_env", lambda: cfg)
+    monkeypatch.setattr(health, "get_config", lambda: cfg)
+    monkeypatch.setattr("lynchpin.sources.xiaomi_cloud.latest_envelopes", lambda **_kwargs: {})
+    with input_snapshot():
+        health.materialize_health_coverage()
+        assert materialization._health_coverage_dataset(cfg).status == "ready"
+        report = health.health_coverage_path(cfg.derived_root)
+        meta = json.loads(report.with_suffix(".manifest.json").read_text())
+        assert meta["input_files"] == [str(day)]
+        assert meta["input_versions"][0]["stat"][2] == day.stat().st_size
+        with day.open("a") as stream:
+            stream.write(json.dumps({**event, "record_id": "fixture-2"}) + "\n")
+        later = root / "events-20300102.jsonl"
+        later.write_text(json.dumps({**event, "record_id": "fixture-3", "ts": "2030-01-02T10:00:00Z"}) + "\n")
+        # Force an unambiguous post-build timestamp without timing sleeps.
+        after = datetime.fromisoformat(meta["materialized_at"]).timestamp() + 60
+        os.utime(day, (after, after))
+        os.utime(later, (after, after))
+        assert [row.payload["record_id"] for row in phone_events()] == ["fixture-1"]
+        with materialization.prepared_product_reads():
+            assert materialization.ensure_materialized("health_coverage", cfg=cfg).status == "ready"
+            # Frozen raw inputs must not hide loss of the canonical product.
+            report.unlink()
+            assert materialization.ensure_materialized("health_coverage", cfg=cfg).status == "failed"
+        report.write_text('{}\n')
+    assert materialization._health_coverage_dataset(cfg).status == "partial"
+    assert len(list(phone_events())) == 3
+
+
+def test_prepared_health_coverage_rejects_corrupt_captured_input(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from lynchpin.core.input_snapshot import input_snapshot, read_input_path
+    from lynchpin.ingest.health_coverage_materialize import health_coverage_path
+    from lynchpin.sources.phone_events import phone_events
+
+    root = tmp_path / "events"
+    root.mkdir()
+    day = root / "events-20300101.jsonl"
+    day.write_text('{}\n')
+    cfg = SimpleNamespace(phone_events_dir=root, derived_root=tmp_path / "products")
+    monkeypatch.setattr("lynchpin.sources.phone_events.LynchpinConfig.from_env", lambda: cfg)
+    report = health_coverage_path(cfg.derived_root)
+    report.parent.mkdir(parents=True)
+    report.write_text('{}\n')
+    report.with_suffix(".manifest.json").write_text('{"materialized_at":"2031-01-01T00:00:00Z","row_count":1}')
+    with input_snapshot():
+        list(phone_events())
+        read_input_path(day).write_text('tampered\n')
+        with materialization.prepared_product_reads(), pytest.raises(RuntimeError, match="snapshot changed"):
+            materialization.ensure_materialized("health_coverage", cfg=cfg)
+
+
+def test_prepared_health_audit_does_not_recheck_live_day_mtime(tmp_path):
+    import json
+    import os
+    from types import SimpleNamespace
+    from lynchpin.core.input_snapshot import input_snapshot
+    from lynchpin.ingest.health_coverage_materialize import health_coverage_path
+
+    root = tmp_path / "events"
+    root.mkdir()
+    day = root / "events-20300101.jsonl"
+    day.write_text('{}\n')
+    os.utime(day, (1, 1))
+    cfg = SimpleNamespace(phone_events_dir=root, derived_root=tmp_path / "products")
+    report = health_coverage_path(cfg.derived_root)
+    report.parent.mkdir(parents=True)
+    report.write_text('{}\n')
+    report.with_suffix(".manifest.json").write_text(json.dumps({"dataset": "health_coverage", "materialized_at": "2030-01-01T00:00:00Z", "row_count": 1}))
+    with input_snapshot() as snapshot:
+        snapshot.capture_collection(root, (day,), append_only=(day,))
+        os.utime(day, (2200000000, 2200000000))
+        with materialization.prepared_product_reads():
+            assert materialization.ensure_materialized("health_coverage", cfg=cfg).status == "ready"
+    with materialization.prepared_product_reads():
+        assert materialization.ensure_materialized("health_coverage", cfg=cfg).status == "failed"

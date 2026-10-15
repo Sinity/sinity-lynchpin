@@ -196,13 +196,19 @@ class InstrumentDay:
 
 
 def _day_files(root: Path, start: Optional[date], end: Optional[date]) -> list[Path]:
-    if not root.exists():
-        return []
     # Carrier names are UTC days; public bounds are inclusive local days.
     utc_start = datetime.combine(start, datetime.min.time(), local_tz()).astimezone(timezone.utc).date() if start else None
     utc_end = (datetime.combine(end + timedelta(days=1), datetime.min.time(), local_tz()).astimezone(timezone.utc) - timedelta(microseconds=1)).date() if end else None
     dated: list[tuple[date, Path]] = []
-    for path in root.glob("events-*.jsonl"):
+    from ..core.input_snapshot import current_input_snapshot, pinned_collection
+
+    paths = pinned_collection(root)
+    if paths is None:
+        paths = tuple(sorted(root.glob("events-*.jsonl")))
+        snapshot = current_input_snapshot()
+        if snapshot is not None:
+            snapshot.capture_collection(root, paths, append_only=paths)
+    for path in paths:
         match = _DAY_FILE_RE.search(path.name)
         if match is None:
             continue

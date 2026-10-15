@@ -57,6 +57,9 @@ Freshness validation resolves file identities and high-water timestamps from
 the same captured inputs during an operation. After that snapshot closes,
 validation compares against live inputs again.
 Standalone product nodes retain that context through post-build verification.
+Phone event reads freeze the day-file roster and verified append-only prefixes;
+health coverage audits those captured inputs during promotion. Later arrivals
+remain visible to the next operation.
 Daily-signal materialization captures its selected inputs before parsing;
 current-day keyboard inputs use an append-only prefix and closed files use
 immutable copies. The output identifies the captured inputs even when live

@@ -640,10 +640,14 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
     path = output or health_coverage_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_ndjson(path, rows)
+    from ..core.input_snapshot import pinned_collection
+
+    captured = pinned_collection(get_config().phone_events_dir)
     write_manifest(
         path.with_suffix(".manifest.json"),
         {
             "dataset": "health_coverage",
+            **({"input_files": [str(item) for item in captured]} if captured is not None else {}),
             "row_count": len(rows),
             "health_events_scanned": health_events,
             "unique_records_total": sum(len(g.record_ids) for g in groups.values()),

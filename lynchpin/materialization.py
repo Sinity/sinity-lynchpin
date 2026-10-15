@@ -3000,6 +3000,13 @@ def _health_coverage_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     manifest = path.with_suffix(".manifest.json")
     meta = _load_json(manifest)
     ready = _product_with_manifest_exists(path, manifest)
+    from .core.input_snapshot import pinned_collection, read_input_path
+
+    # Promotion must audit the same acquired roster/bytes it consumed. Outside
+    # an operation snapshot, new day files and appends invalidate the report.
+    files = pinned_collection(cfg.phone_events_dir)
+    if files is None:
+        files = tuple(cfg.phone_events_dir.glob("events-*.jsonl"))
     # The report is a whole-history reduction of the phone events plane, so
     # it is stale the moment any day file outgrows it -- coverage claims made
     # from a report older than its inputs are exactly the misreading the
@@ -3009,7 +3016,7 @@ def _health_coverage_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         built_at = _datetime_from_iso(meta.get("materialized_at"))
         if built_at is not None:
             newest_input = max(
-                (f.stat().st_mtime for f in cfg.phone_events_dir.glob("events-*.jsonl")),
+                (read_input_path(f).stat().st_mtime for f in files),
                 default=None,
             )
             inputs_current = newest_input is None or newest_input <= built_at.timestamp()
