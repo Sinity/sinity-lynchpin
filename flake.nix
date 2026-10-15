@@ -8,8 +8,9 @@
     # General workstation tools continue to use the stable package set.
     nixpkgsRepomix.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # The package below still imports the predecessor Python API and Nix helpers.
     polylogueSrc = {
-      url = "github:Sinity/polylogue/master";
+      url = "github:Sinity/polylogue/153ed55bae8028d44fe8542ecde9a48c021759bd";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };

@@ -66,8 +66,8 @@
       },
       "original": {
         "owner": "Sinity",
-        "ref": "master",
         "repo": "polylogue",
+        "rev": "153ed55bae8028d44fe8542ecde9a48c021759bd",
         "type": "github"
       }
     },
