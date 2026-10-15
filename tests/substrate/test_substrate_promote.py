@@ -1502,3 +1502,24 @@ def test_path_roots_dict_keys_extracted(
     # path_roots is a VARCHAR[] in DuckDB.
     path_roots_val = row[0]
     assert set(path_roots_val) == {"src", "tests"}
+
+
+@pytest.mark.parametrize("fatal", [False, True])
+def test_promotion_reason_keeps_fatal_stage_ahead_of_dataset_limitations(fatal):
+    from lynchpin.analysis.active.substrate_promote import PromotionSourceStatus, _run_reason, _run_status
+
+    limitations = tuple(
+        PromotionSourceStatus(f"optional-{index}", "dataset", "unavailable", "input absent", 0)
+        for index in range(8)
+    )
+    error = PromotionSourceStatus("required-stage", "stage", "error", "fixture fatal failure", 0)
+    rows = limitations + ((error,) if fatal else ())
+    reason = _run_reason(rows)
+    assert reason is not None
+    assert _run_status(rows) == ("error" if fatal else "degraded")
+    if fatal:
+        assert reason.startswith("required-stage: fixture fatal failure;")
+    else:
+        assert reason.startswith("optional-0: input absent;")
+    assert len(reason.split("; ")) == 6
+    assert rows[:8] == limitations  # Diagnostics do not rewrite recorded source states.

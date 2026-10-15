@@ -486,6 +486,9 @@ def _run_reason(statuses: tuple[PromotionSourceStatus, ...]) -> str | None:
     bad = [row for row in statuses if row.status in {"error", "unavailable", "partial", "degraded"}]
     if not bad:
         return None
+    # Dataset limitations sort before stage failures in the stored status
+    # rows. Keep the errors that reject publication visible in a bounded reason.
+    bad.sort(key=lambda row: row.status != "error")
     return "; ".join(f"{row.source}: {row.reason or row.status}" for row in bad[:6])
 
 
