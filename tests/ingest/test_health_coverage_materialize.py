@@ -340,3 +340,66 @@ def test_timezone_missing_measurement_is_explicit_without_aborting_report(monkey
     assert anomaly["source_time"] == "2030-01-01T10:00:00"
     assert "UTC offset" in anomaly["reason"]
     assert rows["summary"][0]["anomalies"] == 1
+
+
+def test_token_age_uses_local_receipt_and_lane_observation(monkeypatch, tmp_path) -> None:
+    from lynchpin.ingest.health_coverage_materialize import materialize_health_coverage
+
+    events = [_event(
+        "health_lane_state", "2030-06-01T12:00:00Z", generation=3,
+        swept=["HeartRateRecord"], unswept=[], ungranted=[],
+        tokens={"HeartRateRecord": {
+            "present": True, "received_at": "2030-06-01T12:30:00+01:00",
+        }},
+    )]
+    monkeypatch.setattr("lynchpin.ingest.health_coverage_materialize.phone_events", lambda: iter(events))
+    monkeypatch.setattr("lynchpin.sources.xiaomi_cloud.latest_envelopes", lambda **_: {})
+    output = tmp_path / "coverage.ndjson"
+    materialize_health_coverage(output=output)
+    row = next(r for r in _rows_by_kind(output)["sweep"] if r["record_type"] == "HeartRateRecord")
+    assert row["token_present"] is True
+    assert row["token_status"] == "observed"
+    assert row["token_received_at"] == "2030-06-01T11:30:00Z"
+    assert row["token_age_seconds"] == 1800
+    assert row["token_age_as_of"] == "2030-06-01T12:00:00Z"
+    assert "not server issuance" in row["token_age_basis"]
+
+
+def test_unobserved_invalid_and_absent_token_timestamps_remain_distinct(monkeypatch, tmp_path) -> None:
+    from lynchpin.ingest.health_coverage_materialize import materialize_health_coverage
+
+    tokens = {
+        "LegacyRecord": {"present": True, "received_at": None},
+        "MissingRecord": {"present": False, "received_at": "2030-06-01T10:00:00Z"},
+        "FutureRecord": {"present": True, "received_at": "2030-06-01T13:00:00Z"},
+        "NaiveRecord": {"present": True, "received_at": "2030-06-01T10:00:00"},
+        "MalformedRecord": [],
+    }
+    events = [_event("health_lane_state", "2030-06-01T12:00:00Z", tokens=tokens)]
+    monkeypatch.setattr("lynchpin.ingest.health_coverage_materialize.phone_events", lambda: iter(events))
+    monkeypatch.setattr("lynchpin.sources.xiaomi_cloud.latest_envelopes", lambda **_: {})
+    output = tmp_path / "coverage.ndjson"
+    materialize_health_coverage(output=output)
+    rows = {r["record_type"]: r for r in _rows_by_kind(output)["sweep"]}
+    assert rows["LegacyRecord"]["token_status"] == "unknown"
+    assert rows["MissingRecord"]["token_status"] == "absent"
+    assert rows["FutureRecord"]["token_status"] == "invalid_timestamp"
+    assert rows["NaiveRecord"]["token_status"] == "invalid_timestamp"
+    assert rows["MalformedRecord"]["token_status"] == "unknown"
+    for row in rows.values():
+        assert row["token_age_seconds"] is None
+        assert row["token_received_at"] is None
+
+
+def test_historical_lane_state_does_not_manufacture_token_metadata(monkeypatch, tmp_path) -> None:
+    from lynchpin.ingest.health_coverage_materialize import materialize_health_coverage
+
+    events = [_event("health_lane_state", "2030-06-01T12:00:00Z", swept=["HeartRateRecord"])]
+    monkeypatch.setattr("lynchpin.ingest.health_coverage_materialize.phone_events", lambda: iter(events))
+    monkeypatch.setattr("lynchpin.sources.xiaomi_cloud.latest_envelopes", lambda **_: {})
+    output = tmp_path / "coverage.ndjson"
+    materialize_health_coverage(output=output)
+    row = _rows_by_kind(output)["sweep"][0]
+    assert row["token_present"] is None
+    assert row["token_status"] == "unknown"
+    assert row["token_age_seconds"] is None

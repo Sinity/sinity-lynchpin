@@ -330,6 +330,33 @@ def _witness_rows(
     return rows
 
 
+def _token_observation(state: dict[str, Any], record_type: str) -> dict[str, Any]:
+    """Age since local token receipt at the lane observation, never server issuance."""
+    states = state.get("tokens")
+    token = states.get(record_type) if isinstance(states, dict) else None
+    token = token if isinstance(token, dict) else {}
+    present = token.get("present")
+    present = present if isinstance(present, bool) else None
+    received = _parse_ts(token.get("received_at")) if present else None
+    observed = _parse_ts(state.get("at"))
+    age = (observed - received).total_seconds() if observed and received else None
+    status = "unknown"
+    if present is False:
+        status = "absent"
+    elif present and received and age is not None and age >= 0:
+        status = "observed"
+    elif present and token.get("received_at") is not None:
+        status = "invalid_timestamp"
+    return {
+        "token_present": present,
+        "token_status": status,
+        "token_received_at": _iso(received) if status == "observed" else None,
+        "token_age_seconds": age if status == "observed" else None,
+        "token_age_as_of": _iso(observed),
+        "token_age_basis": "elapsed since locally receiving the current token; not server issuance",
+    }
+
+
 def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, Any]:
     groups: dict[tuple[str, str, str, str], _Group] = defaultdict(_Group)
     # Unique-record measurement times per (kind, source), for gap analysis.
@@ -388,6 +415,7 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
                     "unswept": [s for s in payload.get("unswept") or [] if isinstance(s, str)],
                     "ungranted": [s for s in payload.get("ungranted") or [] if isinstance(s, str)],
                     "rate_limited": payload.get("rate_limited"),
+                    "tokens": payload.get("tokens") if isinstance(payload.get("tokens"), dict) else {},
                 }
             elif kind == "health_sweep_failed":
                 rtype = str(payload.get("type"))
@@ -539,6 +567,7 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
         | set(lane_state.get("swept") or ())
         | set(lane_state.get("unswept") or ())
         | set(lane_state.get("ungranted") or ())
+        | {key for key in (lane_state.get("tokens") or {}) if isinstance(key, str)}
     )
     state_swept = set(lane_state.get("swept") or ())
     state_known = state_swept | set(lane_state.get("unswept") or ()) | set(
@@ -551,6 +580,7 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
             and rtype not in sweep_failures
             and rtype not in deletions
             and rtype not in state_known
+            and rtype not in (lane_state.get("tokens") or {})
         ):
             continue
         rows.append(
@@ -558,6 +588,7 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
                 "row": "sweep",
                 "record_type": rtype,
                 "sweep_completed": completed is not None,
+                **_token_observation(lane_state, rtype),
                 **(completed or {}),
                 "sweep_failures": sweep_failures.get(rtype, 0),
                 "last_failure": last_sweep_failure.get(rtype),
