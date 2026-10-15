@@ -8,6 +8,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any
 
+from lynchpin.core.errors import SourceUnavailableError
 from lynchpin.substrate.source_status import (
     SOURCE_BORG_DRILL,
     SOURCE_ACTIVITY_CONTENT,
@@ -250,7 +251,10 @@ def promote_personal_sources(
                 conn,
                 refresh_id=refresh_id,
                 source=SOURCE_SPOTIFY_DAILY,
-                status="error",
+                status=(
+                    "unavailable" if isinstance(exc, SourceUnavailableError) and exc.source == "spotify"
+                    else "error"
+                ),
                 reason=str(exc),
                 row_count=None,
                 window_start=window_start,

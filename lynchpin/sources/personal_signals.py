@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator, TextIO
 
 from ..core.config import get_config
-from ..core.errors import SourceUnavailableError
+from ..core.errors import MaterializationError, SourceUnavailableError
 from .activity_content import (
     ActivityContentDay,
     ActivityTitleUsage,
@@ -124,7 +124,7 @@ def spotify_daily_window(*, start: date, end: date) -> tuple[date, date] | None:
     This limits demand, not validation: consumers must still require the daily
     product to cover every date in the returned window before reading it.
     """
-    from ..core.input_snapshot import current_input_snapshot
+    from ..core.input_snapshot import current_input_snapshot, read_input_path
     from ..materialization import audit_dataset
 
     if end <= start:
@@ -138,8 +138,19 @@ def spotify_daily_window(*, start: date, end: date) -> tuple[date, date] | None:
             if path.name.endswith(".manifest.json")
         ))
         exported = audit_dataset("spotify")
+    if exported is not None and exported.status == "missing":
+        retained_artifact = False
+        for path in getattr(exported, "materialized_paths", ()):
+            try:
+                read_input_path(path).stat()
+            except FileNotFoundError:
+                continue
+            retained_artifact = True
+            break
+        if not retained_artifact:
+            raise SourceUnavailableError("spotify", reason="no Spotify export product is available")
     if exported is None or exported.status != "ready" or exported.first_date is None or exported.last_date is None:
-        raise SourceUnavailableError("spotify", reason="current export bounds are unavailable")
+        raise MaterializationError("spotify_daily", reason="current export bounds are unavailable or invalid")
     clipped_start = max(start, exported.first_date)
     clipped_end = min(end, exported.last_date + timedelta(days=1))
     return (clipped_start, clipped_end) if clipped_start < clipped_end else None

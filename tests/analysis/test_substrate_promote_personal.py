@@ -261,3 +261,33 @@ def test_spotify_promotion_keeps_export_tail_unavailable(monkeypatch, overlap) -
         assert status["status"] == "unavailable"
         assert status["row_count"] is None
         assert "spotify_daily" not in counts
+
+
+@pytest.mark.parametrize("failure", ["absent-export", "daily-hole", "invalid-carrier"])
+def test_spotify_optional_absence_does_not_hide_broken_daily_product(monkeypatch, failure) -> None:
+    from lynchpin.analysis.active.substrate_promote_personal import promote_personal_sources
+    from lynchpin.core.errors import SourceUnavailableError
+    from lynchpin.substrate.source_status import SOURCE_SPOTIFY_DAILY, SourceSelection
+
+    def window(**kwargs):
+        if failure == "absent-export":
+            raise SourceUnavailableError("spotify", reason="export absent")
+        return date(2030, 1, 1), date(2030, 1, 4)
+
+    def ensure(name, *, window):
+        return SimpleNamespace(status="failed" if failure == "daily-hole" else "ready", reason="fixture")
+
+    def read(**kwargs):
+        raise SourceUnavailableError("personal_daily_signals", reason="invalid carrier")
+
+    monkeypatch.setattr("lynchpin.sources.personal_signals.spotify_daily_window", window)
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", ensure)
+    monkeypatch.setattr("lynchpin.sources.personal_signals.iter_spotify_daily_signals", read)
+    statuses = []
+    monkeypatch.setattr("lynchpin.analysis.active.substrate_promote_personal.record_source_status", lambda conn, **kw: statuses.append(kw))
+    promote_personal_sources(
+        SimpleNamespace(), refresh_id="fixture", window_start=date(2030, 1, 1), window_end=date(2030, 1, 8),
+        counts={}, selection=SourceSelection.from_collection({SOURCE_SPOTIFY_DAILY}),
+    )
+    assert statuses[0]["status"] == ("unavailable" if failure == "absent-export" else "error")
+    assert statuses[0]["row_count"] is None

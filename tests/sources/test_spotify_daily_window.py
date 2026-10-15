@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from lynchpin import materialization
-from lynchpin.core.errors import SourceUnavailableError
+from lynchpin.core.errors import MaterializationError, SourceUnavailableError
 from lynchpin.core.input_snapshot import input_snapshot
 from lynchpin.sources.personal_signals import spotify_daily_window
 
@@ -38,10 +38,10 @@ def test_window_uses_captured_export_manifest(monkeypatch, tmp_path) -> None:
     assert spotify_daily_window(start=date(2030, 1, 2), end=date(2030, 1, 9)) == (date(2030, 1, 2), date(2030, 1, 9))
 
 
-@pytest.mark.parametrize("status", ["missing", "partial", "error"])
+@pytest.mark.parametrize("status", ["partial", "error"])
 def test_unknown_export_coverage_is_not_accepted(monkeypatch, status) -> None:
     monkeypatch.setattr(materialization, "audit_dataset", lambda name: SimpleNamespace(status=status))
-    with pytest.raises(SourceUnavailableError):
+    with pytest.raises(MaterializationError):
         spotify_daily_window(start=date(2030, 1, 1), end=date(2030, 1, 5))
 
 
@@ -62,3 +62,16 @@ def test_daily_hole_inside_export_still_refuses_prepared_read(monkeypatch) -> No
     with materialization.prepared_product_reads():
         result = materialization.ensure_materialized("spotify_daily", window=window)
     assert result.status == "failed"
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_absent_export_is_distinct_from_broken_retained_product(monkeypatch, tmp_path, retained) -> None:
+    artifact = tmp_path / "streams.manifest.json"
+    if retained:
+        artifact.write_text("{invalid", encoding="utf-8")
+    monkeypatch.setattr(materialization, "audit_dataset", lambda name: SimpleNamespace(
+        status="missing", materialized_paths=(artifact,), first_date=None, last_date=None,
+    ))
+    expected = MaterializationError if retained else SourceUnavailableError
+    with pytest.raises(expected):
+        spotify_daily_window(start=date(2030, 1, 1), end=date(2030, 1, 5))
