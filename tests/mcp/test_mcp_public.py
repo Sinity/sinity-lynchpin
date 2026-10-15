@@ -903,3 +903,30 @@ def test_ready_materialization_has_no_caveat(
 
     assert result["ok"] is True
     assert "materialization_caveats" not in result["meta"]
+
+
+@pytest.mark.parametrize("source,limit,indices,truncated", [
+    (None, 10, [0, 1, 2, 3], False),
+    ("com.example.selected", 10, [2, 3], False),
+    ("com.example.selected", 1, [2], True),
+    ("com.example.absent", 10, [], False),
+])
+def test_health_coverage_filters_source_before_limiting(
+    tmp_path, monkeypatch, source, limit, indices, truncated
+):
+    from lynchpin.mcp.tools.public import lynchpin_personal
+    records = [
+        {"row": "summary", "unique_records_total": 999},
+        {"row": "group", "source": "com.example.other"},
+        {"row": "group", "source": "com.example.selected"},
+        {"row": "gap", "source": "com.example.selected"},
+    ]
+    artifact = tmp_path / "coverage.ndjson"
+    artifact.write_text("".join(json.dumps(r) + "\n" for r in records))
+    monkeypatch.setattr("lynchpin.ingest.health_coverage_materialize.health_coverage_path", lambda: artifact)
+    result = lynchpin_personal(action="health", view="coverage", source=source, limit=limit)
+    assert result["ok"] is True
+    assert result["data"]["rows"] == [records[i] for i in indices]
+    assert result["data"]["truncated"] is truncated
+    if source is not None:
+        assert any("source-independent" in c for c in result["data"]["caveats"])

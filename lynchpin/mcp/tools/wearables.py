@@ -55,7 +55,9 @@ def wearable_records(
             raise ValueError("coverage is a whole-history product; omit start and end")
         with artifact.open() as handle:
             records = [json.loads(line) for line in handle if line.strip()]
-        rows = iter(records)
+        rows = (record for record in records if source is None or record.get("source") == source)
+        if source is not None:
+            caveats.append("Only rows attributed to the requested source are returned; source-independent summaries and receipts are omitted.")
         basis = "whole-history materialized coverage"
         caveats.append("This report reflects its artifact timestamp; later phone/cloud arrivals require a coverage refresh.")
     else:
