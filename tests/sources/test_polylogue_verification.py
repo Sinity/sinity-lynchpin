@@ -271,3 +271,47 @@ def test_branch_is_carried_when_the_receipt_records_it(tmp_path: Path) -> None:
     (row,) = read_verification_snapshot(lane).observations
 
     assert row.git_branch == "claude/x"
+
+
+@pytest.mark.parametrize("hard_failure", [False, True])
+def test_snapshot_recorder_preserves_degraded_verification_status(tmp_path, monkeypatch, hard_failure):
+    """Rejected receipts degrade coverage; genuine audit errors remain fatal."""
+    from contextlib import nullcontext
+    from dataclasses import replace
+
+    import duckdb
+
+    from lynchpin import materialization
+    from lynchpin.analysis.active.substrate_promote import _run_status, _source_statuses
+    from lynchpin.cli import substrate_snapshot
+    from lynchpin.substrate import connection
+
+    lane = _write(tmp_path / "receipts.jsonl", [
+        _receipt("20260927T100000Z-quick-10-aaaa"),
+        _receipt("20260927T100100Z-focused-test-11-bbbb", source_revision="invalid"),
+    ])
+    monkeypatch.setenv("POLYLOGUE_VERIFICATION_EVIDENCE_PATH", str(lane))
+    audit = materialization._polylogue_verification_dataset(SimpleNamespace())
+    assert audit.status == "degraded"
+    assert audit.row_count == 1
+    assert len(read_verification_snapshot(lane).rejected) == 1
+    if hard_failure:
+        audit = replace(audit, status="error", reason="fixture audit failure")
+    monkeypatch.setattr(materialization, "audit_materialization", lambda: (audit,))
+    start, end = date(2026, 9, 27), date(2026, 9, 28)
+    refresh_id = substrate_snapshot._snapshot_refresh_id(start=start, end=end, projects=())
+    with duckdb.connect() as conn:
+        connection.apply_schema(conn)
+        conn.execute(
+            "INSERT INTO evidence_graph_build (refresh_id,start_date,end_date,mode,generated_at) VALUES (?,?,?,'materialized',now())",
+            [refresh_id, start, end],
+        )
+        monkeypatch.setattr(connection, "connect", lambda _path: nullcontext(conn))
+        substrate_snapshot._record_snapshot_materialization_statuses(start=start, end=end, projects=())
+        actual = conn.execute(
+            "SELECT status,reason,row_count FROM substrate_source_status WHERE refresh_id=? AND source='polylogue_verification'",
+            [refresh_id],
+        ).fetchone()
+        expected = "error" if hard_failure else "degraded"
+        assert actual == (expected, audit.reason, 1)
+        assert _run_status(_source_statuses(conn, refresh_id)) == expected

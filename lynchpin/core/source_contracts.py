@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 SourceEmptiness = Literal["valid", "degraded", "invalid"]
 DatasetStatus = Literal["ready", "empty", "missing", "partial", "degraded", "error"]
-SubstrateStatus = Literal["ok", "empty", "unavailable", "error"]
+SubstrateStatus = Literal["ok", "empty", "unavailable", "degraded", "error"]
 ContractKind = Literal["dataset", "stage"]
 QueryMode = Literal["canonical", "substrate", "live"]
 CollectionModel = Literal["continuous", "event_export", "derived", "metadata", "historical", "stage"]
@@ -962,6 +962,8 @@ def dataset_status_to_substrate_status(status: DatasetStatus | str) -> Substrate
         return "ok"
     if status == "empty":
         return "empty"
+    if status == "degraded":
+        return "degraded"
     if status in {"missing", "partial"}:
         return "unavailable"
     return "error"
