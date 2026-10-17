@@ -1471,7 +1471,9 @@ def test_work_source_promotion_streams_source_iterables(
     }
     assert counts["work_observations"] == 1
     assert counts["work_observation_test_results"] == 1
-    assert statuses[0]["status"] == "ok"
+    # The fixture has no owner input binding; observed rows remain useful.
+    assert statuses[0]["status"] == "degraded"
+    assert "binding changed or unavailable" in statuses[0]["reason"]
     assert statuses[0]["row_count"] == 3
 
 
