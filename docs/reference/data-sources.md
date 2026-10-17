@@ -165,6 +165,10 @@ previous generations remain retained. They are owner-managed recovery material,
 not age-based cleanup candidates. These publication guarantees do not establish
 raw-export conservation or per-record source-snapshot provenance.
 
+### Samsung GDPR export availability
+
+Health export recomputation requires the configured Samsung GDPR export root to be accessible. An omitted optional category or an accessible empty category yields no rows. A missing or inaccessible export root, an unreadable category or CSV, and wrong object types raise `SourceUnavailableError` instead of becoming an empty contribution. The affected product is not published when that read fails; this does not make a multi-product recomputation atomic or establish archive conservation.
+
 ## Health coverage report
 
 `lynchpin.ingest.health_coverage_materialize` reduces the phone events

@@ -12,7 +12,8 @@ def _sources(tmp_path, monkeypatch):
     receipt = dict(kind='polylogue.verification-receipt', schema_version=1,
                    run_id='fixture-good', status='passed', semantic_status='passed',
                    started_at='2026-05-01T12:00:00+00:00', source_revision='a' * 40)
-    invalid = {**receipt, 'run_id': 'fixture-rejected', 'source_revision': None}
+    # Missing revisions are valid unqualified runs; exercise an invalid commit.
+    invalid = {**receipt, 'run_id': 'fixture-rejected', 'source_revision': 'not-a-commit'}
     lane.write_text(json.dumps(receipt) + '\n' + json.dumps(invalid) + '\n')
     monkeypatch.setattr('lynchpin.sources.xtask_history.xtask_history_path', lambda: ledger)
     monkeypatch.setattr('lynchpin.sources.polylogue_verification.verification_lane_path', lambda: lane)
@@ -119,6 +120,7 @@ def test_changed_inputs_during_promotion_do_not_publish_stale_binding(tmp_path, 
                              selection=SourceSelection.from_collection({'work_observations'}))
         assert conn.execute('SELECT value FROM substrate_meta WHERE key=?', [binding_key('fixture')]).fetchone() is None
         assert conn.execute("SELECT status FROM substrate_source_status WHERE source='work_observations'").fetchone() == ('degraded',)
+        assert 'binding changed or unavailable' in conn.execute("SELECT reason FROM substrate_source_status WHERE source='work_observations'").fetchone()[0]
 
 
 def test_implementation_binding_matches_relocated_identical_code(tmp_path):

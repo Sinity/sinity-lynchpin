@@ -133,3 +133,52 @@ def test_open_reader_and_selected_manifest_keep_their_generation(tmp_path, monke
     health_io.write_jsonl([{"value": 3}], "health_fixture.jsonl", "Fixture", False)
     assert [row["value"] for row in reader] == [2]
     assert len(open(manifest["path"]).readlines()) == manifest["row_count"] == 2
+
+
+@pytest.mark.parametrize("failure", ["missing-root", "wrong-root", "wrong-category", "denied", "io"])
+def test_gdpr_unavailable_inputs_cannot_replace_a_published_product(tmp_path, monkeypatch, failure):
+    from lynchpin.cli import health_signal_processors
+    from lynchpin.core.errors import SourceUnavailableError
+
+    cloud = tmp_path / "cloud"
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    category = cloud / "Heart Rate"
+    if failure == "wrong-root":
+        cloud.write_text("retained wrong-type source")
+    elif failure != "missing-root":
+        cloud.mkdir()
+        if failure == "wrong-category":
+            category.write_text("retained wrong-type category")
+        else:
+            category.mkdir()
+            (category / "Heart Rate.csv").write_text("datauuid,heart_rate\nfixture,62\n")
+    monkeypatch.setattr(health_io, "GDPR_CLOUD_DIR", cloud)
+    monkeypatch.setattr(health_signal_processors, "HEALTH_RAW", raw)
+    monkeypatch.setattr(health_io, "HEALTH_RAW", raw)
+    monkeypatch.setattr(health_io, "PROCESSED", tmp_path / "processed")
+    health_io.write_jsonl([{"datauuid": "retained", "start_time": "2026-06-01T12:00:00Z"}],
+                         "health_heart_rate.jsonl", "Heart Rate", False)
+    product = health_io.PROCESSED / "health_heart_rate.jsonl"
+    before = product.read_bytes()
+    pointer = product.readlink()
+    if failure in ("denied", "io"):
+        original = os.scandir
+        def unavailable(path):
+            if os.fspath(path) == str(category):
+                if failure == "denied":
+                    raise PermissionError("synthetic health source denied")
+                raise OSError("synthetic health source I/O error")
+            return original(path)
+        monkeypatch.setattr(os, "scandir", unavailable)
+    with pytest.raises(SourceUnavailableError):
+        health_signal_processors.process_heart_rate()
+    assert product.readlink() == pointer
+    assert product.read_bytes() == before
+
+
+def test_gdpr_accessible_optional_category_and_empty_category_remain_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(health_io, "GDPR_CLOUD_DIR", tmp_path)
+    assert health_io.read_gdpr_cloud_csvs("Optional") == []
+    (tmp_path / "Optional").mkdir()
+    assert health_io.read_gdpr_cloud_csvs("Optional") == []

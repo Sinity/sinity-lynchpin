@@ -35,6 +35,20 @@ pool = "pytest"
 result = "exit"
 cache = "tree+environment"
 
+[operations.verify_schema_setup]
+description = "Verify atomic substrate schema setup and transaction ownership"
+exec = ["pytest", "-q", "-s", "tests/substrate/test_schema_transactions.py", "tests/substrate/test_duck_substrate_schema.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
+[operations.verify_health_exports]
+description = "Verify health export input availability and failure-safe product publication"
+exec = ["pytest", "-q", "tests/cli/test_health_io.py", "tests/cli/test_health_sleep_processor.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
 [operations.verify_health_coverage]
 description = "Verify device-qualified health coverage, gaps and token observations"
 exec = ["pytest", "-q", "tests/ingest/test_health_coverage_materialize.py"]

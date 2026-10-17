@@ -212,6 +212,12 @@ def promote_work_sources(
             reason = f"{reason}; AgentCTL observations unavailable: {agentctl_unavailable_reason}"
         if polylogue_snapshot is None:
             reason = f"{reason}; Polylogue verification lane unavailable: {polylogue_unavailable_reason}"
+        # A completed read is not a current observation if its owner inputs
+        # changed or could not be bound. Keep the rows, but require a retry.
+        binding_stable = input_binding is not None and input_binding == current_work_input_binding()
+        if not binding_stable:
+            status = "degraded"
+            reason = f"{reason}; work input binding changed or unavailable during promotion"
         record_source_status(
             conn,
             refresh_id=refresh_id,
@@ -229,7 +235,7 @@ def promote_work_sources(
         )
         # Publish the binding with the candidate, only if inputs stayed stable
         # across the read. Changed/uninspectable inputs require another attempt.
-        if input_binding is not None and input_binding == current_work_input_binding():
+        if binding_stable:
             conn.execute(
                 "INSERT INTO substrate_meta (key, value) VALUES (?, ?)",
                 [key, json.dumps(input_binding, sort_keys=True)],

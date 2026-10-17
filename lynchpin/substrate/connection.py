@@ -1783,6 +1783,32 @@ def reset_substrate(path: Path | str | None = None) -> None:
 
 
 def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
+    """Apply the complete schema atomically, preserving caller transaction ownership."""
+    # DuckDB exposes transaction identity, but no Python transaction-state
+    # property. Separate autocommit reads have distinct identities; reads in
+    # an existing caller transaction share one. Do not probe with BEGIN:
+    # a nested-BEGIN error can invalidate the caller's transaction.
+    first = conn.execute("SELECT current_transaction_id()").fetchone()
+    second = conn.execute("SELECT current_transaction_id()").fetchone()
+    if first is None or second is None:
+        raise RuntimeError("DuckDB transaction identity unavailable during schema setup")
+    owns_transaction = first != second
+    if owns_transaction:
+        conn.execute("BEGIN TRANSACTION")
+    try:
+        _apply_schema_in_transaction(conn)
+        if owns_transaction:
+            conn.execute("COMMIT")
+    except BaseException as error:
+        if owns_transaction:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception as rollback_error:
+                error.add_note(f"schema transaction rollback failed: {rollback_error}")
+        raise
+
+
+def _apply_schema_in_transaction(conn: "duckdb.DuckDBPyConnection") -> None:
     """Apply the substrate DDL idempotently.
 
     Reads ``SUBSTRATE_VERSION`` from a ``substrate_meta`` table. Declared
@@ -1886,32 +1912,26 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
         # tables without ART storage, preserving every field and old partition.
         from lynchpin.substrate.machine_lineage import MACHINE_TABLES
 
-        conn.execute("BEGIN TRANSACTION")
-        try:
-            for table in sorted(MACHINE_TABLES):
-                constrained = conn.execute(
-                    "SELECT 1 FROM duckdb_constraints() WHERE table_name = ? AND constraint_type = 'PRIMARY KEY'",
-                    [table],
-                ).fetchone()
-                indexed = conn.execute("SELECT 1 FROM duckdb_indexes() WHERE table_name = ?", [table]).fetchone()
-                if constrained is None and indexed is None:
-                    continue
-                replacement = f"machine_migration_{uuid4().hex}"
-                ddl = next(statement for statement in DDL_STATEMENTS if f"CREATE TABLE {table} (" in statement)
-                conn.execute(ddl.replace(f"CREATE TABLE {table}", f"CREATE TABLE {replacement}", 1))
-                columns = [column[0] for column in conn.execute(f"DESCRIBE {table}").fetchall()]
-                column_list = ", ".join(columns)
-                conn.execute(f"INSERT INTO {replacement} ({column_list}) SELECT {column_list} FROM {table}")
-                before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                after = conn.execute(f"SELECT COUNT(*) FROM {replacement}").fetchone()[0]
-                if before != after:
-                    raise ValueError(f"machine migration lost rows in {table}: {before} != {after}")
-                conn.execute(f"DROP TABLE {table}")
-                conn.execute(f"ALTER TABLE {replacement} RENAME TO {table}")
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
+        for table in sorted(MACHINE_TABLES):
+            constrained = conn.execute(
+                "SELECT 1 FROM duckdb_constraints() WHERE table_name = ? AND constraint_type = 'PRIMARY KEY'",
+                [table],
+            ).fetchone()
+            indexed = conn.execute("SELECT 1 FROM duckdb_indexes() WHERE table_name = ?", [table]).fetchone()
+            if constrained is None and indexed is None:
+                continue
+            replacement = f"machine_migration_{uuid4().hex}"
+            ddl = next(statement for statement in DDL_STATEMENTS if f"CREATE TABLE {table} (" in statement)
+            conn.execute(ddl.replace(f"CREATE TABLE {table}", f"CREATE TABLE {replacement}", 1))
+            columns = [column[0] for column in conn.execute(f"DESCRIBE {table}").fetchall()]
+            column_list = ", ".join(columns)
+            conn.execute(f"INSERT INTO {replacement} ({column_list}) SELECT {column_list} FROM {table}")
+            before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            after = conn.execute(f"SELECT COUNT(*) FROM {replacement}").fetchone()[0]
+            if before != after:
+                raise ValueError(f"machine migration lost rows in {table}: {before} != {after}")
+            conn.execute(f"DROP TABLE {table}")
+            conn.execute(f"ALTER TABLE {replacement} RENAME TO {table}")
         conn.execute("ALTER TABLE machine_gpu_sample ADD COLUMN IF NOT EXISTS source_row_id BIGINT")
         conn.execute("ALTER TABLE machine_cgroup_memory_sample ADD COLUMN IF NOT EXISTS source_row_id BIGINT")
         conn.execute(

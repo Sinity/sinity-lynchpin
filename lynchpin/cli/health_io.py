@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import get_config
+from ..core.errors import SourceUnavailableError
 
 _config = get_config()
 HEALTH_RAW = _config.health_root / "raw/samsung-health"
@@ -61,18 +62,30 @@ def read_gdpr_cloud_csvs(category_name: str) -> list[dict]:
     Returns concatenated, deduplicated rows (by datauuid if present).
     """
     category_dir = GDPR_CLOUD_DIR / category_name
-    if not category_dir.is_dir():
-        return []
-
-    # Collect all CSV files in the directory
-    csv_files = sorted(category_dir.glob("*.csv"), key=_gdpr_csv_sort_key)
     all_rows: list[dict] = []
-    for csv_file in csv_files:
-        with open(csv_file, encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if any(row.values()):
-                    all_rows.append(row)
+    try:
+        # An export can omit a category, but the configured export itself must
+        # be accessible. Path predicates/glob hide lookup and listing failures.
+        with os.scandir(GDPR_CLOUD_DIR) as entries:
+            present = any(entry.name == category_name for entry in entries)
+        if not present:
+            return []
+        with os.scandir(category_dir) as entries:
+            csv_files = sorted(
+                (Path(entry.path) for entry in entries if entry.name.endswith(".csv")),
+                key=_gdpr_csv_sort_key,
+            )
+        for csv_file in csv_files:
+            with open(csv_file, encoding="utf-8-sig") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if any(row.values()):
+                        all_rows.append(row)
+    except OSError as error:
+        raise SourceUnavailableError(
+            "samsung-gdpr-cloud", path=str(error.filename or category_dir),
+            reason=str(error),
+        ) from error
 
     # Deduplicate by datauuid if the column exists
     if all_rows and "datauuid" in all_rows[0]:
