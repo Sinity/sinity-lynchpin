@@ -28,12 +28,11 @@ from typing import Any, Iterator, Optional
 
 from ..core.config import LynchpinConfig
 from ..core.parse import as_local, safe_float, safe_int
-from ..core.source import SourceReadiness, file_readiness, read_jsonl_with
+from ..core.source import read_jsonl_with
 
 __all__ = [
     "AmbientLevel",
     "AmbientDay",
-    "readiness",
     "ambient_levels",
     "daily_ambient",
 ]
@@ -75,10 +74,6 @@ class AmbientDay:
     mean_db_mean: Optional[float]
     max_db_max: Optional[float]
     silent_chunk_count: int
-
-
-def readiness(path: Path | None = None) -> SourceReadiness:
-    return file_readiness(path or LynchpinConfig.from_env().phone_ambient_jsonl)
 
 
 def _hydrate(payload: dict[str, Any]) -> Optional[AmbientLevel]:

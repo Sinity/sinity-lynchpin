@@ -19,11 +19,9 @@ from ..core.parse import as_local
 __all__ = [
     "SinnixGeneration",
     "SinnixGenerationRecord",
-    "SinnixGenerationsReadiness",
     "generation_records",
     "iter_generations",
     "daily_generations",
-    "readiness",
 ]
 
 
@@ -72,20 +70,6 @@ class SinnixGenerationRecord:
 
 
 @dataclass(frozen=True)
-class SinnixGenerationsReadiness:
-    """Status of the generations.jsonl source product.
-
-    ``status`` ∈ {"missing", "empty", "ok"}. ``row_count`` counts JSONL
-    lines (not necessarily parseable rows — caller can subtract via
-    ``generation_records`` for the precise figure).
-    """
-
-    status: str
-    row_count: int
-    path: Path
-
-
-@dataclass(frozen=True)
 class DailyGenerations:
     """Daily summary of NixOS generation activations."""
 
@@ -98,27 +82,6 @@ class DailyGenerations:
 def _canonical_generations_path() -> Path:
     """Return the canonical path to generations.jsonl."""
     return get_config().sinnix_generations_jsonl
-
-
-def readiness(*, path: Path | None = None) -> SinnixGenerationsReadiness:
-    """Probe the generations.jsonl product's readiness.
-
-    Returns ``missing`` if the file isn't present, ``empty`` if it exists
-    but contains no JSONL lines, ``ok`` with the row count otherwise.
-    """
-    target = path or _canonical_generations_path()
-    if not target.exists():
-        return SinnixGenerationsReadiness(status="missing", row_count=0, path=target)
-    row_count = 0
-    try:
-        with target.open(encoding="utf-8") as fh:
-            for line in fh:
-                if line.strip():
-                    row_count += 1
-    except OSError:
-        return SinnixGenerationsReadiness(status="missing", row_count=0, path=target)
-    status = "ok" if row_count > 0 else "empty"
-    return SinnixGenerationsReadiness(status=status, row_count=row_count, path=target)
 
 
 def generation_records(

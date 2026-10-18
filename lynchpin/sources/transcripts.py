@@ -37,13 +37,12 @@ from typing import Any, Iterator, Optional
 from ..core.config import LynchpinConfig
 from ..core.errors import SourceUnavailableError
 from ..core.parse import as_local, parse_datetime as _parse_dt, safe_float, safe_int
-from ..core.source import SourceReadiness, read_jsonl_with
+from ..core.source import read_jsonl_with
 
 __all__ = [
     "TranscriptSegment",
     "Transcript",
     "TranscriptionLedgerEntry",
-    "readiness",
     "transcripts",
     "transcription_ledger",
     "daily_speech",
@@ -145,34 +144,6 @@ def _day_files(root: Path, start: Optional[date], end: Optional[date]) -> list[P
             continue
         dated.append((file_date, path))
     return [path for _day, path in sorted(dated)]
-
-
-def readiness(root: Path | None = None) -> SourceReadiness:
-    """Aggregate readiness across every ``YYYY-MM-DD.jsonl`` transcript log."""
-    base = root or LynchpinConfig.from_env().transcripts_dir
-    try:
-        files = _day_files(base, None, None)
-    except SourceUnavailableError as exc:
-        status = "missing" if isinstance(exc.__cause__, FileNotFoundError) else "error"
-        return SourceReadiness(status, str(exc), base, None)
-    if not files:
-        return SourceReadiness(
-            status="empty", reason="directory present but no day-log files yet",
-            path=base, row_count=0,
-        )
-    total = 0
-    for f in files:
-        try:
-            with f.open(encoding="utf-8") as fh:
-                total += sum(1 for line in fh if line.strip())
-        except OSError as exc:
-            return SourceReadiness("error", f"could not read {f}: {exc}", base, None)
-    if total == 0:
-        return SourceReadiness(
-            status="empty", reason="day-log files present but no rows yet",
-            path=base, row_count=0,
-        )
-    return SourceReadiness(status="ok", reason="", path=base, row_count=total)
 
 
 def _hydrate_transcript(payload: dict[str, Any]) -> Optional[Transcript]:

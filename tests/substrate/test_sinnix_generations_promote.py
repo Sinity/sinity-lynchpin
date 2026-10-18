@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from lynchpin.sources.sinnix_generations import (
     SinnixGenerationRecord,
     generation_records,
-    readiness,
 )
 from lynchpin.substrate.connection import apply_schema, connect
 from lynchpin.substrate.personal import promote_sinnix_generations
@@ -16,35 +15,6 @@ def _write_jsonl(path, records):
     with path.open("w", encoding="utf-8") as fh:
         for r in records:
             fh.write(json.dumps(r) + "\n")
-
-
-def test_readiness_missing_when_file_absent(tmp_path):
-    r = readiness(path=tmp_path / "absent.jsonl")
-    assert r.status == "missing"
-    assert r.row_count == 0
-
-
-def test_readiness_empty_when_file_has_no_lines(tmp_path):
-    p = tmp_path / "empty.jsonl"
-    p.touch()
-    r = readiness(path=p)
-    assert r.status == "empty"
-    assert r.row_count == 0
-
-
-def test_readiness_ok_counts_rows(tmp_path):
-    p = tmp_path / "g.jsonl"
-    _write_jsonl(p, [
-        {"generation": "45", "activated_at": "2026-05-18T15:32:39+00:00",
-         "store_path": "/nix/store/abc", "sinnix_revision": "deadbeef",
-         "nixos_label": "26.05", "host": "sinnix-prime"},
-        {"generation": "46", "activated_at": "2026-05-18T16:00:00+00:00",
-         "store_path": "/nix/store/def", "sinnix_revision": "cafebabe",
-         "nixos_label": "26.05", "host": "sinnix-prime"},
-    ])
-    r = readiness(path=p)
-    assert r.status == "ok"
-    assert r.row_count == 2
 
 
 def test_generation_records_yields_typed_records(tmp_path):

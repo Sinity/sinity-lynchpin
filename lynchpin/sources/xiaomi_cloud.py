@@ -43,11 +43,10 @@ from typing import Any, Iterator, Optional
 from ..core.config import LynchpinConfig
 from ..core.errors import SourceUnavailableError
 from ..core.parse import parse_datetime
-from ..core.source import SourceReadiness, read_jsonl_with
+from ..core.source import read_jsonl_with
 
 __all__ = [
     "XiaomiEnvelope",
-    "readiness",
     "xiaomi_envelopes",
     "latest_envelopes",
 ]
@@ -123,88 +122,6 @@ def _day_files(root: Path) -> list[Path]:
             continue
         dated.append((match.group(1), path))
     return [path for _stamp, path in sorted(dated)]
-
-
-def readiness(root: Optional[Path] = None) -> SourceReadiness:
-    base = _lane_root(root)
-    try:
-        files = _day_files(base)
-    except FileNotFoundError:
-        return SourceReadiness(
-            status="missing", reason=f"{base} does not exist", path=base, row_count=None,
-        )
-    except OSError as exc:
-        return SourceReadiness(
-            status="error", reason=f"could not list {base}: {exc}", path=base, row_count=None,
-        )
-    if not files:
-        return SourceReadiness(
-            status="empty", reason="lane present but no day files yet", path=base, row_count=0,
-        )
-    total = 0
-    readable = 0
-    read_errors: list[str] = []
-    for path in files:
-        try:
-            with path.open(encoding="utf-8") as fh:
-                total += sum(1 for line in fh if line.strip())
-            readable += 1
-        except (OSError, UnicodeError) as exc:
-            read_errors.append(f"{path.name}: {exc}")
-    if read_errors:
-        return SourceReadiness(
-            status="partial" if readable else "error",
-            reason="could not read day files: " + "; ".join(read_errors)
-            + ("; row count covers readable files only" if readable else ""),
-            path=base,
-            row_count=total if readable else None,
-        )
-    if total == 0:
-        return SourceReadiness(
-            status="empty", reason="day files present but no envelopes yet", path=base, row_count=0,
-        )
-    # The writer appends each pass's data/failure envelopes and then its
-    # vendor_sync_pass receipt. Append order is authoritative when fetchedAt
-    # ties; a trailing non-receipt means the newest pass did not complete.
-    latest: XiaomiEnvelope | None = None
-    try:
-        for envelope in xiaomi_envelopes(root=base):
-            latest = envelope
-    except SourceUnavailableError as exc:
-        return SourceReadiness(
-            status="error", reason=f"lane changed or became unreadable: {exc}",
-            path=base, row_count=None,
-        )
-    if latest is None:
-        return SourceReadiness(
-            status="error", reason="nonempty day files contain no valid envelopes",
-            path=base, row_count=None,
-        )
-    if latest is not None and latest.kind == "vendor_sync_pass":
-        failures = latest.payload.get("failures")
-        if isinstance(failures, int) and failures > 0:
-            return SourceReadiness(
-                status="error",
-                reason=f"latest Xiaomi sync pass recorded {failures} failed lanes",
-                path=base,
-                row_count=total,
-            )
-    elif latest is not None and latest.kind == "vendor_fetch_failed":
-        reason = str(latest.payload.get("reason") or "unknown fetch failure")
-        return SourceReadiness(
-            status="error",
-            reason=f"latest Xiaomi capture envelope is a fetch failure: {reason}",
-            path=base,
-            row_count=total,
-        )
-    elif latest is not None:
-        return SourceReadiness(
-            status="partial",
-            reason="latest Xiaomi synchronization pass has no completion receipt",
-            path=base,
-            row_count=total,
-        )
-    return SourceReadiness(status="ok", reason="", path=base, row_count=total)
 
 
 def xiaomi_envelopes(*, root: Optional[Path] = None) -> Iterator[XiaomiEnvelope]:

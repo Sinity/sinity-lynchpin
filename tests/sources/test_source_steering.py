@@ -15,21 +15,6 @@ def _write_day(root, day, rows):
     return path
 
 
-def test_readiness_missing_dir(tmp_path):
-    r = steering.readiness(tmp_path / "nope")
-    assert r.status == "missing"
-
-
-def test_readiness_counts_rows_across_tables(tmp_path):
-    _write_day(tmp_path, "2026-08-13", [
-        {"_table": "activities", "id": "a1", "name": "task one", "kind": "task", "energy_tier": "any"},
-        {"_table": "reviews", "id": "r1", "ts": "2026-08-13T19:30:00+00:00", "window": "evening"},
-    ])
-    r = steering.readiness(tmp_path)
-    assert r.status == "ok"
-    assert r.row_count == 2
-
-
 def test_commitments_dated_by_created_at(tmp_path):
     _write_day(tmp_path, "2026-08-14", [
         {

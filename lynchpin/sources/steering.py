@@ -36,13 +36,12 @@ from typing import Any, Iterator, Optional
 
 from ..core.config import LynchpinConfig
 from ..core.parse import parse_datetime as _parse_dt, safe_int
-from ..core.source import SourceReadiness, read_jsonl_with
+from ..core.source import read_jsonl_with
 
 __all__ = [
     "Commitment",
     "Activity",
     "Review",
-    "readiness",
     "commitments",
     "activities",
     "reviews",
@@ -113,34 +112,6 @@ def _day_files(root: Path, start: Optional[date], end: Optional[date]) -> list[P
             continue
         dated.append((file_date, path))
     return [path for _day, path in sorted(dated)]
-
-
-def readiness(root: Path | None = None) -> SourceReadiness:
-    """Aggregate readiness across every ``YYYY-MM-DD.jsonl`` export file."""
-    base = root or LynchpinConfig.from_env().steering_jsonl_dir
-    if not base.exists():
-        return SourceReadiness(
-            status="missing", reason=f"{base} does not exist", path=base, row_count=0,
-        )
-    files = sorted(base.glob("*.jsonl"))
-    if not files:
-        return SourceReadiness(
-            status="empty", reason="directory present but no export files yet",
-            path=base, row_count=0,
-        )
-    total = 0
-    for f in files:
-        try:
-            with f.open(encoding="utf-8") as fh:
-                total += sum(1 for line in fh if line.strip())
-        except OSError:
-            continue
-    if total == 0:
-        return SourceReadiness(
-            status="empty", reason="export files present but no rows yet",
-            path=base, row_count=0,
-        )
-    return SourceReadiness(status="ok", reason="", path=base, row_count=total)
 
 
 def _hydrate_commitment(payload: dict[str, Any], export_date: date) -> Optional[Commitment]:

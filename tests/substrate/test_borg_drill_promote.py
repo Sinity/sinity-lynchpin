@@ -3,19 +3,9 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from lynchpin.sources.borg_drill import BorgDrillRun, drill_runs, readiness
+from lynchpin.sources.borg_drill import BorgDrillRun, drill_runs
 from lynchpin.substrate.connection import apply_schema, connect
 from lynchpin.substrate.personal import promote_borg_drill_runs
-
-
-def test_readiness_missing(tmp_path):
-    assert readiness(path=tmp_path / "absent.jsonl").status == "missing"
-
-
-def test_readiness_empty(tmp_path):
-    p = tmp_path / "empty.jsonl"
-    p.touch()
-    assert readiness(path=p).status == "empty"
 
 
 def test_drill_runs_parses_jsonl(tmp_path):

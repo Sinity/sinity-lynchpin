@@ -190,6 +190,8 @@ def _read_manifest_dict(path: Path) -> dict[str, Any]:
 
 def atomic_write_text(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` via a temp-file-then-rename swap."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+
     def write_text(handle: TextIO) -> None:
         handle.write(text)
 

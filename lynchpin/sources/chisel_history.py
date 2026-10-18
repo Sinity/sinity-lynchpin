@@ -20,7 +20,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-from .chisel_cache import atomic_write_text, copy_file
+from ..ingest._manifest import atomic_write_text
+from .chisel_cache import copy_file
 
 from lynchpin.core.primitives import logical_date
 from lynchpin.sources.chisel_inventory import POLICY_VERSION, classify_role

@@ -104,16 +104,6 @@ def test_stale_samples_are_present_with_explicit_freshness(configured):
     assert ready.live_rows is None
 
 
-def test_explicit_exact_counts_propagate_errors(configured):
-    from lynchpin.sources.machine_sqlite import count_sqlite_rows
-    with pytest.raises(sqlite3.Error):
-        count_sqlite_rows(configured, "metric_sample")
-    seed(configured, rows=3)
-    assert count_sqlite_rows(configured, "metric_sample") == 3
-    with pytest.raises(sqlite3.Error):
-        count_sqlite_rows(configured, "absent_table")
-
-
 @pytest.mark.parametrize("source_status, graph_status, count", [
     ("missing", "missing", None), ("empty", "partial", 0),
     ("unavailable", "blocked", None), ("malformed", "blocked", None),

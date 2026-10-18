@@ -13,22 +13,6 @@ def _write(path, records):
             fh.write(json.dumps(record) + "\n")
 
 
-def test_readiness_missing_file(tmp_path):
-    r = pa.readiness(tmp_path / "nope.jsonl")
-    assert r.status == "missing"
-
-
-def test_readiness_ok(tmp_path):
-    path = tmp_path / "ambient-levels.jsonl"
-    _write(path, [
-        {"chunk": "ambient-20260813T000236Z.m4a", "duration_seconds": 300.0,
-         "sample_rate": 8000, "mean_db": -50.0, "max_db": -10.0, "captured_nothing": False},
-    ])
-    r = pa.readiness(path)
-    assert r.status == "ok"
-    assert r.row_count == 1
-
-
 def test_ambient_levels_dedupes_repeated_chunk_keeping_last(tmp_path):
     path = tmp_path / "ambient-levels.jsonl"
     _write(path, [

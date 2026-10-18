@@ -131,87 +131,6 @@ def test_direct_archive_routes_normalized_capabilities_to_index(tmp_path) -> Non
     assert list(archive.iter_lineages(index_snapshot)) == [archive.ArchiveLineage("codex:synthetic-session", "claude-code:parent", "fork")]
 
 
-def test_readiness_introspects_without_scanning_timestamp_coverage(tmp_path) -> None:
-    report = archive.readiness(_archive_root(tmp_path))
-
-    assert report.status == "ready"
-    assert report.coverage.status == "unknown"
-    source = next(schema for schema in report.schemas if schema.database.name == "source")
-    index = next(schema for schema in report.schemas if schema.database.name == "index")
-    embeddings = next(schema for schema in report.schemas if schema.database.name == "embeddings")
-    assert source.capabilities.raw_sessions and source.capabilities.blob_references
-    assert index.capabilities.sessions and index.capabilities.messages and index.capabilities.blocks
-    assert index.capabilities.lineage and index.capabilities.fts
-    assert embeddings.capabilities.embedding_status and embeddings.capabilities.embedding_metadata
-    assert {"origin", "created_at_ms", "updated_at_ms", "authored_user_message_count"} <= set(dict(index.table_columns)["sessions"] or ())
-    assert {"role", "material_origin", "occurred_at_ms"} <= set(dict(index.table_columns)["messages"] or ())
-
-
-def test_readiness_retains_capabilities_when_virtual_table_xinfo_is_unavailable(
-    monkeypatch, tmp_path
-) -> None:
-    root = _archive_root(tmp_path)
-    embeddings = root / "embeddings.db"
-    with sqlite3.connect(embeddings) as conn:
-        conn.execute("CREATE TABLE unavailable_vector (embedding_id TEXT)")
-
-    original_open_readonly = archive.open_readonly
-
-    class FailingXinfoConnection:
-        def __init__(self, connection: sqlite3.Connection) -> None:
-            self._connection = connection
-
-        def execute(self, statement: str, *args, **kwargs):
-            if statement == 'PRAGMA table_xinfo("unavailable_vector")':
-                raise sqlite3.OperationalError("no such module: vec0")
-            return self._connection.execute(statement, *args, **kwargs)
-
-        def __getattr__(self, name: str):
-            return getattr(self._connection, name)
-
-    @contextmanager
-    def failing_open_readonly(path):
-        with original_open_readonly(path) as connection:
-            yield FailingXinfoConnection(connection)
-
-    monkeypatch.setattr(archive, "open_readonly", failing_open_readonly)
-
-    report = archive.readiness(root)
-
-    assert report.status == "ready"
-    assert (
-        report.reason
-        == "source authority and normalized index capabilities are available"
-    )
-    assert {schema.database.name for schema in report.schemas} == {
-        "source",
-        "index",
-        "embeddings",
-    }
-    assert all(
-        schema.capabilities.raw_sessions
-        for schema in report.schemas
-        if schema.database.name == "source"
-    )
-    assert all(
-        schema.capabilities.sessions and schema.capabilities.messages
-        for schema in report.schemas
-        if schema.database.name == "index"
-    )
-    embedding_schema = next(schema for schema in report.schemas if schema.database.name == "embeddings")
-    assert "unavailable_vector" in embedding_schema.tables
-    assert dict(embedding_schema.table_columns)["unavailable_vector"] is None
-    assert embedding_schema.table_introspection_caveats == (
-        archive.TableIntrospectionCaveat(
-            table="unavailable_vector",
-            operation="table_xinfo",
-            reason="no such module: vec0",
-        ),
-    )
-    assert embedding_schema.capabilities.embedding_status
-    assert embedding_schema.capabilities.embedding_metadata
-
-
 def test_snapshot_is_stable_and_readers_remain_read_only(tmp_path) -> None:
     root = _archive_root(tmp_path)
     snapshot = archive.snapshot_capability("messages", tmp_path / "private-run", root)
@@ -342,7 +261,95 @@ def test_user_authored_content_units_preserve_authorship_and_raw_locators(tmp_pa
     }
 
 
-def test_schema_mismatch_and_missing_archive_degrade_through_typed_results(tmp_path) -> None:
+def test_root_resolution_honors_polylogue_archive_override(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured"))
+
+    assert archive.resolve_archive_root() == tmp_path / "configured"
+
+
+def _schemas(root):
+    return tuple(
+        archive.introspect_database(database)
+        for database in archive.archive_databases(root)
+        if database.path.is_file()
+    )
+
+
+def test_introspection_reports_capabilities(tmp_path) -> None:
+    schemas = _schemas(_archive_root(tmp_path))
+
+    source = next(schema for schema in schemas if schema.database.name == "source")
+    index = next(schema for schema in schemas if schema.database.name == "index")
+    embeddings = next(schema for schema in schemas if schema.database.name == "embeddings")
+    assert source.capabilities.raw_sessions and source.capabilities.blob_references
+    assert index.capabilities.sessions and index.capabilities.messages and index.capabilities.blocks
+    assert index.capabilities.lineage and index.capabilities.fts
+    assert embeddings.capabilities.embedding_status and embeddings.capabilities.embedding_metadata
+    assert {"origin", "created_at_ms", "updated_at_ms", "authored_user_message_count"} <= set(dict(index.table_columns)["sessions"] or ())
+    assert {"role", "material_origin", "occurred_at_ms"} <= set(dict(index.table_columns)["messages"] or ())
+
+
+def test_introspection_retains_capabilities_when_virtual_table_xinfo_is_unavailable(
+    monkeypatch, tmp_path
+) -> None:
+    root = _archive_root(tmp_path)
+    embeddings = root / "embeddings.db"
+    with sqlite3.connect(embeddings) as conn:
+        conn.execute("CREATE TABLE unavailable_vector (embedding_id TEXT)")
+
+    original_open_readonly = archive.open_readonly
+
+    class FailingXinfoConnection:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self._connection = connection
+
+        def execute(self, statement: str, *args, **kwargs):
+            if statement == 'PRAGMA table_xinfo("unavailable_vector")':
+                raise sqlite3.OperationalError("no such module: vec0")
+            return self._connection.execute(statement, *args, **kwargs)
+
+        def __getattr__(self, name: str):
+            return getattr(self._connection, name)
+
+    @contextmanager
+    def failing_open_readonly(path):
+        with original_open_readonly(path) as connection:
+            yield FailingXinfoConnection(connection)
+
+    monkeypatch.setattr(archive, "open_readonly", failing_open_readonly)
+
+    schemas = _schemas(root)
+
+    assert {schema.database.name for schema in schemas} == {
+        "source",
+        "index",
+        "embeddings",
+    }
+    assert all(
+        schema.capabilities.raw_sessions
+        for schema in schemas
+        if schema.database.name == "source"
+    )
+    assert all(
+        schema.capabilities.sessions and schema.capabilities.messages
+        for schema in schemas
+        if schema.database.name == "index"
+    )
+    embedding_schema = next(schema for schema in schemas if schema.database.name == "embeddings")
+    assert "unavailable_vector" in embedding_schema.tables
+    assert dict(embedding_schema.table_columns)["unavailable_vector"] is None
+    assert embedding_schema.table_introspection_caveats == (
+        archive.TableIntrospectionCaveat(
+            table="unavailable_vector",
+            operation="table_xinfo",
+            reason="no such module: vec0",
+        ),
+    )
+    assert embedding_schema.capabilities.embedding_status
+    assert embedding_schema.capabilities.embedding_metadata
+
+
+def test_schema_mismatch_degrades_through_typed_errors(tmp_path) -> None:
     root = tmp_path / "archive"
     root.mkdir()
     with sqlite3.connect(root / "source.db") as conn:
@@ -352,13 +359,5 @@ def test_schema_mismatch_and_missing_archive_degrade_through_typed_results(tmp_p
     index = next(item for item in archive.archive_databases(root) if item.name == "index")
     snapshot = archive.snapshot_database(index, tmp_path / "private-run")
 
-    assert archive.readiness(root).status == "degraded"
     with pytest.raises(archive.PolylogueArchiveSchemaError):
         list(archive.iter_messages(snapshot))
-    assert archive.readiness(tmp_path / "absent").status == "missing"
-
-
-def test_root_resolution_honors_polylogue_archive_override(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured"))
-
-    assert archive.resolve_archive_root() == tmp_path / "configured"

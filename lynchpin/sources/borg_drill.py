@@ -24,7 +24,7 @@ from typing import Iterator
 
 from ..core.config import LynchpinConfig
 from ..core.parse import parse_datetime as _parse_dt
-from ..core.source import SourceReadiness, file_readiness, read_jsonl_with
+from ..core.source import read_jsonl_with
 
 
 @dataclass(frozen=True)
@@ -39,10 +39,6 @@ class BorgDrillRun:
     status: str
     stderr_tail: str
     within_days: int
-
-
-def readiness(path: Path | None = None) -> SourceReadiness:
-    return file_readiness(path or LynchpinConfig.from_env().borg_drill_jsonl)
 
 
 def _hydrate(payload: dict) -> BorgDrillRun | None:

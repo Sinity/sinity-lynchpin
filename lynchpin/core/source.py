@@ -66,37 +66,6 @@ class SourceReadiness:
     row_count: int | None
 
 
-def file_readiness(path: Path) -> SourceReadiness:
-    """Compute readiness by counting non-blank lines in a JSONL file.
-
-    Common shape for append-only JSONL sources such as sinnix generations
-    and borg drill runs. Counts non-blank lines as a proxy for row count;
-    the caller can refine if hydration filters further.
-    """
-    from .input_snapshot import read_input_path
-
-    try:
-        with read_input_path(path).open(encoding="utf-8") as fh:
-            count = sum(1 for line in fh if line.strip())
-    except FileNotFoundError:
-        return SourceReadiness("missing", f"{path} does not exist", path, None)
-    except OSError as exc:
-        return SourceReadiness("error", f"could not read {path}: {exc}", path, None)
-    if count == 0:
-        return SourceReadiness(
-            status="empty",
-            reason="file present but no rows yet",
-            path=path,
-            row_count=0,
-        )
-    return SourceReadiness(
-        status="ok",
-        reason="",
-        path=path,
-        row_count=count,
-    )
-
-
 def read_jsonl_with(
     path: Path,
     hydrate: Callable[[dict], Optional[T]],

@@ -169,15 +169,6 @@ class ArchiveFtsReadiness:
 
 
 @dataclass(frozen=True)
-class ArchiveReadiness:
-    status: str
-    reason: str
-    root: Path
-    schemas: tuple[DatabaseSchema, ...]
-    coverage: ArchiveCoverage
-
-
-@dataclass(frozen=True)
 class ArchiveSnapshot:
     database: ArchiveDatabase
     path: Path
@@ -346,39 +337,6 @@ def introspect_database(database: ArchiveDatabase) -> DatabaseSchema:
             embedding_metadata=_matching_table(available, "embedding_metadata") is not None,
         ),
     )
-
-
-def readiness(root: Path | None = None) -> ArchiveReadiness:
-    """Report schema readiness and explicit unknown coverage without row scans."""
-    archive_root = resolve_archive_root(root)
-    coverage = ArchiveCoverage("unknown", "timestamp coverage requires a coherent snapshot scan")
-    if not archive_root.is_dir():
-        return ArchiveReadiness("missing", "archive root does not exist", archive_root, (), coverage)
-    schemas: list[DatabaseSchema] = []
-    failures = False
-    for database in archive_databases(archive_root):
-        if not database.path.is_file():
-            continue
-        try:
-            schemas.append(introspect_database(database))
-        except PolylogueArchiveUnavailableError:
-            failures = True
-    by_name = {schema.database.name: schema for schema in schemas}
-    source = by_name.get("source")
-    index = by_name.get("index")
-    if source is None:
-        status, reason = "missing", "source database is unavailable"
-    elif not source.capabilities.raw_sessions:
-        status, reason = "degraded", "source database lacks raw session authority"
-    elif index is None:
-        status, reason = "degraded", "index database is unavailable"
-    elif not (index.capabilities.sessions and index.capabilities.messages):
-        status, reason = "degraded", "index database lacks normalized session or message tables"
-    elif failures:
-        status, reason = "degraded", "one or more archive databases could not be inspected"
-    else:
-        status, reason = "ready", "source authority and normalized index capabilities are available"
-    return ArchiveReadiness(status, reason, archive_root, tuple(schemas), coverage)
 
 
 def database_for_capability(capability: str, root: Path | None = None) -> ArchiveDatabase:

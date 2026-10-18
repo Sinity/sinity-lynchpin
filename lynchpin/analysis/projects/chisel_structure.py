@@ -20,7 +20,8 @@ from collections import Counter, defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
-from lynchpin.sources.chisel_cache import atomic_write_text, copy_file
+from lynchpin.ingest._manifest import atomic_write_text
+from lynchpin.sources.chisel_cache import copy_file
 from lynchpin.sources.chisel_compact import open_text, resolved_stream
 
 from lynchpin.sources.chisel_inventory import CapturedInventory
@@ -1137,11 +1138,7 @@ def _write_cache(cache: Path | None, key: str, value: Mapping[str, Any]) -> None
         return
     cache.mkdir(parents=True, exist_ok=True)
     target = cache / f"{key}.json"
-    atomic_write_text(
-        target,
-        json.dumps(value, sort_keys=True, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    atomic_write_text(target, json.dumps(value, sort_keys=True, ensure_ascii=False))
 
 
 def _write_metrics_csv(path: Path, rows: list[dict[str, Any]]) -> None:

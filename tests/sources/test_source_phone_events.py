@@ -15,24 +15,6 @@ def _write_day(root, day, records):
     return path
 
 
-def test_readiness_missing_dir(tmp_path):
-    r = pe.readiness(tmp_path / "nope")
-    assert r.status == "missing"
-
-
-def test_readiness_checks_presence_without_counting_history(tmp_path):
-    _write_day(tmp_path, "20260813", [
-        {"kind": "boot", "ts": "2026-08-13T00:01:00Z"},
-        {"kind": "boot", "ts": "2026-08-13T00:02:00Z"},
-    ])
-    _write_day(tmp_path, "20260814", [
-        {"kind": "boot", "ts": "2026-08-14T00:01:00Z"},
-    ])
-    r = pe.readiness(tmp_path)
-    assert r.status == "ok"
-    assert r.row_count is None
-
-
 def test_phone_events_parses_extended_and_compact_ts(tmp_path):
     _write_day(tmp_path, "20260814", [
         {"kind": "boot", "ts": "2026-08-14T00:28:43Z"},
@@ -329,41 +311,6 @@ def test_unfetched_member_mutation_refuses_later_widening(tmp_path, monkeypatch)
         old.write_bytes(b"")
         with pytest.raises(RuntimeError, match="member changed before capture"):
             list(pe.phone_events(root=tmp_path))
-
-
-def test_readiness_limits_payload_reads_and_reports_access_failure(tmp_path, monkeypatch):
-    import io
-    from pathlib import Path
-    _write_day(tmp_path, "20260103", [{"kind":"boot", "ts":"2026-01-03T12:00:00Z"}])
-    original = Path.open
-    reads = []
-    class Limited(io.BytesIO):
-        def read(self, size=-1):
-            assert 0 <= size <= 65536
-            reads.append(size)
-            return super().read(size)
-    def opened(path, *args, **kwargs):
-        if path.name.startswith("events-"):
-            return Limited(b'{"kind":"boot","ts":"2026-01-03T12:00:00Z"}\n' + b' ' * 100000)
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "open", opened)
-    assert pe.readiness(tmp_path).status == "ok"
-    assert sum(reads) <= 65536
-    def denied(path, *args, **kwargs):
-        raise PermissionError("synthetic denied")
-    monkeypatch.setattr(Path, "open", denied)
-    result = pe.readiness(tmp_path)
-    assert result.status == "unavailable" and result.row_count is None
-
-
-def test_readiness_wrong_type_and_oversized_record_are_explicit(tmp_path):
-    path = tmp_path / "events-20260103.jsonl"
-    path.mkdir()
-    assert pe.readiness(tmp_path).status == "unavailable"
-    path.rmdir()
-    path.write_bytes(b" " * 65536)
-    result = pe.readiness(tmp_path)
-    assert result.status == "unknown" and result.row_count is None
 
 
 def test_phone_snapshot_membership_ignores_later_file_arrival(tmp_path, monkeypatch):

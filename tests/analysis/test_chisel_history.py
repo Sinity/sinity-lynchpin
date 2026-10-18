@@ -5,7 +5,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-from lynchpin.sources import chisel_cache
+from lynchpin.ingest import _manifest
 from lynchpin.sources.chisel_history import _coherence_reasons, build_history, freeze_refs
 
 
@@ -163,19 +163,19 @@ def test_concurrent_cache_publication_uses_independent_atomic_temporaries(
 ) -> None:
     target = tmp_path / "cache.json"
     barrier = threading.Barrier(2)
-    replace = chisel_cache.os.replace
+    replace = _manifest.os.replace
 
     def synchronized_replace(source: Path, destination: Path) -> None:
         if Path(destination) == target:
             barrier.wait(timeout=5)
         replace(source, destination)
 
-    monkeypatch.setattr(chisel_cache.os, "replace", synchronized_replace)
+    monkeypatch.setattr(_manifest.os, "replace", synchronized_replace)
     errors: list[BaseException] = []
 
     def publish(payload: str) -> None:
         try:
-            chisel_cache.atomic_write_text(target, payload)
+            _manifest.atomic_write_text(target, payload)
         except BaseException as exc:
             errors.append(exc)
 

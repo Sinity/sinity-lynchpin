@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from lynchpin.core.source import (
-    SourceReadiness,
-    file_readiness,
     read_jsonl_with,
 )
 
@@ -18,25 +16,6 @@ def _hydrate_sample(payload: dict) -> Sample | None:
     if "value" not in payload:
         return None
     return Sample(value=int(payload["value"]))
-
-
-def test_file_readiness_missing(tmp_path):
-    r = file_readiness(tmp_path / "absent.jsonl")
-    assert r == SourceReadiness("missing", f"{tmp_path / 'absent.jsonl'} does not exist",
-                                tmp_path / "absent.jsonl", None)
-
-
-def test_file_readiness_empty(tmp_path):
-    p = tmp_path / "empty.jsonl"
-    p.touch()
-    assert file_readiness(p).status == "empty"
-
-
-def test_file_readiness_ok_counts_nonblank(tmp_path):
-    p = tmp_path / "g.jsonl"
-    p.write_text('{"a": 1}\n\n{"a": 2}\n')
-    assert file_readiness(p).status == "ok"
-    assert file_readiness(p).row_count == 2
 
 
 def test_read_jsonl_with_yields_hydrated_records(tmp_path):

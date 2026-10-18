@@ -9,7 +9,7 @@ import stat
 import re
 import sqlite3
 from collections.abc import Sequence
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,15 +17,6 @@ from typing import Iterator, BinaryIO
 
 from ..core.errors import SourceUnavailableError
 
-from .machine_schema import (
-    validate_block_device_schema,
-    validate_gpu_schema,
-    validate_metric_schema,
-    validate_network_schema,
-    validate_service_state_schema,
-    validate_service_cgroup_io_schema,
-    validate_service_cgroup_pressure_schema,
-)
 
 
 def as_utc(value: str) -> datetime | None:
@@ -252,35 +243,6 @@ def default_route_interface() -> str | None:
     except (OSError, ValueError):
         return None
     return None
-
-
-def count_sqlite_rows(path: Path, table: str) -> int:
-    """Explicit exact-count analysis; source/schema errors propagate, never zero."""
-    with closing(connect_readonly(path)) as conn:
-        if table == "metric_sample":
-            validate_metric_schema(conn)
-        elif table == "service_state":
-            validate_service_state_schema(conn)
-        elif table == "network_sample":
-            validate_network_schema(conn)
-        elif table == "gpu_sample":
-            validate_gpu_schema(conn)
-        elif table == "block_device_sample":
-            validate_block_device_schema(conn)
-        elif table == "service_cgroup_io_sample":
-            validate_service_cgroup_io_schema(conn)
-        elif table == "service_cgroup_pressure_sample":
-            validate_service_cgroup_pressure_schema(conn)
-        if table == "network_sample":
-            default_interface = default_route_interface()
-            if default_interface:
-                return int(
-                    conn.execute(
-                        "SELECT COUNT(*) FROM network_sample WHERE interface = ?",
-                        [default_interface],
-                    ).fetchone()[0]
-                )
-        return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
 
 def json_obj(value: str | None) -> dict[str, object]:
