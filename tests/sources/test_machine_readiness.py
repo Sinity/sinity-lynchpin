@@ -143,7 +143,7 @@ def test_default_interface_presence_never_scans_an_unindexed_network_table(confi
     assert ready.table_status["network_sample"] == "empty"
 
 
-@pytest.mark.parametrize("mode", ["latest", "exhausted", "early-close", "conversion-error"])
+@pytest.mark.parametrize("mode", ["latest", "exhausted", "early-close", "nested-close", "conversion-error"])
 def test_readers_release_connections_and_cursors_without_gc(configured, monkeypatch, mode):
     import gc
     from contextlib import closing
@@ -178,8 +178,8 @@ def test_readers_release_connections_and_cursors_without_gc(configured, monkeypa
                 assert machine.latest_metric_sample(path=configured) is not None
             elif mode == "exhausted":
                 assert len(list(machine.metric_samples(path=configured))) == 2
-            elif mode == "early-close":
-                iterator = machine.metric_samples(path=configured)
+            elif mode in {"early-close", "nested-close"}:
+                iterator = machine.metric_samples() if mode == "nested-close" else machine.metric_samples(path=configured)
                 assert next(iterator) is not None
                 iterator.close()
             else:

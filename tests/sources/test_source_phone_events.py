@@ -364,3 +364,33 @@ def test_readiness_wrong_type_and_oversized_record_are_explicit(tmp_path):
     path.write_bytes(b" " * 65536)
     result = pe.readiness(tmp_path)
     assert result.status == "unknown" and result.row_count is None
+
+
+def test_phone_snapshot_membership_ignores_later_file_arrival(tmp_path, monkeypatch):
+    from datetime import timezone
+    from lynchpin.core.input_snapshot import input_snapshot, read_input_path
+    monkeypatch.setattr(pe, "local_tz", lambda: timezone.utc)
+    _write_day(tmp_path, "20260103", [{"kind":"boot", "ts":"2026-01-03T12:00:00Z"}])
+    with input_snapshot():
+        assert len(list(pe.phone_events(root=tmp_path))) == 1
+        arrived = _write_day(tmp_path, "20260104", [{"kind":"boot", "ts":"2026-01-04T12:00:00Z"}])
+        assert len(list(pe.phone_events(root=tmp_path))) == 1
+        assert not read_input_path(arrived).exists()
+    assert len(list(pe.phone_events(root=tmp_path))) == 2
+
+
+def test_phone_snapshot_local_dst_boundaries_capture_adjacent_utc_days(tmp_path, monkeypatch):
+    from zoneinfo import ZoneInfo
+    from lynchpin.core.input_snapshot import input_snapshot
+    monkeypatch.setattr(pe, "local_tz", lambda: ZoneInfo("Europe/Warsaw"))
+    monkeypatch.setattr("lynchpin.core.parse.local_tz", lambda: ZoneInfo("Europe/Warsaw"))
+    for local, previous, current, prior_inside, current_inside, outside in [
+        (date(2026,3,29), "20260328", "20260329", "2026-03-28T23:30:00Z", "2026-03-29T21:30:00Z", "2026-03-29T22:30:00Z"),
+        (date(2026,10,25), "20261024", "20261025", "2026-10-24T22:30:00Z", "2026-10-25T22:30:00Z", "2026-10-25T23:30:00Z"),
+    ]:
+        first = _write_day(tmp_path, previous, [{"kind":"boot", "ts":prior_inside}])
+        second = _write_day(tmp_path, current, [{"kind":"boot", "ts":current_inside}, {"kind":"boot", "ts":outside}])
+        with input_snapshot() as snapshot:
+            events = list(pe.phone_events(root=tmp_path, start=local, end=local))
+            assert len(events) == 2 and all(event.date == local for event in events)
+            assert set(snapshot.files) == {first, second}
