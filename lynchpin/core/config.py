@@ -145,8 +145,6 @@ class LynchpinConfig:
 
     def available_sources(self) -> dict[str, bool]:
         """Check which data sources actually have data on disk."""
-        from ..sources.machine_segments import machine_available
-
         return {
             "activitywatch": self.activitywatch_db.exists(),
             "atuin": self.atuin_db.exists(),
@@ -175,7 +173,8 @@ class LynchpinConfig:
             "irc": self.irc_root.exists(),
             "irc_raw": (self.irc_root / "_raw").exists(),
             "raw_log": self.raw_log_file.exists(),
-            "machine": machine_available(self.machine_telemetry_db),
+            "machine": self.machine_telemetry_db.exists()
+            or self.machine_telemetry_db.with_name(self.machine_telemetry_db.name + ".segments.json").exists(),
             "xtask_history": self.xtask_history_db.exists(),
             "gmail_takeout": (self.accounts_root / "google/raw/takeout").exists(),
             "raindrop_live": _raindrop_live_available(),

@@ -770,13 +770,10 @@ def test_source_observations_include_control_members_and_active_wal(
     assert str(legacy) in row.recommendation
 
 
-def test_config_and_catalog_refuse_incomplete_source_set(tmp_path, monkeypatch):
-    from dataclasses import replace
-    from lynchpin.core.config import LynchpinConfig
+def test_catalog_refuses_incomplete_source_set(tmp_path, monkeypatch):
     from lynchpin.sources.observability_catalog import ObservabilityInput
 
     current, legacy = sqlite_sources(tmp_path, monkeypatch)
-    cfg = replace(LynchpinConfig.from_env(), machine_telemetry_db=current)
     catalog = ObservabilityInput(
         "machine.telemetry",
         "fixture",
@@ -789,8 +786,6 @@ def test_config_and_catalog_refuse_incomplete_source_set(tmp_path, monkeypatch):
         "retained",
         "inspect",
     )
-    assert cfg.available_sources()["machine"] is True
     assert catalog.exists is True
     legacy.unlink()
-    assert cfg.available_sources()["machine"] is False
     assert catalog.exists is False
