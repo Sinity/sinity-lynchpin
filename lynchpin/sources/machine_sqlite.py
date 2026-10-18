@@ -9,11 +9,9 @@ import stat
 import re
 import sqlite3
 from collections.abc import Sequence
-from contextlib import contextmanager
-from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, BinaryIO
+from typing import BinaryIO
 
 from ..core.errors import SourceUnavailableError
 
@@ -30,21 +28,6 @@ def as_utc(value: str) -> datetime | None:
         return parsed.astimezone(timezone.utc)
     except (TypeError, ValueError):
         return None
-
-
-_EXPECTED_SQLITE_INODE: ContextVar[tuple[Path, int] | None] = ContextVar(
-    "machine_sqlite_inode", default=None
-)
-
-
-@contextmanager
-def expect_sqlite_inode(path: Path, inode: int) -> Iterator[None]:
-    """Bind opening a configured segment to the manifest's selected object."""
-    token = _EXPECTED_SQLITE_INODE.set((path.absolute(), inode))
-    try:
-        yield
-    finally:
-        _EXPECTED_SQLITE_INODE.reset(token)
 
 
 def machine_lock_path(current: Path) -> Path:
@@ -98,40 +81,18 @@ class _ReadConnection(sqlite3.Connection):
 
 
 def connect_readonly(path: Path) -> sqlite3.Connection:
-    expected = _EXPECTED_SQLITE_INODE.get()
-
-    def validate() -> None:
-        if expected is None or expected[0] != path.absolute():
-            return
-        try:
-            if path.stat().st_ino != expected[1]:
-                raise SourceUnavailableError(
-                    "machine",
-                    path=str(path),
-                    reason="SQLite segment replaced while opening",
-                )
-        except OSError as exc:
-            raise SourceUnavailableError(
-                "machine", path=str(path), reason=str(exc)
-            ) from exc
-
+    """Open read-only; the shared source-set lock lives as long as the connection."""
     held = acquire_machine_read_lock(path)
     try:
-        validate()
         conn = sqlite3.connect(
             f"{path.resolve().as_uri()}?mode=ro", uri=True, factory=_ReadConnection
         )
-        conn._source_lock = held
-        try:
-            validate()
-        except BaseException:
-            conn.close()
-            raise
-        return conn
     except BaseException:
         if held is not None:
             held.close()
         raise
+    conn._source_lock = held
+    return conn
 
 
 def has_leading_index(conn: sqlite3.Connection, table: str, column: str) -> bool:

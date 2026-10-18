@@ -22,11 +22,7 @@ from ..core.input_snapshot import (
     read_input_path,
 )
 
-from .machine_sqlite import (
-    expect_sqlite_inode,
-    acquire_machine_read_lock,
-    machine_lock_path,
-)
+from .machine_sqlite import acquire_machine_read_lock, machine_lock_path
 from .machine_models import (
     MachineBlockDeviceSample,
     MachineServiceCgroupIOSample,
@@ -46,6 +42,21 @@ def manifest_path(current: Path) -> Path:
 
 def _unavailable(path: Path, reason: str) -> SourceUnavailableError:
     return SourceUnavailableError("machine", path=str(path), reason=reason)
+
+
+def raise_if_parent_link_broken(path: Path) -> None:
+    """An absent file is missing; a dangling directory link above it is unavailable."""
+    parent = path.parent
+    while True:
+        try:
+            parent.lstat()
+        except FileNotFoundError:
+            if parent == parent.parent:
+                return
+            parent = parent.parent
+        else:
+            parent.stat()  # raises for a dangling intermediate link
+            return
 
 
 def _stat(path: Path) -> tuple[int, int, int, int]:
@@ -157,17 +168,7 @@ def _resolve_machine_sources_unlocked(current: Path) -> MachineSourceSet:
             except FileNotFoundError:
                 if current.is_symlink():
                     raise _unavailable(current, "SQLite source is a dangling link")
-                entrance = current.parent
-                while True:
-                    try:
-                        entrance.lstat()
-                    except FileNotFoundError:
-                        if entrance == entrance.parent:
-                            break
-                        entrance = entrance.parent
-                    else:
-                        entrance.stat()  # broken intermediate links are unavailable
-                        break
+                raise_if_parent_link_broken(current)
                 return MachineSourceSet(current, None, None, ())
             return MachineSourceSet(
                 current,
@@ -280,6 +281,14 @@ def resolve_machine_sources(current: Path) -> MachineSourceSet:
             held.close()
 
 
+def machine_available(current: Path) -> bool:
+    """Whether the configured telemetry has at least one readable segment."""
+    try:
+        return bool(resolve_machine_sources(current))
+    except SourceUnavailableError:
+        return False
+
+
 def machine_source_input_files(cfg: Any) -> tuple[Path, ...]:
     return resolve_machine_sources(Path(cfg.machine_telemetry_db)).input_files()
 
@@ -305,10 +314,7 @@ def read_machine_segment(
         )
         if held is not None:
             stack.enter_context(closing(held))
-        with expect_sqlite_inode(segment.path, segment.version[0]):
-            result = reader(path=segment.path, **kwargs)
-    segment.validate()
-    return result
+        return reader(path=segment.path, **kwargs)
 
 
 def _segment_rows(
@@ -319,20 +325,11 @@ def _segment_rows(
     segment.validate()
     iterator = iter(reader(path=segment.path, **kwargs))
     try:
-        # Priming opens the reader's single connection. Reset the context before
-        # yielding: heap-merged generators resume in a non-stack order.
-        with expect_sqlite_inode(segment.path, segment.version[0]):
-            try:
-                first = next(iterator)
-            except StopIteration:
-                return
-        yield first
         yield from iterator
     finally:
         close = getattr(iterator, "close", None)
         if callable(close):
             close()
-        segment.validate()
 
 
 def _row_order(row: _ObservedRow) -> tuple[Any, ...]:

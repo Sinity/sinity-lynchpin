@@ -275,7 +275,7 @@ def _load_machine_daily() -> dict[str, dict[date, float]]:
     """Daily machine-pressure aggregates from the telemetry capture (read-only)."""
     from contextlib import closing, nullcontext
     from lynchpin.sources.machine_segments import resolve_machine_sources
-    from lynchpin.sources.machine_sqlite import acquire_machine_read_lock, connect_readonly, expect_sqlite_inode
+    from lynchpin.sources.machine_sqlite import acquire_machine_read_lock, connect_readonly
 
     sources = resolve_machine_sources(get_config().machine_telemetry_db)
     out: dict[str, dict[date, float]] = {
@@ -289,9 +289,7 @@ def _load_machine_daily() -> dict[str, dict[date, float]]:
     with closing(held) if held is not None else nullcontext():
         for segment in sources.segments:
             segment.validate()
-            with expect_sqlite_inode(segment.path, segment.version[0]):
-                opened = connect_readonly(segment.path)
-            with closing(opened) as conn:
+            with closing(connect_readonly(segment.path)) as conn:
                 with closing(conn.execute(
                     "SELECT observed_at, io_psi_some_avg60, memory_psi_some_avg60,"
                     " swap_used_mb FROM metric_sample"

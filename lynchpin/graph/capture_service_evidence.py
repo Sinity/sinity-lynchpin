@@ -14,7 +14,7 @@ from lynchpin.core.config import get_config
 from lynchpin.core.errors import LynchpinError, SourceUnavailableError
 from lynchpin.sources.machine_models import MachineServiceState
 from lynchpin.sources.machine_schema import validate_service_state_schema
-from lynchpin.sources.machine_sqlite import as_utc, connect_readonly, expect_sqlite_inode
+from lynchpin.sources.machine_sqlite import acquire_machine_read_lock, as_utc, connect_readonly
 from lynchpin.sources.machine_segments import resolve_machine_sources
 from lynchpin.sources.service_health import MAX_OBSERVATION_GAP, _sweep_unit
 from lynchpin.sources.sinnix_runtime_inventory import read_inventory
@@ -38,12 +38,14 @@ def capture_service_evidence(*, start: datetime, end: datetime, cfg: Any = None)
         if not sources:
             raise SourceUnavailableError("machine", reason="no telemetry SQLite source")
         with ExitStack() as stack:
+            held = acquire_machine_read_lock(sources.current, required=sources.manifest is not None)
+            if held is not None:
+                stack.enter_context(closing(held))
             deadline = time.monotonic()+3.0
             connections = []
             for segment in sources.segments:
                 segment.validate()
-                with expect_sqlite_inode(segment.path, segment.version[0]):
-                    conn = stack.enter_context(closing(connect_readonly(segment.path)))
+                conn = stack.enter_context(closing(connect_readonly(segment.path)))
                 conn.execute("BEGIN")
                 validate_service_state_schema(conn)
                 conn.set_progress_handler(lambda:int(time.monotonic()>=deadline),1000)
@@ -59,8 +61,6 @@ def capture_service_evidence(*, start: datetime, end: datetime, cfg: Any = None)
                 if key not in cache:
                     cache[key]=_read_service(tuple(connections),host=inventory.hostname,unit=key[0],scope=key[1],start=start,end=end,deadline=deadline)
                 result["captures"].append({**record,**cache[key]})
-        for segment in sources.segments:
-            segment.validate()
         result["status"]="available" if all(row["status"] in {"observed","unbound"} for row in result["captures"]) else "partial"
     except (OSError,ValueError,TypeError,KeyError,sqlite3.Error,RuntimeError,LynchpinError) as exc:
         result["reason"]=str(exc)

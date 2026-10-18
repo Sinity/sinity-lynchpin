@@ -388,33 +388,6 @@ def test_partial_merged_iterator_closes_all_actual_connections_without_gc(
             conn.execute("SELECT 1")
 
 
-def test_segment_replacement_during_connection_open_refuses_and_closes(
-    tmp_path, monkeypatch
-):
-    import shutil
-    import sqlite3
-    from lynchpin.sources import machine, machine_sqlite
-
-    current, _ = sqlite_sources(tmp_path, monkeypatch)
-    original, connections = sqlite3.connect, []
-
-    def connect(*args, **kwargs):
-        conn = original(*args, **kwargs)
-        connections.append(conn)
-        if str(current) in str(args[0]):
-            replacement = tmp_path / "replacement"
-            shutil.copyfile(current, replacement)
-            replacement.replace(current)
-        return conn
-
-    monkeypatch.setattr(machine_sqlite.sqlite3, "connect", connect)
-    with pytest.raises(SourceUnavailableError):
-        list(machine.metric_samples())
-    for conn in connections:
-        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-            conn.execute("SELECT 1")
-
-
 def test_materialized_historical_days_keep_legacy_rows_and_refuse_missing_members(
     tmp_path, monkeypatch
 ):

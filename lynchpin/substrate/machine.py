@@ -8,6 +8,7 @@ import sqlite3
 from functools import partial
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lynchpin.substrate._filters import add_in_filter, build_where
@@ -1628,7 +1629,6 @@ def load_machine_promotion_freshness(
     live_db_path: Any = None,
     refresh_id: str | None = None,
     window: tuple[date, date] | None = None,
-    _deadline: float | None = None,
 ) -> list[dict[str, Any]]:
     """Compare each machine substrate table's newest row against the live source.
 
@@ -1649,81 +1649,16 @@ def load_machine_promotion_freshness(
     even when the promotion pipeline itself never got a chance to record a
     failure.
     """
-    from pathlib import Path as _Path
+    import time
+    from contextlib import closing, nullcontext
 
     from lynchpin.core.config import get_config
     from lynchpin.core.errors import SourceUnavailableError
-    from lynchpin.sources.machine_sqlite import as_utc, connect_readonly, latest_observed_at
+    from lynchpin.sources.machine_segments import resolve_machine_sources
+    from lynchpin.sources.machine_sqlite import acquire_machine_read_lock, as_utc
 
     if window is not None and window[1] <= window[0]:
         raise ValueError("historical comparison requires a nonempty half-open window")
-    if live_db_path is None:
-        import time
-        from contextlib import closing, nullcontext
-        from lynchpin.sources.machine_segments import resolve_machine_sources
-        from lynchpin.sources.machine_sqlite import acquire_machine_read_lock, expect_sqlite_inode
-
-        configured = get_config().machine_telemetry_db
-        if configured is None:
-            raise SourceUnavailableError("machine", reason="telemetry database is not configured")
-        try:
-            sources = resolve_machine_sources(configured)
-        except SourceUnavailableError as exc:
-            raise SourceUnavailableError("machine", path=str(configured), reason=f"telemetry database unavailable: {exc}") from exc
-        if not sources.segments:
-            raise SourceUnavailableError("machine", path=str(configured), reason="telemetry database is missing")
-        deadline = time.monotonic() + 2.0
-        grouped: dict[str, list[dict[str, Any]]] = {}
-        held = acquire_machine_read_lock(sources.current, required=sources.manifest is not None)
-        with closing(held) if held is not None else nullcontext():
-            for segment in sources.segments:
-                segment.validate()
-                with expect_sqlite_inode(segment.path, segment.version[0]):
-                    entries = load_machine_promotion_freshness(
-                        conn, max_lag_hours=max_lag_hours, live_db_path=segment.path,
-                        refresh_id=refresh_id, window=window, _deadline=deadline,
-                    )
-                segment.validate()
-                for entry in entries:
-                    grouped.setdefault(entry["table"], []).append(entry)
-        merged = []
-        for entries in grouped.values():
-            if len(entries) != len(sources.segments):
-                merged.append({"table": entries[0]["table"], "live_table": entries[0]["live_table"],
-                               "error": "table is absent from a required telemetry segment", "stale": None})
-                continue
-            failures = [entry for entry in entries if entry.get("error")]
-            if failures:
-                merged.append({**failures[0], "stale": None})
-                continue
-            result = dict(entries[0])
-            live_values = [as_utc(entry["live_max_observed_at"]) for entry in entries
-                           if entry.get("live_max_observed_at")]
-            latest = max((value for value in live_values if value is not None), default=None)
-            substrate = as_utc(result["substrate_max_observed_at"]) if result.get("substrate_max_observed_at") else None
-            if latest is not None:
-                result["live_max_observed_at"] = latest.isoformat()
-                result["lag_hours"] = (latest - substrate).total_seconds() / 3600 if substrate else None
-                result["stale"] = substrate is None or result["lag_hours"] > max_lag_hours
-            if window is not None:
-                history_errors = [entry["history_error"] for entry in entries if entry.get("history_error")]
-                if history_errors:
-                    result.update(history_error="; ".join(history_errors), live_window_rows=None,
-                                  window_row_count_agrees=None)
-                else:
-                    result["live_window_rows"] = sum(entry["live_window_rows"] for entry in entries)
-                    result["window_row_count_agrees"] = result["live_window_rows"] == result["substrate_window_rows"]
-            merged.append(result)
-        return merged
-    cfg = get_config()
-    db_path = _Path(live_db_path) if live_db_path is not None else cfg.machine_telemetry_db
-    results: list[dict[str, Any]] = []
-    if db_path is None or not db_path.is_file():
-        raise SourceUnavailableError(
-            "machine", path=str(db_path) if db_path is not None else None,
-            reason="telemetry database is not configured or is not a regular file",
-        )
-
     from lynchpin.substrate.snapshots import latest_materialized_refresh_id
 
     if refresh_id is None:
@@ -1736,8 +1671,79 @@ def load_machine_promotion_freshness(
             if has_runs and conn.execute("SELECT 1 FROM substrate_promotion_run LIMIT 1").fetchone():
                 raise SourceUnavailableError("machine substrate", reason="no serving promotion generation")
 
-    import time
-    history_deadline = _deadline if _deadline is not None else time.monotonic() + 2.0
+    deadline = time.monotonic() + 2.0
+    if live_db_path is not None:
+        return _file_freshness(conn, Path(live_db_path), max_lag_hours=max_lag_hours, refresh_id=refresh_id,
+                               window=window, deadline=deadline, include_empty=False)
+    configured = get_config().machine_telemetry_db
+    if configured is None:
+        raise SourceUnavailableError("machine", reason="telemetry database is not configured")
+    try:
+        sources = resolve_machine_sources(configured)
+    except SourceUnavailableError as exc:
+        raise SourceUnavailableError("machine", path=str(configured), reason=f"telemetry database unavailable: {exc}") from exc
+    if not sources.segments:
+        raise SourceUnavailableError("machine", path=str(configured), reason="telemetry database is missing")
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    held = acquire_machine_read_lock(sources.current, required=sources.manifest is not None)
+    with closing(held) if held is not None else nullcontext():
+        for segment in sources.segments:
+            segment.validate()
+            for entry in _file_freshness(conn, segment.path, max_lag_hours=max_lag_hours, refresh_id=refresh_id,
+                                         window=window, deadline=deadline, include_empty=True):
+                grouped.setdefault(entry["table"], []).append(entry)
+    merged = []
+    for entries in grouped.values():
+        if len(entries) != len(sources.segments):
+            merged.append({"table": entries[0]["table"], "live_table": entries[0]["live_table"],
+                           "error": "table is absent from a required telemetry segment", "stale": None})
+            continue
+        failures = [entry for entry in entries if entry.get("error")]
+        if failures:
+            merged.append({**failures[0], "stale": None})
+            continue
+        result = dict(entries[0])
+        live_values = [as_utc(entry["live_max_observed_at"]) for entry in entries
+                       if entry.get("live_max_observed_at")]
+        latest = max((value for value in live_values if value is not None), default=None)
+        substrate = as_utc(result["substrate_max_observed_at"]) if result.get("substrate_max_observed_at") else None
+        if latest is not None:
+            result["live_max_observed_at"] = latest.isoformat()
+            result["lag_hours"] = (latest - substrate).total_seconds() / 3600 if substrate else None
+            result["stale"] = substrate is None or result["lag_hours"] > max_lag_hours
+        if window is not None:
+            history_errors = [entry["history_error"] for entry in entries if entry.get("history_error")]
+            if history_errors:
+                result.update(history_error="; ".join(history_errors), live_window_rows=None,
+                              window_row_count_agrees=None)
+            else:
+                result["live_window_rows"] = sum(entry["live_window_rows"] for entry in entries)
+                result["window_row_count_agrees"] = result["live_window_rows"] == result["substrate_window_rows"]
+        merged.append(result)
+    return merged
+
+
+def _file_freshness(
+    conn: "duckdb.DuckDBPyConnection",
+    db_path: Path,
+    *,
+    max_lag_hours: float,
+    refresh_id: str | None,
+    window: tuple[date, date] | None,
+    deadline: float,
+    include_empty: bool,
+) -> list[dict[str, Any]]:
+    """Freshness of one SQLite file. ``include_empty`` reports tables that
+    exist but hold no rows, so per-segment results can be merged."""
+    from lynchpin.core.errors import SourceUnavailableError
+    from lynchpin.sources.machine_sqlite import as_utc, connect_readonly, latest_observed_at
+
+    if not db_path.is_file():
+        raise SourceUnavailableError(
+            "machine", path=str(db_path),
+            reason="telemetry database is not configured or is not a regular file",
+        )
+    results: list[dict[str, Any]] = []
     sconn = connect_readonly(db_path)
     try:
         sconn.execute("BEGIN")
@@ -1769,11 +1775,11 @@ def load_machine_promotion_freshness(
                         "table": duck_table, "live_table": live_table,
                         "error": "latest live observed_at is invalid", "stale": None,
                     })
-                elif window is not None or _deadline is not None:
+                elif window is not None or include_empty:
                     results.append({
                         **(_machine_window_row_counts(
                             conn, sconn, duck_table=duck_table, live_table=live_table,
-                            refresh_id=refresh_id, window=window, deadline=history_deadline,
+                            refresh_id=refresh_id, window=window, deadline=deadline,
                         ) if window is not None else {}),
                         "table": duck_table, "live_table": live_table,
                         "refresh_id": refresh_id, "lag_hours": None, "stale": False,
@@ -1816,7 +1822,7 @@ def load_machine_promotion_freshness(
             if window is not None:
                 history = _machine_window_row_counts(
                     conn, sconn, duck_table=duck_table, live_table=live_table,
-                    refresh_id=refresh_id, window=window, deadline=history_deadline,
+                    refresh_id=refresh_id, window=window, deadline=deadline,
                 )
             results.append(
                 {

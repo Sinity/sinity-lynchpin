@@ -48,13 +48,9 @@ class ObservabilityInput:
         if self.path is None:
             return None
         if self.id == "machine.telemetry":
-            from ..core.errors import SourceUnavailableError
-            from .machine_segments import resolve_machine_sources
+            from .machine_segments import machine_available
 
-            try:
-                return bool(resolve_machine_sources(self.path))
-            except SourceUnavailableError:
-                return False
+            return machine_available(self.path)
         return self.path.exists()
 
 

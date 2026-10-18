@@ -74,7 +74,13 @@ from .machine_sqlite import (
     window_select,
 )
 from .machine_package import iter_machine_table_rows, machine_table_available
-from .machine_segments import MachineSourceSet, resolve_machine_sources, iter_machine_segments, read_machine_segment
+from .machine_segments import (
+    MachineSourceSet,
+    iter_machine_segments,
+    raise_if_parent_link_broken,
+    read_machine_segment,
+    resolve_machine_sources,
+)
 
 __all__ = [
     "MachineBlockDeviceSample",
@@ -204,17 +210,7 @@ def _readiness_file(*, path: Path, now: datetime | None = None) -> MachineSource
         try:
             metadata = path.stat()
         except FileNotFoundError:
-            entrance = path
-            while True:
-                try:
-                    entrance.lstat()
-                except FileNotFoundError:
-                    if entrance == entrance.parent:
-                        break
-                    entrance = entrance.parent
-                else:
-                    entrance.stat()  # dangling intermediate entrances are unavailable
-                    break
+            raise_if_parent_link_broken(path)
             return MachineSourceReadiness("missing", "machine telemetry database is absent", path)
         if not stat.S_ISREG(metadata.st_mode):
             raise OSError("machine telemetry database is not a regular file")
