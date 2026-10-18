@@ -83,3 +83,26 @@ def test_budget_failure_does_not_return_partial_measurements_as_zero(tmp_path):
         row=_read_service(conn,host='fixture-host',unit='shared.service',scope='system',start=start,end=start+timedelta(seconds=20),deadline=-1)
     assert row['status']=='unavailable' and row['inactive_seconds'] is None
     assert row['unobserved_seconds'] is None
+
+
+def test_service_evidence_closes_connection_on_success_and_failure(tmp_path, monkeypatch):
+    import importlib
+    import pytest
+    module = importlib.import_module("lynchpin.graph.capture_service_evidence")
+    cfg = fixture(tmp_path)
+    original = module.connect_readonly
+    connections = []
+    def connect(path):
+        conn = original(path)
+        connections.append(conn)
+        return conn
+    monkeypatch.setattr(module, "connect_readonly", connect)
+    start = datetime(2026, 6, 6, tzinfo=timezone.utc)
+    assert module.capture_service_evidence(start=start, end=start+timedelta(seconds=20), cfg=cfg)["status"] == "available"
+    def fail(conn):
+        raise sqlite3.OperationalError("synthetic schema failure")
+    monkeypatch.setattr(module, "validate_service_state_schema", fail)
+    assert module.capture_service_evidence(start=start, end=start+timedelta(seconds=20), cfg=cfg)["status"] == "unavailable"
+    for conn in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            conn.execute("SELECT 1")

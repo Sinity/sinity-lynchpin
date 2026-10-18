@@ -247,16 +247,17 @@ def metric_samples(
     if not db.exists():
         return
     where, params = _observed_at_window(start, end)
-    with connect_readonly(db) as conn:
+    with closing(connect_readonly(db)) as conn:
         validate_metric_schema(conn)
         sql = "SELECT " + ", ".join(metric_columns(conn)) + " FROM metric_sample"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY observed_at"
         conn.row_factory = sqlite3.Row
-        for row in conn.execute(sql, params):
-            if sample := _metric_sample_from_sqlite_row(row):
-                yield sample
+        with closing(conn.execute(sql, params)) as cursor:
+            for row in cursor:
+                if sample := _metric_sample_from_sqlite_row(row):
+                    yield sample
 
 
 def latest_metric_sample(*, path: Path | None = None) -> MachineMetricSample | None:
@@ -274,7 +275,7 @@ def latest_metric_sample(*, path: Path | None = None) -> MachineMetricSample | N
     db = path
     if not db.exists():
         return None
-    with connect_readonly(db) as conn:
+    with closing(connect_readonly(db)) as conn:
         validate_metric_schema(conn)
         conn.row_factory = sqlite3.Row
         row = conn.execute(
@@ -444,7 +445,7 @@ def service_states(
     if not db.exists():
         return
     where, params = _observed_at_window(start, end)
-    with connect_readonly(db) as conn:
+    with closing(connect_readonly(db)) as conn:
         validate_service_state_schema(conn)
         columns = service_state_columns(conn)
         sql = window_select(
@@ -453,53 +454,54 @@ def service_states(
             index="service_state_unit_time",
         )
         conn.row_factory = sqlite3.Row
-        for row in conn.execute(sql, params):
-            observed_at = as_utc(row["observed_at"])
-            if observed_at is None:
-                continue
-            row_keys = row.keys()
-            yield MachineServiceState(
-                observed_at=observed_at,
-                host=row["host"],
-                boot_id=row["boot_id"],
-                unit=row["unit"],
-                scope=row["scope"],
-                active_state=row["active_state"],
-                sub_state=row["sub_state"],
-                main_pid=row["main_pid"],
-                control_group=row["control_group"],
-                memory_current_bytes=row["memory_current_bytes"],
-                memory_anon_bytes=row["memory_anon_bytes"]
-                if "memory_anon_bytes" in row_keys
-                else None,
-                memory_file_bytes=row["memory_file_bytes"]
-                if "memory_file_bytes" in row_keys
-                else None,
-                memory_kernel_bytes=row["memory_kernel_bytes"]
-                if "memory_kernel_bytes" in row_keys
-                else None,
-                memory_slab_bytes=row["memory_slab_bytes"]
-                if "memory_slab_bytes" in row_keys
-                else None,
-                memory_sock_bytes=row["memory_sock_bytes"]
-                if "memory_sock_bytes" in row_keys
-                else None,
-                memory_shmem_bytes=row["memory_shmem_bytes"]
-                if "memory_shmem_bytes" in row_keys
-                else None,
-                memory_swapcached_bytes=row["memory_swapcached_bytes"]
-                if "memory_swapcached_bytes" in row_keys
-                else None,
-                memory_zswap_bytes=row["memory_zswap_bytes"]
-                if "memory_zswap_bytes" in row_keys
-                else None,
-                memory_zswapped_bytes=row["memory_zswapped_bytes"]
-                if "memory_zswapped_bytes" in row_keys
-                else None,
-                cpu_usage_nsec=row["cpu_usage_nsec"],
-                io_read_bytes=row["io_read_bytes"],
-                io_write_bytes=row["io_write_bytes"],
-            )
+        with closing(conn.execute(sql, params)) as cursor:
+            for row in cursor:
+                observed_at = as_utc(row["observed_at"])
+                if observed_at is None:
+                    continue
+                row_keys = row.keys()
+                yield MachineServiceState(
+                    observed_at=observed_at,
+                    host=row["host"],
+                    boot_id=row["boot_id"],
+                    unit=row["unit"],
+                    scope=row["scope"],
+                    active_state=row["active_state"],
+                    sub_state=row["sub_state"],
+                    main_pid=row["main_pid"],
+                    control_group=row["control_group"],
+                    memory_current_bytes=row["memory_current_bytes"],
+                    memory_anon_bytes=row["memory_anon_bytes"]
+                    if "memory_anon_bytes" in row_keys
+                    else None,
+                    memory_file_bytes=row["memory_file_bytes"]
+                    if "memory_file_bytes" in row_keys
+                    else None,
+                    memory_kernel_bytes=row["memory_kernel_bytes"]
+                    if "memory_kernel_bytes" in row_keys
+                    else None,
+                    memory_slab_bytes=row["memory_slab_bytes"]
+                    if "memory_slab_bytes" in row_keys
+                    else None,
+                    memory_sock_bytes=row["memory_sock_bytes"]
+                    if "memory_sock_bytes" in row_keys
+                    else None,
+                    memory_shmem_bytes=row["memory_shmem_bytes"]
+                    if "memory_shmem_bytes" in row_keys
+                    else None,
+                    memory_swapcached_bytes=row["memory_swapcached_bytes"]
+                    if "memory_swapcached_bytes" in row_keys
+                    else None,
+                    memory_zswap_bytes=row["memory_zswap_bytes"]
+                    if "memory_zswap_bytes" in row_keys
+                    else None,
+                    memory_zswapped_bytes=row["memory_zswapped_bytes"]
+                    if "memory_zswapped_bytes" in row_keys
+                    else None,
+                    cpu_usage_nsec=row["cpu_usage_nsec"],
+                    io_read_bytes=row["io_read_bytes"],
+                    io_write_bytes=row["io_write_bytes"],
+                )
 
 
 def block_device_samples(
@@ -530,41 +532,42 @@ def block_device_samples(
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY observed_at, device"
-    with connect_readonly(db) as conn:
+    with closing(connect_readonly(db)) as conn:
         if not table_exists(conn, "block_device_sample"):
             return
         validate_block_device_schema(conn)
         conn.row_factory = sqlite3.Row
-        for row in conn.execute(sql, params):
-            observed_at = as_utc(row["observed_at"])
-            if observed_at is None:
-                continue
-            yield MachineBlockDeviceSample(
-                observed_at=observed_at,
-                host=row["host"],
-                boot_id=row["boot_id"],
-                source_schema_version=int(row["schema_version"]),
-                major=row["major"],
-                minor=row["minor"],
-                device=row["device"],
-                reads_completed=row["reads_completed"],
-                reads_merged=row["reads_merged"],
-                sectors_read=row["sectors_read"],
-                read_time_ms=row["read_time_ms"],
-                writes_completed=row["writes_completed"],
-                writes_merged=row["writes_merged"],
-                sectors_written=row["sectors_written"],
-                write_time_ms=row["write_time_ms"],
-                ios_in_progress=row["ios_in_progress"],
-                io_time_ms=row["io_time_ms"],
-                weighted_io_time_ms=row["weighted_io_time_ms"],
-                discards_completed=row["discards_completed"],
-                discards_merged=row["discards_merged"],
-                sectors_discarded=row["sectors_discarded"],
-                discard_time_ms=row["discard_time_ms"],
-                flushes_completed=row["flushes_completed"],
-                flush_time_ms=row["flush_time_ms"],
-            )
+        with closing(conn.execute(sql, params)) as cursor:
+            for row in cursor:
+                observed_at = as_utc(row["observed_at"])
+                if observed_at is None:
+                    continue
+                yield MachineBlockDeviceSample(
+                    observed_at=observed_at,
+                    host=row["host"],
+                    boot_id=row["boot_id"],
+                    source_schema_version=int(row["schema_version"]),
+                    major=row["major"],
+                    minor=row["minor"],
+                    device=row["device"],
+                    reads_completed=row["reads_completed"],
+                    reads_merged=row["reads_merged"],
+                    sectors_read=row["sectors_read"],
+                    read_time_ms=row["read_time_ms"],
+                    writes_completed=row["writes_completed"],
+                    writes_merged=row["writes_merged"],
+                    sectors_written=row["sectors_written"],
+                    write_time_ms=row["write_time_ms"],
+                    ios_in_progress=row["ios_in_progress"],
+                    io_time_ms=row["io_time_ms"],
+                    weighted_io_time_ms=row["weighted_io_time_ms"],
+                    discards_completed=row["discards_completed"],
+                    discards_merged=row["discards_merged"],
+                    sectors_discarded=row["sectors_discarded"],
+                    discard_time_ms=row["discard_time_ms"],
+                    flushes_completed=row["flushes_completed"],
+                    flush_time_ms=row["flush_time_ms"],
+                )
 
 
 def service_cgroup_io_samples(
@@ -595,32 +598,33 @@ def service_cgroup_io_samples(
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY observed_at, scope, unit, major, minor"
-    with connect_readonly(db) as conn:
+    with closing(connect_readonly(db)) as conn:
         if not table_exists(conn, "service_cgroup_io_sample"):
             return
         validate_service_cgroup_io_schema(conn)
         conn.row_factory = sqlite3.Row
-        for row in conn.execute(sql, params):
-            observed_at = as_utc(row["observed_at"])
-            if observed_at is None:
-                continue
-            yield MachineServiceCgroupIOSample(
-                observed_at=observed_at,
-                host=row["host"],
-                boot_id=row["boot_id"],
-                source_schema_version=int(row["schema_version"]),
-                unit=row["unit"],
-                scope=row["scope"],
-                control_group=row["control_group"],
-                major=row["major"],
-                minor=row["minor"],
-                rbytes=row["rbytes"],
-                wbytes=row["wbytes"],
-                rios=row["rios"],
-                wios=row["wios"],
-                dbytes=row["dbytes"],
-                dios=row["dios"],
-            )
+        with closing(conn.execute(sql, params)) as cursor:
+            for row in cursor:
+                observed_at = as_utc(row["observed_at"])
+                if observed_at is None:
+                    continue
+                yield MachineServiceCgroupIOSample(
+                    observed_at=observed_at,
+                    host=row["host"],
+                    boot_id=row["boot_id"],
+                    source_schema_version=int(row["schema_version"]),
+                    unit=row["unit"],
+                    scope=row["scope"],
+                    control_group=row["control_group"],
+                    major=row["major"],
+                    minor=row["minor"],
+                    rbytes=row["rbytes"],
+                    wbytes=row["wbytes"],
+                    rios=row["rios"],
+                    wios=row["wios"],
+                    dbytes=row["dbytes"],
+                    dios=row["dios"],
+                )
 
 
 def service_cgroup_pressure_samples(
@@ -651,44 +655,45 @@ def service_cgroup_pressure_samples(
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY observed_at, scope, unit"
-    with connect_readonly(db) as conn:
+    with closing(connect_readonly(db)) as conn:
         if not table_exists(conn, "service_cgroup_pressure_sample"):
             return
         validate_service_cgroup_pressure_schema(conn)
         conn.row_factory = sqlite3.Row
-        for row in conn.execute(sql, params):
-            observed_at = as_utc(row["observed_at"])
-            if observed_at is None:
-                continue
-            yield MachineServiceCgroupPressureSample(
-                observed_at=observed_at,
-                host=row["host"],
-                boot_id=row["boot_id"],
-                source_schema_version=int(row["schema_version"]),
-                unit=row["unit"],
-                scope=row["scope"],
-                control_group=row["control_group"],
-                cpu_some_avg10=row["cpu_some_avg10"],
-                cpu_some_avg60=row["cpu_some_avg60"],
-                cpu_some_avg300=row["cpu_some_avg300"],
-                cpu_some_total_us=row["cpu_some_total_us"],
-                io_some_avg10=row["io_some_avg10"],
-                io_some_avg60=row["io_some_avg60"],
-                io_some_avg300=row["io_some_avg300"],
-                io_some_total_us=row["io_some_total_us"],
-                io_full_avg10=row["io_full_avg10"],
-                io_full_avg60=row["io_full_avg60"],
-                io_full_avg300=row["io_full_avg300"],
-                io_full_total_us=row["io_full_total_us"],
-                memory_some_avg10=row["memory_some_avg10"],
-                memory_some_avg60=row["memory_some_avg60"],
-                memory_some_avg300=row["memory_some_avg300"],
-                memory_some_total_us=row["memory_some_total_us"],
-                memory_full_avg10=row["memory_full_avg10"],
-                memory_full_avg60=row["memory_full_avg60"],
-                memory_full_avg300=row["memory_full_avg300"],
-                memory_full_total_us=row["memory_full_total_us"],
-            )
+        with closing(conn.execute(sql, params)) as cursor:
+            for row in cursor:
+                observed_at = as_utc(row["observed_at"])
+                if observed_at is None:
+                    continue
+                yield MachineServiceCgroupPressureSample(
+                    observed_at=observed_at,
+                    host=row["host"],
+                    boot_id=row["boot_id"],
+                    source_schema_version=int(row["schema_version"]),
+                    unit=row["unit"],
+                    scope=row["scope"],
+                    control_group=row["control_group"],
+                    cpu_some_avg10=row["cpu_some_avg10"],
+                    cpu_some_avg60=row["cpu_some_avg60"],
+                    cpu_some_avg300=row["cpu_some_avg300"],
+                    cpu_some_total_us=row["cpu_some_total_us"],
+                    io_some_avg10=row["io_some_avg10"],
+                    io_some_avg60=row["io_some_avg60"],
+                    io_some_avg300=row["io_some_avg300"],
+                    io_some_total_us=row["io_some_total_us"],
+                    io_full_avg10=row["io_full_avg10"],
+                    io_full_avg60=row["io_full_avg60"],
+                    io_full_avg300=row["io_full_avg300"],
+                    io_full_total_us=row["io_full_total_us"],
+                    memory_some_avg10=row["memory_some_avg10"],
+                    memory_some_avg60=row["memory_some_avg60"],
+                    memory_some_avg300=row["memory_some_avg300"],
+                    memory_some_total_us=row["memory_some_total_us"],
+                    memory_full_avg10=row["memory_full_avg10"],
+                    memory_full_avg60=row["memory_full_avg60"],
+                    memory_full_avg300=row["memory_full_avg300"],
+                    memory_full_total_us=row["memory_full_total_us"],
+                )
 
 
 def process_io_delta_samples(
@@ -711,7 +716,7 @@ def process_io_delta_samples(
     if not db.exists():
         return
     where, params = _observed_at_window(start, end)
-    with connect_readonly(db) as conn:
+    with closing(connect_readonly(db)) as conn:
         if not table_exists(conn, "process_io_delta_sample"):
             return
         validate_process_io_delta_schema(conn)
@@ -723,39 +728,40 @@ def process_io_delta_samples(
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY observed_at, total_bytes_delta DESC, total_syscalls_delta DESC"
         conn.row_factory = sqlite3.Row
-        for row in conn.execute(sql, params):
-            observed_at = as_utc(row["observed_at"])
-            if observed_at is None:
-                continue
-            row_keys = row.keys()
-            yield MachineProcessIODeltaSample(
-                observed_at=observed_at,
-                host=row["host"],
-                boot_id=row["boot_id"],
-                source_schema_version=int(row["schema_version"]),
-                interval_s=float(row["interval_s"]),
-                pid=int(row["pid"]),
-                process_start_time_ticks=int(row["process_start_time_ticks"]),
-                comm=row["comm"],
-                exe=row["exe"],
-                cgroup=row["cgroup"],
-                unit=row["unit"],
-                scope=row["scope"],
-                command_line=row["command_line"]
-                if "command_line" in row_keys
-                else None,
-                read_bytes_delta=int(row["read_bytes_delta"]),
-                write_bytes_delta=int(row["write_bytes_delta"]),
-                cancelled_write_bytes_delta=int(
-                    row["cancelled_write_bytes_delta"]
-                ),
-                read_chars_delta=int(row["read_chars_delta"]),
-                write_chars_delta=int(row["write_chars_delta"]),
-                read_syscalls_delta=int(row["read_syscalls_delta"]),
-                write_syscalls_delta=int(row["write_syscalls_delta"]),
-                total_bytes_delta=int(row["total_bytes_delta"]),
-                total_syscalls_delta=int(row["total_syscalls_delta"]),
-            )
+        with closing(conn.execute(sql, params)) as cursor:
+            for row in cursor:
+                observed_at = as_utc(row["observed_at"])
+                if observed_at is None:
+                    continue
+                row_keys = row.keys()
+                yield MachineProcessIODeltaSample(
+                    observed_at=observed_at,
+                    host=row["host"],
+                    boot_id=row["boot_id"],
+                    source_schema_version=int(row["schema_version"]),
+                    interval_s=float(row["interval_s"]),
+                    pid=int(row["pid"]),
+                    process_start_time_ticks=int(row["process_start_time_ticks"]),
+                    comm=row["comm"],
+                    exe=row["exe"],
+                    cgroup=row["cgroup"],
+                    unit=row["unit"],
+                    scope=row["scope"],
+                    command_line=row["command_line"]
+                    if "command_line" in row_keys
+                    else None,
+                    read_bytes_delta=int(row["read_bytes_delta"]),
+                    write_bytes_delta=int(row["write_bytes_delta"]),
+                    cancelled_write_bytes_delta=int(
+                        row["cancelled_write_bytes_delta"]
+                    ),
+                    read_chars_delta=int(row["read_chars_delta"]),
+                    write_chars_delta=int(row["write_chars_delta"]),
+                    read_syscalls_delta=int(row["read_syscalls_delta"]),
+                    write_syscalls_delta=int(row["write_syscalls_delta"]),
+                    total_bytes_delta=int(row["total_bytes_delta"]),
+                    total_syscalls_delta=int(row["total_syscalls_delta"]),
+                )
 
 
 def process_memory_samples(
@@ -789,7 +795,7 @@ def process_memory_samples(
     db = path
     if not db.exists():
         return
-    with connect_readonly(db) as conn:
+    with closing(connect_readonly(db)) as conn:
         if not table_exists(conn, "process_memory_sample"):
             return
         validate_process_memory_schema(conn)
@@ -803,34 +809,35 @@ def process_memory_samples(
             sql += " LIMIT ?"
             params.append(max(int(limit), 0))
         conn.row_factory = sqlite3.Row
-        for row in conn.execute(sql, params):
-            observed_at = as_utc(row["observed_at"])
-            if observed_at is None:
-                continue
-            yield MachineProcessMemorySample(
-                observed_at=observed_at,
-                host=row["host"],
-                boot_id=row["boot_id"],
-                source_schema_version=int(row["schema_version"]),
-                pid=int(row["pid"]),
-                process_start_time_ticks=row["process_start_time_ticks"],
-                comm=row["comm"],
-                exe=row["exe"],
-                cgroup=row["cgroup"],
-                unit=row["unit"],
-                scope=row["scope"],
-                command_line=row["command_line"],
-                rss_kb=int(row["rss_kb"]),
-                pss_kb=int(row["pss_kb"]),
-                pss_anon_kb=row["pss_anon_kb"],
-                pss_file_kb=row["pss_file_kb"],
-                pss_shmem_kb=row["pss_shmem_kb"],
-                private_clean_kb=int(row["private_clean_kb"]),
-                private_dirty_kb=int(row["private_dirty_kb"]),
-                shared_clean_kb=int(row["shared_clean_kb"]),
-                shared_dirty_kb=int(row["shared_dirty_kb"]),
-                swap_kb=int(row["swap_kb"]),
-            )
+        with closing(conn.execute(sql, params)) as cursor:
+            for row in cursor:
+                observed_at = as_utc(row["observed_at"])
+                if observed_at is None:
+                    continue
+                yield MachineProcessMemorySample(
+                    observed_at=observed_at,
+                    host=row["host"],
+                    boot_id=row["boot_id"],
+                    source_schema_version=int(row["schema_version"]),
+                    pid=int(row["pid"]),
+                    process_start_time_ticks=row["process_start_time_ticks"],
+                    comm=row["comm"],
+                    exe=row["exe"],
+                    cgroup=row["cgroup"],
+                    unit=row["unit"],
+                    scope=row["scope"],
+                    command_line=row["command_line"],
+                    rss_kb=int(row["rss_kb"]),
+                    pss_kb=int(row["pss_kb"]),
+                    pss_anon_kb=row["pss_anon_kb"],
+                    pss_file_kb=row["pss_file_kb"],
+                    pss_shmem_kb=row["pss_shmem_kb"],
+                    private_clean_kb=int(row["private_clean_kb"]),
+                    private_dirty_kb=int(row["private_dirty_kb"]),
+                    shared_clean_kb=int(row["shared_clean_kb"]),
+                    shared_dirty_kb=int(row["shared_dirty_kb"]),
+                    swap_kb=int(row["swap_kb"]),
+                )
 
 
 def process_memory_growth_candidates(
@@ -857,7 +864,7 @@ def process_memory_growth_candidates(
         return []
     where, params = _observed_at_window(start, end)
     where_sql = (" WHERE " + " AND ".join(where) + " AND pss_anon_kb IS NOT NULL") if where else " WHERE pss_anon_kb IS NOT NULL"
-    with connect_readonly(path) as conn:
+    with closing(connect_readonly(path)) as conn:
         if not table_exists(conn, "process_memory_sample"):
             return []
         validate_process_memory_schema(conn)
@@ -926,7 +933,7 @@ def cgroup_memory_samples(
     db = path
     if not db.exists():
         return
-    with connect_readonly(db) as conn:
+    with closing(connect_readonly(db)) as conn:
         if not table_exists(conn, "cgroup_memory_sample"):
             return
         validate_cgroup_memory_schema(conn)
@@ -941,51 +948,52 @@ def cgroup_memory_samples(
             index="cgroup_memory_sample_label_time",
         )
         conn.row_factory = sqlite3.Row
-        for row in conn.execute(sql, params):
-            observed_at = as_utc(row["observed_at"])
-            if observed_at is None:
-                continue
-            row_keys = row.keys()
-            yield MachineCgroupMemorySample(
-                observed_at=observed_at,
-                host=row["host"],
-                boot_id=row["boot_id"],
-                source_schema_version=int(row["schema_version"]),
-                label=row["label"],
-                scope=row["scope"],
-                control_group=row["control_group"],
-                memory_current_bytes=row["memory_current_bytes"],
-                memory_peak_bytes=row["memory_peak_bytes"],
-                memory_swap_current_bytes=row["memory_swap_current_bytes"],
-                memory_swap_peak_bytes=row["memory_swap_peak_bytes"],
-                memory_high_bytes=row["memory_high_bytes"],
-                memory_max_bytes=row["memory_max_bytes"],
-                memory_anon_bytes=row["memory_anon_bytes"],
-                memory_file_bytes=row["memory_file_bytes"],
-                memory_kernel_bytes=row["memory_kernel_bytes"],
-                memory_slab_bytes=row["memory_slab_bytes"],
-                memory_sock_bytes=row["memory_sock_bytes"],
-                memory_shmem_bytes=row["memory_shmem_bytes"],
-                memory_swapcached_bytes=row["memory_swapcached_bytes"],
-                memory_zswap_bytes=row["memory_zswap_bytes"],
-                memory_zswapped_bytes=row["memory_zswapped_bytes"],
-                cgroup_populated=row["cgroup_populated"],
-                cgroup_frozen=row["cgroup_frozen"],
-                cgroup_freeze=row["cgroup_freeze"],
-                memory_events_high=row["memory_events_high"]
-                if "memory_events_high" in row_keys
-                else None,
-                memory_events_max=row["memory_events_max"]
-                if "memory_events_max" in row_keys
-                else None,
-                memory_events_oom=row["memory_events_oom"]
-                if "memory_events_oom" in row_keys
-                else None,
-                memory_events_oom_kill=row["memory_events_oom_kill"]
-                if "memory_events_oom_kill" in row_keys
-                else None,
-                source_row_id=row["source_row_id"],
-            )
+        with closing(conn.execute(sql, params)) as cursor:
+            for row in cursor:
+                observed_at = as_utc(row["observed_at"])
+                if observed_at is None:
+                    continue
+                row_keys = row.keys()
+                yield MachineCgroupMemorySample(
+                    observed_at=observed_at,
+                    host=row["host"],
+                    boot_id=row["boot_id"],
+                    source_schema_version=int(row["schema_version"]),
+                    label=row["label"],
+                    scope=row["scope"],
+                    control_group=row["control_group"],
+                    memory_current_bytes=row["memory_current_bytes"],
+                    memory_peak_bytes=row["memory_peak_bytes"],
+                    memory_swap_current_bytes=row["memory_swap_current_bytes"],
+                    memory_swap_peak_bytes=row["memory_swap_peak_bytes"],
+                    memory_high_bytes=row["memory_high_bytes"],
+                    memory_max_bytes=row["memory_max_bytes"],
+                    memory_anon_bytes=row["memory_anon_bytes"],
+                    memory_file_bytes=row["memory_file_bytes"],
+                    memory_kernel_bytes=row["memory_kernel_bytes"],
+                    memory_slab_bytes=row["memory_slab_bytes"],
+                    memory_sock_bytes=row["memory_sock_bytes"],
+                    memory_shmem_bytes=row["memory_shmem_bytes"],
+                    memory_swapcached_bytes=row["memory_swapcached_bytes"],
+                    memory_zswap_bytes=row["memory_zswap_bytes"],
+                    memory_zswapped_bytes=row["memory_zswapped_bytes"],
+                    cgroup_populated=row["cgroup_populated"],
+                    cgroup_frozen=row["cgroup_frozen"],
+                    cgroup_freeze=row["cgroup_freeze"],
+                    memory_events_high=row["memory_events_high"]
+                    if "memory_events_high" in row_keys
+                    else None,
+                    memory_events_max=row["memory_events_max"]
+                    if "memory_events_max" in row_keys
+                    else None,
+                    memory_events_oom=row["memory_events_oom"]
+                    if "memory_events_oom" in row_keys
+                    else None,
+                    memory_events_oom_kill=row["memory_events_oom_kill"]
+                    if "memory_events_oom_kill" in row_keys
+                    else None,
+                    source_row_id=row["source_row_id"],
+                )
 
 
 def kill_events(
@@ -1011,7 +1019,7 @@ def kill_events(
     db = path
     if not db.exists():
         return
-    with connect_readonly(db) as conn:
+    with closing(connect_readonly(db)) as conn:
         if not table_exists(conn, "kill_event"):
             return
         validate_kill_event_schema(conn)
@@ -1022,25 +1030,26 @@ def kill_events(
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY observed_at"
         conn.row_factory = sqlite3.Row
-        for row in conn.execute(sql, params):
-            observed_at = as_utc(row["observed_at"])
-            if observed_at is None:
-                continue
-            yield MachineKillEvent(
-                observed_at=observed_at,
-                host=row["host"],
-                boot_id=row["boot_id"],
-                source_schema_version=int(row["schema_version"]),
-                killer=row["killer"],
-                victim_comm=row["victim_comm"],
-                victim_pid=row["victim_pid"],
-                victim_rss_mib=row["victim_rss_mib"],
-                cgroup_path=row["cgroup_path"],
-                oom_score=row["oom_score"],
-                raw_line=row["raw_line"],
-                source_row_id=int(row["id"]),
-                journal_cursor=row["journal_cursor"],
-            )
+        with closing(conn.execute(sql, params)) as cursor:
+            for row in cursor:
+                observed_at = as_utc(row["observed_at"])
+                if observed_at is None:
+                    continue
+                yield MachineKillEvent(
+                    observed_at=observed_at,
+                    host=row["host"],
+                    boot_id=row["boot_id"],
+                    source_schema_version=int(row["schema_version"]),
+                    killer=row["killer"],
+                    victim_comm=row["victim_comm"],
+                    victim_pid=row["victim_pid"],
+                    victim_rss_mib=row["victim_rss_mib"],
+                    cgroup_path=row["cgroup_path"],
+                    oom_score=row["oom_score"],
+                    raw_line=row["raw_line"],
+                    source_row_id=int(row["id"]),
+                    journal_cursor=row["journal_cursor"],
+                )
 
 
 def _live_process_memory_samples(
@@ -1216,35 +1225,36 @@ def gpu_samples(
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY observed_at"
-    with connect_readonly(db) as conn:
+    with closing(connect_readonly(db)) as conn:
         if not table_exists(conn, "gpu_sample"):
             return
         validate_gpu_schema(conn)
         names = {column[1] for column in conn.execute("PRAGMA table_info(gpu_sample)")}
         sql = sql.format(identity="id" if "id" in names else "NULL")
         conn.row_factory = sqlite3.Row
-        for row in conn.execute(sql, params):
-            observed_at = as_utc(row["observed_at"])
-            if observed_at is None:
-                continue
-            yield MachineGpuSample(
-                observed_at=observed_at,
-                host=row["host"],
-                boot_id=row["boot_id"],
-                source="machine.telemetry.gpu",
-                gpu_power_w=row["gpu_power_w"],
-                gpu_power_limit_w=row["gpu_power_limit_w"],
-                gpu_temp_c=row["gpu_temp_c"],
-                gpu_fan_pct=row["gpu_fan_pct"],
-                gpu_util_pct=row["gpu_util_pct"],
-                gpu_mem_util_pct=row["gpu_mem_util_pct"],
-                gpu_clock_mhz=row["gpu_clock_mhz"],
-                gpu_mem_clock_mhz=row["gpu_mem_clock_mhz"],
-                gpu_pstate=row["gpu_pstate"],
-                gpu_pcie_gen=row["gpu_pcie_gen"],
-                gpu_pcie_width=row["gpu_pcie_width"],
-                source_row_id=row["source_row_id"],
-            )
+        with closing(conn.execute(sql, params)) as cursor:
+            for row in cursor:
+                observed_at = as_utc(row["observed_at"])
+                if observed_at is None:
+                    continue
+                yield MachineGpuSample(
+                    observed_at=observed_at,
+                    host=row["host"],
+                    boot_id=row["boot_id"],
+                    source="machine.telemetry.gpu",
+                    gpu_power_w=row["gpu_power_w"],
+                    gpu_power_limit_w=row["gpu_power_limit_w"],
+                    gpu_temp_c=row["gpu_temp_c"],
+                    gpu_fan_pct=row["gpu_fan_pct"],
+                    gpu_util_pct=row["gpu_util_pct"],
+                    gpu_mem_util_pct=row["gpu_mem_util_pct"],
+                    gpu_clock_mhz=row["gpu_clock_mhz"],
+                    gpu_mem_clock_mhz=row["gpu_mem_clock_mhz"],
+                    gpu_pstate=row["gpu_pstate"],
+                    gpu_pcie_gen=row["gpu_pcie_gen"],
+                    gpu_pcie_width=row["gpu_pcie_width"],
+                    source_row_id=row["source_row_id"],
+                )
 
 
 def network_samples(
@@ -1273,34 +1283,35 @@ def network_samples(
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY observed_at"
-    with connect_readonly(db) as conn:
+    with closing(connect_readonly(db)) as conn:
         validate_network_schema(conn)
         conn.row_factory = sqlite3.Row
-        for row in conn.execute(sql, params):
-            observed_at = as_utc(row["observed_at"])
-            if observed_at is None:
-                continue
-            try:
-                gaps = tuple(json.loads(row["gap_codes_json"] or "[]"))
-            except (json.JSONDecodeError, TypeError):
-                gaps = ("gap_codes_json.invalid",)
-            yield MachineNetworkSample(
-                observed_at=observed_at,
-                host=row["host"],
-                boot_id=row["boot_id"],
-                source_schema_version=int(row["schema_version"]),
-                interface=row["interface"],
-                gateway_ip=row["gateway_ip"],
-                ping=json_obj(row["ping_json"]),
-                bloat=json_obj(row["bloat_json"]) if row["bloat_json"] else None,
-                iface=json_obj(row["iface_json"]),
-                nic=json_obj(row["nic_json"]),
-                tcp=json_obj(row["tcp_json"]),
-                dns_ms=row["dns_ms"],
-                pmtu_1492=None if row["pmtu_1492"] is None else bool(row["pmtu_1492"]),
-                conntrack=json_obj(row["conntrack_json"]),
-                gap_codes=gaps,
-            )
+        with closing(conn.execute(sql, params)) as cursor:
+            for row in cursor:
+                observed_at = as_utc(row["observed_at"])
+                if observed_at is None:
+                    continue
+                try:
+                    gaps = tuple(json.loads(row["gap_codes_json"] or "[]"))
+                except (json.JSONDecodeError, TypeError):
+                    gaps = ("gap_codes_json.invalid",)
+                yield MachineNetworkSample(
+                    observed_at=observed_at,
+                    host=row["host"],
+                    boot_id=row["boot_id"],
+                    source_schema_version=int(row["schema_version"]),
+                    interface=row["interface"],
+                    gateway_ip=row["gateway_ip"],
+                    ping=json_obj(row["ping_json"]),
+                    bloat=json_obj(row["bloat_json"]) if row["bloat_json"] else None,
+                    iface=json_obj(row["iface_json"]),
+                    nic=json_obj(row["nic_json"]),
+                    tcp=json_obj(row["tcp_json"]),
+                    dns_ms=row["dns_ms"],
+                    pmtu_1492=None if row["pmtu_1492"] is None else bool(row["pmtu_1492"]),
+                    conntrack=json_obj(row["conntrack_json"]),
+                    gap_codes=gaps,
+                )
 
 
 def sample_to_json(sample: Any) -> dict[str, Any]:

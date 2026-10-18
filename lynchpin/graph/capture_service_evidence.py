@@ -1,6 +1,7 @@
 """Historical service observations for currently declared capture producers."""
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -31,7 +32,7 @@ def capture_service_evidence(*, start: datetime, end: datetime, cfg: Any = None)
         result["binding_sha256"] = hashlib.sha256(json.dumps({"hostname":inventory.hostname,"captures":inventory.captures},sort_keys=True).encode()).hexdigest()
         if not inventory.hostname:
             raise ValueError("inventory hostname is missing")
-        with connect_readonly(cfg.machine_telemetry_db) as conn:
+        with closing(connect_readonly(cfg.machine_telemetry_db)) as conn:
             conn.execute("BEGIN")
             validate_service_state_schema(conn)
             deadline = time.monotonic()+3.0
@@ -64,11 +65,12 @@ def _read_service(conn:sqlite3.Connection,*,host:str,unit:str,scope:str,start:da
         if not any("SEARCH" in row[3] and "observed_at" in row[3] for row in plan):
             return {**unknown,"reason":"no indexed service time-range read"}
         def rows():
-            for raw in conn.execute(sql,args):
-                observed=as_utc(raw[0])
-                if observed is None:
-                    raise ValueError("invalid service observation timestamp")
-                yield MachineServiceState(observed,*raw[1:])
+            with closing(conn.execute(sql,args)) as cursor:
+                for raw in cursor:
+                    observed=as_utc(raw[0])
+                    if observed is None:
+                        raise ValueError("invalid service observation timestamp")
+                    yield MachineServiceState(observed,*raw[1:])
         totals={"inactive":0.0,"unobserved":0.0}
         intervals=[]
         interval_count=0

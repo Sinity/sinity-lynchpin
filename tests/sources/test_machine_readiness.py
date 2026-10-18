@@ -141,3 +141,56 @@ def test_default_interface_presence_never_scans_an_unindexed_network_table(confi
         conn.execute("CREATE INDEX network_interface_time ON network_sample(interface, observed_at)")
     ready = machine.readiness(now=NOW)
     assert ready.table_status["network_sample"] == "empty"
+
+
+@pytest.mark.parametrize("mode", ["latest", "exhausted", "early-close", "conversion-error"])
+def test_readers_release_connections_and_cursors_without_gc(configured, monkeypatch, mode):
+    import gc
+    from contextlib import closing
+
+    seed(configured, rows=2)
+    with closing(sqlite3.connect(configured)) as conn:
+        conn.execute("UPDATE metric_sample SET schema_version=1")
+        conn.commit()
+    connections, cursors = [], []
+
+    class TrackedConnection(sqlite3.Connection):
+        def execute(self, *args, **kwargs):
+            cursor = super().execute(*args, **kwargs)
+            cursors.append(cursor)
+            return cursor
+
+    def connect(path):
+        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, factory=TrackedConnection)
+        connections.append(conn)
+        return conn
+
+    monkeypatch.setattr(machine, "connect_readonly", connect)
+    if mode == "conversion-error":
+        def fail(row):
+            raise ValueError("synthetic conversion failure")
+        monkeypatch.setattr(machine, "_metric_sample_from_sqlite_row", fail)
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        for _ in range(64):
+            if mode == "latest":
+                assert machine.latest_metric_sample(path=configured) is not None
+            elif mode == "exhausted":
+                assert len(list(machine.metric_samples(path=configured))) == 2
+            elif mode == "early-close":
+                iterator = machine.metric_samples(path=configured)
+                assert next(iterator) is not None
+                iterator.close()
+            else:
+                with pytest.raises(ValueError, match="synthetic conversion failure"):
+                    next(machine.metric_samples(path=configured))
+        for conn in connections:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                conn.execute("SELECT 1")
+        for cursor in cursors:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                cursor.fetchone()
+    finally:
+        if was_enabled:
+            gc.enable()
