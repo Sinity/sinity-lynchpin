@@ -294,6 +294,18 @@ This source is read-only. Materialization has no route to schedule, cancel, wait
 
 `lynchpin_personal(action="phone", start=..., end=..., limit=...)` reads phone event captures. Health views `phone_health`, `xiaomi`, and `coverage` expose Health Connect records, the latest Xiaomi revision per measurement day, and the materialized coverage artifact respectively. These reads do not trigger materialization. Phone date filters select capture dates, including backfills; Xiaomi filters select measurement days. Coverage is a whole-history artifact with an explicit modification timestamp and does not accept date filters.
 
+Within a materialization, phone events pin directory membership and file
+metadata first, then copy only UTC carrier days overlapping the requested local
+dates. Wider reads in the same operation capture previously unfetched members;
+they do not treat those members as absent. If an unfetched member changes before
+capture, the operation refuses the mixed observation. Selected append-only
+prefixes retain byte validation. A date alone does not establish that a phone
+file is sealed, so these files keep the mutable-prefix route rather than
+borrowing their live inodes. Phone readiness checks at most eight recent files
+and 64 KiB for a valid record. Its uncounted rows and unmeasured freshness remain
+unknown; access failures are unavailable and an exhausted probe is inconclusive.
+
+
 For bounded recovery, `agentctl job start lynchpin promote_incremental -- --only activitywatch_derived activity_content health_coverage personal_daily_signals temporal_signals` selects those products and their dependencies. The planner retains each product's incremental date window and excludes unrelated canonical-product writers. Typed snapshot promotion may still refresh other source families. Existing substrate history is retained through candidate publication. Add `--plan-json` to inspect the selected scope before execution.
 
 

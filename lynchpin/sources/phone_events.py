@@ -65,6 +65,9 @@ A run whose engine/fields don't match any of the above falls through with
 
 from __future__ import annotations
 
+import json
+import os
+import stat
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -207,7 +210,7 @@ def _day_files(root: Path, start: Optional[date], end: Optional[date]) -> list[P
         paths = tuple(sorted(root.glob("events-*.jsonl")))
         snapshot = current_input_snapshot()
         if snapshot is not None:
-            snapshot.capture_collection(root, paths, append_only=paths)
+            paths = snapshot.pin_collection(root, paths)
     for path in paths:
         match = _DAY_FILE_RE.search(path.name)
         if match is None:
@@ -221,35 +224,54 @@ def _day_files(root: Path, start: Optional[date], end: Optional[date]) -> list[P
         if utc_end is not None and file_date > utc_end:
             continue
         dated.append((file_date, path))
-    return [path for _day, path in sorted(dated)]
+    selected = tuple(path for _day, path in sorted(dated))
+    snapshot = current_input_snapshot()
+    if snapshot is not None:
+        snapshot.capture(selected, append_only=selected)
+    return list(selected)
 
 
 def readiness(root: Path | None = None) -> SourceReadiness:
-    """Aggregate readiness across every ``events-YYYYMMDD.jsonl`` day file."""
+    """Check bounded record presence; a health read never counts history."""
     base = root or LynchpinConfig.from_env().phone_events_dir
-    if not base.exists():
-        return SourceReadiness(
-            status="missing", reason=f"{base} does not exist", path=base, row_count=0,
-        )
-    files = sorted(base.glob("events-*.jsonl"))
-    if not files:
-        return SourceReadiness(
-            status="empty", reason="directory present but no day files yet",
-            path=base, row_count=0,
-        )
-    total = 0
-    for f in files:
-        try:
-            with f.open(encoding="utf-8") as fh:
-                total += sum(1 for line in fh if line.strip())
-        except OSError:
-            continue
-    if total == 0:
-        return SourceReadiness(
-            status="empty", reason="day files present but no rows yet",
-            path=base, row_count=0,
-        )
-    return SourceReadiness(status="ok", reason="", path=base, row_count=total)
+    try:
+        base.stat()
+    except FileNotFoundError:
+        return SourceReadiness(status="missing", reason=f"{base} does not exist", path=base, row_count=0)
+    except OSError as exc:
+        return SourceReadiness(status="unavailable", reason=str(exc), path=base, row_count=None)
+    try:
+        if not base.is_dir():
+            raise NotADirectoryError(str(base))
+        # scandir surfaces access errors which glob can silently suppress.
+        with os.scandir(base) as entries:
+            files = sorted((base / entry.name for entry in entries if _DAY_FILE_RE.fullmatch(entry.name)), reverse=True)
+        if not files:
+            return SourceReadiness(status="empty", reason="directory present but no day files yet", path=base, row_count=0)
+        remaining = 65536
+        for path in files[:8]:
+            if not stat.S_ISREG(path.stat().st_mode):
+                raise OSError(f"not a regular phone event file: {path}")
+            with path.open("rb") as stream:
+                chunk = stream.read(remaining)
+            remaining -= len(chunk)
+            complete = chunk.splitlines()
+            if chunk and not chunk.endswith(b"\n") and remaining == 0:
+                complete = complete[:-1]
+            for line in complete:
+                if line.strip():
+                    try:
+                        event = _hydrate_event(json.loads(line))
+                    except (ValueError, TypeError, AttributeError, UnicodeError) as exc:
+                        return SourceReadiness(status="malformed", reason=str(exc), path=base, row_count=None)
+                    if event is None:
+                        return SourceReadiness(status="malformed", reason="invalid event record", path=base, row_count=None)
+                    return SourceReadiness(status="ok", reason="record present; history not counted or freshness measured", path=base, row_count=None)
+            if remaining == 0:
+                break
+        return SourceReadiness(status="unknown", reason="no record within 8-file/64KiB presence budget", path=base, row_count=None)
+    except OSError as exc:
+        return SourceReadiness(status="unavailable", reason=str(exc), path=base, row_count=None)
 
 
 def _hydrate_event(payload: dict[str, Any]) -> Optional[PhoneEvent]:

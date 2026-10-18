@@ -82,6 +82,7 @@ class InputSnapshot:
         self.observed_at = datetime.now(UTC)
         self.files: dict[Path, PinnedFile] = {}
         self.collections: dict[Path, tuple[Path, ...]] = {}
+        self.member_versions: dict[Path, tuple[int, ...] | None] = {}
         self.lock = RLock()
 
     def capture(self, paths: tuple[Path, ...], *, append_only: tuple[Path, ...] = ()) -> None:
@@ -95,6 +96,8 @@ class InputSnapshot:
                     continue
                 target = self.root / str(len(self.files) + len(pending))
                 before = _version(original)
+                if original in self.member_versions and before != self.member_versions[original]:
+                    raise RuntimeError(f"materialization collection member changed before capture: {original}")
                 if before is not None:
                     if original in append_paths:
                         _copy_prefix(original, target, before[2])
@@ -114,6 +117,17 @@ class InputSnapshot:
                     raise RuntimeError(f"materialization input changed during capture: {original}")
             self.files.update(pending)
 
+    def pin_collection(self, root: Path, paths: tuple[Path, ...]) -> tuple[Path, ...]:
+        """Freeze membership and metadata without reading unrequested payloads."""
+        with self.lock:
+            if root not in self.collections:
+                versions = {path: _version(path) for path in paths}
+                if any(value is None for value in versions.values()):
+                    raise RuntimeError(f"materialization collection changed during discovery: {root}")
+                self.member_versions.update(versions)
+                self.collections[root] = paths
+            return self.collections[root]
+
     def capture_collection(self, root: Path, paths: tuple[Path, ...], *, append_only: tuple[Path, ...] = ()) -> None:
         with self.lock:
             if root not in self.collections:
@@ -124,6 +138,8 @@ class InputSnapshot:
         with self.lock:
             item = self.files.get(original)
             if item is None and original.parent in self.collections:
+                if original in self.collections[original.parent]:
+                    raise RuntimeError(f"materialization collection member not captured: {original}")
                 item = PinnedFile(self.root / "absent-collection-input", None, None)
             if item is not None and _version(item.path) != item.copy_version:
                 raise RuntimeError(f"materialization input snapshot changed: {original}")
