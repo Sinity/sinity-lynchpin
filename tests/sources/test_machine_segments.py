@@ -736,3 +736,22 @@ def test_freshness_missing_segment_table_is_unavailable(tmp_path, monkeypatch):
         assert "required telemetry segment" in result[0]["error"]
     finally:
         conn.close()
+
+
+def test_freshness_accepts_empty_current_with_retained_history(tmp_path, monkeypatch):
+    import duckdb
+    from lynchpin.substrate.machine import load_machine_promotion_freshness
+
+    sqlite_sources(tmp_path, monkeypatch, new=[])
+    monkeypatch.setattr("lynchpin.substrate.machine.MACHINE_PROMOTION_FRESHNESS_TABLES",
+                        (("machine_metric_sample", "metric_sample"),))
+    conn = duckdb.connect(config={"threads": 1, "memory_limit": "128MB"})
+    try:
+        conn.execute("CREATE TABLE machine_metric_sample(observed_at TIMESTAMPTZ)")
+        conn.execute("INSERT INTO machine_metric_sample VALUES ('2026-01-02T00:00:00Z')")
+        result = load_machine_promotion_freshness(conn)
+        assert "error" not in result[0]
+        assert result[0]["stale"] is False
+        assert result[0]["live_max_observed_at"] == "2026-01-02T00:00:00+00:00"
+    finally:
+        conn.close()

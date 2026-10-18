@@ -1769,12 +1769,12 @@ def load_machine_promotion_freshness(
                         "table": duck_table, "live_table": live_table,
                         "error": "latest live observed_at is invalid", "stale": None,
                     })
-                elif window is not None:
+                elif window is not None or _deadline is not None:
                     results.append({
-                        **_machine_window_row_counts(
+                        **(_machine_window_row_counts(
                             conn, sconn, duck_table=duck_table, live_table=live_table,
                             refresh_id=refresh_id, window=window, deadline=history_deadline,
-                        ),
+                        ) if window is not None else {}),
                         "table": duck_table, "live_table": live_table,
                         "refresh_id": refresh_id, "lag_hours": None, "stale": False,
                         "live_max_observed_at": None, "substrate_max_observed_at": None,
