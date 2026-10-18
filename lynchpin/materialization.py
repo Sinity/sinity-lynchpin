@@ -3015,13 +3015,23 @@ def _xiaomi_cloud_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     )
 
 
+def _input_mtime(path: Path, pinned_version: Any) -> float:
+    """Pinned modification time, without copying an unread snapshot member."""
+    pinned, version = pinned_version(path)
+    if pinned:
+        if version is None:
+            raise FileNotFoundError(path)
+        return version[3] / 1e9
+    return path.stat().st_mtime
+
+
 def _health_coverage_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     contract = source_contract("health_coverage")
     path = health_coverage_path(cfg.derived_root)
     manifest = path.with_suffix(".manifest.json")
     meta = _load_json(manifest)
     ready = _product_with_manifest_exists(path, manifest)
-    from .core.input_snapshot import pinned_collection, read_input_path
+    from .core.input_snapshot import pinned_collection, pinned_version
 
     # Promotion must audit the same acquired roster/bytes it consumed. Outside
     # an operation snapshot, new day files and appends invalidate the report.
@@ -3036,10 +3046,7 @@ def _health_coverage_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     if ready:
         built_at = _datetime_from_iso(meta.get("materialized_at"))
         if built_at is not None:
-            newest_input = max(
-                (read_input_path(f).stat().st_mtime for f in files),
-                default=None,
-            )
+            newest_input = max((_input_mtime(f, pinned_version) for f in files), default=None)
             inputs_current = newest_input is None or newest_input <= built_at.timestamp()
     if ready and inputs_current:
         status: Status = "ready"

@@ -291,10 +291,8 @@ def test_phone_window_copies_only_selected_utc_members_then_can_widen(tmp_path, 
     with input_snapshot() as snapshot:
         assert len(list(pe.phone_events(root=tmp_path, start=date(2026,1,3), end=date(2026,1,3)))) == 1
         assert set(snapshot.files) == {paths[2]}
-        # Unfetched members are neither absent nor silently read live.
-        import pytest
-        with pytest.raises(RuntimeError, match="member not captured"):
-            read_input_path(paths[0])
+        # An unfetched member is copied on first read, never read live.
+        assert read_input_path(paths[0]) != paths[0]
         assert len(list(pe.phone_events(root=tmp_path, start=date(2026,1,1), end=date(2026,1,3)))) == 3
         assert set(snapshot.files) == set(paths)
 

@@ -710,7 +710,7 @@ def test_prepared_health_audit_does_not_recheck_live_day_mtime(tmp_path):
     report.write_text('{}\n')
     report.with_suffix(".manifest.json").write_text(json.dumps({"dataset": "health_coverage", "materialized_at": "2030-01-01T00:00:00Z", "row_count": 1}))
     with input_snapshot() as snapshot:
-        snapshot.capture_collection(root, (day,), append_only=(day,))
+        snapshot.pin_collection(root, (day,), append_only=(day,))
         os.utime(day, (2200000000, 2200000000))
         with materialization.prepared_product_reads():
             assert materialization.ensure_materialized("health_coverage", cfg=cfg).status == "ready"

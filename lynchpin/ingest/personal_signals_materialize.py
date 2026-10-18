@@ -368,7 +368,7 @@ def _capture_daily_signal_inputs(audit_by_name: dict[str, Any], start: date, end
     for root in roots:
         files = tuple(path for path in inputs if path.parent == root)
         append_only = tuple(path for path in files if date.fromisoformat(path.stem) in open_dates)
-        snapshot.capture_collection(root, files, append_only=append_only)
+        snapshot.pin_collection(root, files, append_only=append_only)
 
 def _overlapping_input_sources(
     audit_by_name: dict[str, Any],

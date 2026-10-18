@@ -82,7 +82,7 @@ def materialize_activitywatch_derived(
         keyboard = tuple(keylog.log_files(ensure=False))
         open_dates = {snapshot.observed_at.date().isoformat(), datetime.now(UTC).date().isoformat()}
         open_keyboard = tuple(path for path in keyboard if path.stem in open_dates)
-        snapshot.capture_collection(keylog._logs_root(), keyboard, append_only=open_keyboard)
+        snapshot.pin_collection(keylog._logs_root(), keyboard, append_only=open_keyboard)
         return _materialize_activitywatch_derived(start=start, end=end, root=root, chunk_days=chunk_days)
 
 

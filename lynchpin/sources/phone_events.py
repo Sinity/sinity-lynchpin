@@ -206,7 +206,10 @@ def _day_files(root: Path, start: Optional[date], end: Optional[date]) -> list[P
         paths = tuple(sorted(root.glob("events-*.jsonl")))
         snapshot = current_input_snapshot()
         if snapshot is not None:
-            paths = snapshot.pin_collection(root, paths)
+            # Only the current and previous UTC day files can still grow.
+            today = snapshot.observed_at.astimezone(timezone.utc).date()
+            open_names = {f"events-{day:%Y%m%d}.jsonl" for day in (today, today - timedelta(days=1))}
+            paths = snapshot.pin_collection(root, paths, append_only=tuple(p for p in paths if p.name in open_names))
     for path in paths:
         match = _DAY_FILE_RE.search(path.name)
         if match is None:
@@ -220,11 +223,7 @@ def _day_files(root: Path, start: Optional[date], end: Optional[date]) -> list[P
         if utc_end is not None and file_date > utc_end:
             continue
         dated.append((file_date, path))
-    selected = tuple(path for _day, path in sorted(dated))
-    snapshot = current_input_snapshot()
-    if snapshot is not None:
-        snapshot.capture(selected, append_only=selected)
-    return list(selected)
+    return [path for _day, path in sorted(dated)]
 
 
 def _hydrate_event(payload: dict[str, Any]) -> Optional[PhoneEvent]:
