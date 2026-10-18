@@ -28,79 +28,9 @@ pool = "bulk"
 result = "exit"
 cache = "tree+environment"
 
-[operations.verify_incremental]
-description = "Verify nightly incremental planning, source boundaries, and publication routes"
-exec = ["pytest", "-q", "tests/test_typed_materializers.py", "tests/cli/test_materialize.py", "tests/cli/test_agentctl_plan.py", "tests/ingest/test_exports_materialize.py", "tests/ingest/test_gmail_takeout_materialize.py", "tests/mcp/test_mcp_substrate.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_schema_setup]
-description = "Verify atomic substrate schema setup and transaction ownership"
-exec = ["pytest", "-q", "-s", "tests/substrate/test_schema_transactions.py", "tests/substrate/test_duck_substrate_schema.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_health_exports]
-description = "Verify health export input availability and failure-safe product publication"
-exec = ["pytest", "-q", "tests/cli/test_health_io.py", "tests/cli/test_health_sleep_processor.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_health_coverage]
-description = "Verify device-qualified health coverage, gaps and token observations"
-exec = ["pytest", "-q", "tests/ingest/test_health_coverage_materialize.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_runtime_status]
-description = "Verify nightly failure and serving freshness status"
-exec = ["pytest", "-q", "tests/core/test_freshness.py", "tests/mcp/test_mcp_substrate.py", "-k", "materialization_status or materialization_health or nightly_status or runtime_status"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_plan_boundaries]
-description = "Verify explicit temporal inputs and ActivityContent recovery boundaries"
-exec = ["pytest", "-q", "tests/ingest/test_activity_content_materialize.py", "tests/ingest/test_temporal_signals_materialize.py", "tests/test_typed_materializers.py", "tests/cli/test_materialize.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_activity_content]
-description = "Verify coherent ActivityContent publication, bootstrap and compound readers"
-exec = ["just", "verify-activity-content"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_activitywatch_freshness]
-description = "Verify canonical ActivityWatch input identities and derived freshness"
-exec = ["pytest", "-q", "tests/core/test_input_snapshot.py", "tests/mcp/test_transparent_activity.py", "tests/ingest/test_activitywatch_derived_materialize.py", "tests/test_materialization.py", "tests/test_read_convergence.py", "tests/cli/test_materialize.py", "tests/analysis/test_substrate_promote_personal.py", "tests/analysis/test_operator_daily_logical_dates.py", "tests/analysis/test_operator_daily_machine_pressure.py", "tests/sources/test_source_activitywatch.py", "tests/sources/test_activitywatch_repair.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_operator_day]
-description = "Verify bounded operator-day promotion and lineage-aware readers"
-exec = ["pytest", "-q", "tests/substrate/test_operator_day.py", "tests/analysis/test_substrate_promote_personal.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_webhistory_base]
-description = "Verify retained-segment candidate merge and input identity contracts"
-exec = ["pytest", "-q", "tests/ingest/test_webhistory.py", "tests/test_materialization.py", "tests/sources/test_google_takeout.py", "tests/sources/test_activitywatch_derived.py::test_missing_manifest_partitions_are_named_gaps_not_empty_days", "-k", "webhistory or chrome or missing_manifest_partitions"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_partial_publication]
-description = "Verify unavailable Polylogue status and optional-feed publication policy"
-exec = ["pytest", "-q", "tests/cli/test_materialize.py", "tests/test_materialization.py", "-k", "snapshot_promotion or polylogue_dataset or incremental_graph_tail or incremental_candidate_identity"]
+[operations.test]
+description = "Run selected tests; pass pytest paths or -k expressions after --"
+exec = ["pytest", "-q"]
 pool = "pytest"
 result = "exit"
 cache = "tree+environment"
@@ -118,27 +48,6 @@ exec = ["python", "-m", "lynchpin.cli.chisel", "layout"]
 pool = "normal"
 result = "exit"
 cache = "none"
-
-[operations.verify_machine_paths]
-description = "Verify configured experiment discovery and machine source contracts"
-exec = ["pytest", "-q", "tests/sources/test_source_machine_experiments.py", "tests/core/test_config_paths.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_taxonomy]
-description = "Verify relocated configuration, historical project recognition and snapshot publication"
-exec = ["pytest", "-q", "tests/analysis/test_analysis_cli.py", "tests/core/test_config_paths.py", "tests/analysis/test_analysis_machine_derivation_inventory.py", "tests/sources/test_source_terminal.py", "tests/analysis/test_chisel_publication.py", "tests/analysis/test_snapshot_homes.py", "tests/ingest/test_code_snapshots_materialize.py", "tests/analysis/test_chisel_currentness.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_owner_products]
-description = "Verify campaign owner snapshots, bounded project context, and public action contracts"
-exec = ["pytest", "-q", "tests/analysis/test_campaign_evidence.py", "tests/analysis/test_campaign_history.py", "tests/analysis/test_project_owner_products.py", "tests/mcp/test_mcp_public.py", "tests/mcp/test_mcp_registration.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
 
 [operations.input_activity]
 description = "Reconstruct private input evidence from explicit time bounds"
@@ -252,13 +161,6 @@ result = "exit"
 cache = "none"
 timeout_seconds = 14400
 
-[operations.verify_projection_repair]
-description = "Verify native typed-fact promotion and the embedded Polylogue source contract"
-exec = ["pytest", "-q", "tests/sources/test_source_polylogue.py", "tests/sources/test_polylogue_owner_contract.py", "tests/substrate/test_substrate_promote.py", "tests/analysis/test_substrate_promote_work.py", "tests/cli/test_agentctl_plan.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
 [operations.promote_node]
 description = "Atomically publish one complete substrate generation"
 exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "promote"]
@@ -349,27 +251,6 @@ result = "exit"
 cache = "none"
 timeout_seconds = 1800
 
-[operations.verify_snapshot_locations]
-description = "Verify lookup relocation preserves captured fields and historical partitions"
-exec = ["pytest", "-q", "tests/substrate/test_snapshot_locations.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_capture_contracts]
-description = "Verify configured capture placement and unavailable versus empty inputs"
-exec = ["pytest", "-q", "tests/core/test_config_paths.py", "tests/sources/test_sinnix_capture_lanes.py", "tests/sources/test_capture_inventory.py", "tests/sources/test_source_observations.py", "tests/core/test_source.py", "tests/sources/test_source_transcripts.py", "tests/sources/test_source_readiness.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_chisel_storage]
-description = "Verify Chisel snapshot, history and publication storage contracts"
-exec = ["pytest", "-q", "tests/analysis/test_chisel_history.py", "tests/analysis/test_chisel_snapshots.py", "tests/analysis/test_chisel_publication.py", "tests/core/test_config_paths.py"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
 [operations.verify_package]
 description = "Build packaged API and MCP entry points with neutral deployment configuration"
 exec = ["nix", "build", "--no-link", ".#api-python", ".#default"]
@@ -377,55 +258,6 @@ pool = "normal"
 result = "exit"
 cache = "tree+environment"
 timeout_seconds = 1800
-
-[operations.verify_polylogue_contract]
-description = "Verify current Polylogue facade, historical records, and unavailable coverage"
-exec = ["just", "verify-polylogue-contract"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_generation_selection]
-description = "Verify logical generation selection and scoped native readers"
-exec = ["just", "verify-generation-selection"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_title_aggregates]
-description = "Verify lifetime title corrections and native promotion readers"
-exec = ["just", "verify-title-aggregates"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_temporal_consumers]
-description = "Verify instant arithmetic, temporal consumers and derived output contracts"
-exec = ["just", "verify-temporal-consumers"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_index_recipe]
-description = "Verify ActivityWatch partition recipe invalidation and native readers"
-exec = ["just", "verify-index-recipe"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_partition_integrity]
-description = "Verify retained artifact integrity and protected GC roots"
-exec = ["just", "verify-partition-integrity"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
-
-[operations.verify_machine_promotion]
-description = "Verify bounded machine promotion, tail reuse and memory failure handling"
-exec = ["just", "verify-machine-promotion"]
-pool = "pytest"
-result = "exit"
-cache = "tree+environment"
 
 [operations.repair_machine_facts]
 description = "Restore machine typed facts through the existing source-selected promotion route"
