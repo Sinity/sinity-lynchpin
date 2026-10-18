@@ -856,7 +856,7 @@ def _promote_machine_slow(
                 conn,
                 refresh_id=refresh_id,
                 source=source,
-                status="ok" if row_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
+                status="ok" if row_count else ("unavailable" if machine_ready.status not in {"ready", "empty"} else "empty"),
                 reason=machine_ready.reason if not row_count else None,
                 row_count=row_count,
                 window_start=window_start,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -16,10 +16,13 @@ class MachineSourceReadiness:
     status: str
     reason: str
     live_db: Path
-    live_rows: int
+    live_rows: int | None = None
+    latest_sample_at: datetime | None = None
+    freshness: str = "unknown"
+    table_status: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.live_rows < 0:
+        if self.live_rows is not None and self.live_rows < 0:
             raise ValueError(
                 f"MachineSourceReadiness.live_rows ({self.live_rows}) must be >= 0"
             )

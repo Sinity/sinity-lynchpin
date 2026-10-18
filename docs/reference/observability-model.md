@@ -125,3 +125,20 @@ Windowed source readiness also compares machine row counts over the same half-op
 Readiness reports carry separate current application-health observations from `sinexctl runtime health` and `polylogue status --json`. Probes use bounded subprocess timeouts; timeout, missing executable, invalid schema, or transport failure is unavailable evidence. A valid degraded reply preserves its health state and exit code. Current application health does not replace historical dataset coverage. Configure `SINEX_RUNTIME_TARGET_CONFIG`, optional `LYNCHPIN_SINEX_HEALTH_CA_CERT`, and `LYNCHPIN_APPLICATION_HEALTH_TIMEOUT`; `LYNCHPIN_APPLICATION_HEALTH=0` disables live probes for offline use. Default tests disable live probes and use neutral replies.
 
 Coverage CLI JSON, context-pack readiness, and MCP readiness carry the same historical producer-service evidence product. It uses the runtime inventory’s declared host/manager/unit bindings, streamed indexed service-state reads, and a shared three-second query budget. Inactivity and unobserved time are separate; neither proves missing captures or operator inactivity. Bindings describe the current declaration, not historical ownership. Unbound, inaccessible, unindexed, or budget-exhausted evidence is explicit. Interval lists cap at 100 entries per service with truncation and total-count fields; duration totals cover the completed sweep.
+
+
+### Live machine readiness
+
+Readiness probes validate each known source table and seek at most one matching
+row. They do not count lifetime SQLite history. `live_rows` is null when no
+exact count was requested; a valid empty metric table reports zero. Missing
+files, unusable entrances, schema failures and read errors retain distinct
+reasons and per-table states instead of becoming zero samples.
+
+Freshness uses the existing time-index seek. Without a suitable time index,
+freshness is unknown rather than measured by a full-table scan. Indexed metric
+samples older than 24 hours carry stale freshness, independently of substrate
+promotion lag. Historical samples remain readable. Graph readiness reports
+unusable sources as blocked and measured empty sources as partial, preserving
+unknown counts. Explicit exact-count analysis remains available and propagates
+source/schema errors.

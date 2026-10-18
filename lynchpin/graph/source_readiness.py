@@ -484,14 +484,20 @@ def _machine_source(*, window: tuple[date, date] | None = None) -> SourceReadine
             path=None,
         )
     ready = machine_readiness()
+    path = ready.live_db
+    caveats: tuple[str, ...] = ()
     if ready.status == "ready":
         status: ReadinessStatus = "available"
-        path = ready.live_db
-        caveats: tuple[str, ...] = ()
-    else:
+        if ready.freshness == "stale":
+            status = "partial"
+            caveats = ("live machine telemetry is older than 24 hours",)
+        if any(value not in {"present", "empty"} for value in ready.table_status.values()):
+            status = "partial"
+            caveats = (*caveats, "some machine tables are missing or unavailable; see source reason")
+    elif ready.status == "missing":
         status = "missing"
-        path = ready.live_db
-        caveats = ()
+    else:
+        status = "partial" if ready.status == "empty" else "blocked"
 
     stale = _machine_promotion_staleness(window=window)
     if stale:
@@ -513,7 +519,7 @@ def _machine_source(*, window: tuple[date, date] | None = None) -> SourceReadine
         reason=ready.reason,
         cost="materialized",
         path=str(path),
-        count=ready.live_rows if ready.status == "ready" else None,
+        count=ready.live_rows if ready.status in {"ready", "empty"} else None,
         last_date=_mtime_date(path),
         caveats=caveats,
     )

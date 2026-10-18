@@ -13,6 +13,8 @@ import os
 import re
 import sqlite3
 import socket
+import stat
+from contextlib import closing
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -63,7 +65,9 @@ from .machine_schema import (
 from .machine_sqlite import (
     as_utc,
     connect_readonly,
-    count_sqlite_rows,
+    latest_observed_at,
+    has_leading_index,
+    time_prefix_index,
     default_route_interface,
     json_obj,
     window_select,
@@ -151,47 +155,81 @@ def _as_date(value: date | datetime | None) -> date | None:
     return value
 
 
-def readiness() -> MachineSourceReadiness:
-    cfg = get_config()
-    live_rows = count_sqlite_rows(cfg.machine_telemetry_db, "metric_sample")
-    network_rows = count_sqlite_rows(cfg.machine_telemetry_db, "network_sample")
-    block_device_rows = count_sqlite_rows(
-        cfg.machine_telemetry_db, "block_device_sample"
-    )
-    cgroup_io_rows = count_sqlite_rows(
-        cfg.machine_telemetry_db, "service_cgroup_io_sample"
-    )
-    cgroup_pressure_rows = count_sqlite_rows(
-        cfg.machine_telemetry_db, "service_cgroup_pressure_sample"
-    )
-    process_io_delta_rows = count_sqlite_rows(
-        cfg.machine_telemetry_db, "process_io_delta_sample"
-    )
-    process_memory_rows = count_sqlite_rows(
-        cfg.machine_telemetry_db, "process_memory_sample"
-    )
-    kill_event_rows = count_sqlite_rows(cfg.machine_telemetry_db, "kill_event")
-    if live_rows:
-        status = "ready"
-        reason = (
-            "live machine telemetry SQLite has samples; "
-            f"network_samples={network_rows}; "
-            f"block_device_samples={block_device_rows}; "
-            f"service_cgroup_io_samples={cgroup_io_rows}; "
-            f"service_cgroup_pressure_samples={cgroup_pressure_rows}; "
-            f"process_io_delta_samples={process_io_delta_rows}; "
-            f"process_memory_samples={process_memory_rows}; "
-            f"kill_events={kill_event_rows}"
-        )
-    else:
-        status = "unavailable"
-        reason = "no live machine telemetry samples found"
-    return MachineSourceReadiness(
-        status=status,
-        reason=reason,
-        live_db=cfg.machine_telemetry_db,
-        live_rows=live_rows,
-    )
+def readiness(*, now: datetime | None = None) -> MachineSourceReadiness:
+    """Probe presence and indexed freshness; never count lifetime history."""
+    path = get_config().machine_telemetry_db
+    states: dict[str, str] = {}
+    latest: datetime | None = None
+    freshness = "unknown"
+    validators = {
+        "metric_sample": validate_metric_schema,
+        "network_sample": validate_network_schema,
+        "block_device_sample": validate_block_device_schema,
+        "service_cgroup_io_sample": validate_service_cgroup_io_schema,
+        "service_cgroup_pressure_sample": validate_service_cgroup_pressure_schema,
+        "process_io_delta_sample": validate_process_io_delta_schema,
+        "process_memory_sample": validate_process_memory_schema,
+        "kill_event": validate_kill_event_schema,
+    }
+    try:
+        try:
+            metadata = path.stat()
+        except FileNotFoundError:
+            entrance = path
+            while True:
+                try:
+                    entrance.lstat()
+                except FileNotFoundError:
+                    if entrance == entrance.parent:
+                        break
+                    entrance = entrance.parent
+                else:
+                    entrance.stat()  # dangling intermediate entrances are unavailable
+                    break
+            return MachineSourceReadiness("missing", "machine telemetry database is absent", path)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OSError("machine telemetry database is not a regular file")
+        with closing(connect_readonly(path)) as conn:
+            for table, validate in validators.items():
+                if not table_exists(conn, table):
+                    states[table] = "missing"
+                    continue
+                try:
+                    validate(conn)
+                    where = ""
+                    params: list[object] = []
+                    if table == "network_sample" and (interface := default_route_interface()):
+                        if not has_leading_index(conn, table, "interface"):
+                            states[table] = "unavailable: default-interface presence has no index"
+                            continue
+                        where, params = " WHERE interface = ?", [interface]
+                    present = conn.execute(f"SELECT 1 FROM {table}{where} LIMIT 1", params).fetchone()
+                    states[table] = "present" if present else "empty"
+                except MachineTelemetrySchemaError as error:
+                    states[table] = f"malformed: {error}"
+                except sqlite3.Error as error:
+                    states[table] = f"unavailable: {error}"
+            if states["metric_sample"] == "present":
+                # MAX without a usable time index can itself scan history.
+                if has_leading_index(conn, "metric_sample", "observed_at") or time_prefix_index(conn, "metric_sample"):
+                    raw = latest_observed_at(conn, "metric_sample")
+                    latest = as_utc(raw) if raw is not None else None
+                    if latest is None:
+                        states["metric_sample"] = "malformed: latest observed_at is invalid"
+                    else:
+                        age = (now or datetime.now(timezone.utc)) - latest
+                        freshness = "stale" if age > timedelta(hours=24) else "current"
+    except (OSError, sqlite3.Error) as error:
+        return MachineSourceReadiness("unavailable", f"machine telemetry unavailable: {error}", path,
+                                      table_status=states)
+    primary = states["metric_sample"]
+    status = ("ready" if primary == "present" else "empty" if primary == "empty"
+              else "missing" if primary == "missing" else "malformed" if primary.startswith("malformed:")
+              else "unavailable")
+    reason = "; ".join(f"{table}={value}" for table, value in states.items())
+    return MachineSourceReadiness(status, f"{reason}; freshness={freshness}", path,
+                                  live_rows=0 if primary == "empty" else None,
+                                  latest_sample_at=latest, freshness=freshness, table_status=states)
 
 
 def metric_samples(
