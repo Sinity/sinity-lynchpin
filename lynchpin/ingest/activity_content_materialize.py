@@ -362,19 +362,19 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _adopt_entrance(entrance: Path, link_target: Path, root: Path) -> None:
-    temporary = entrance.with_name(f".entrance-{uuid.uuid4().hex}")
-    temporary.symlink_to(link_target, target_is_directory=entrance.name.endswith(".partitions"))
-    if entrance.exists() or entrance.is_symlink():
+def _adopt_public_path(public: Path, link_target: Path, root: Path) -> None:
+    temporary = public.with_name(f".link-{uuid.uuid4().hex}")
+    temporary.symlink_to(link_target, target_is_directory=public.name.endswith(".partitions"))
+    if public.exists() or public.is_symlink():
         # Exchange also supports nonempty native store directories. At no point
-        # does a reader lose the old entrance; its original object remains here.
-        atomic_exchange_paths(temporary, entrance)
-        _fsync_directory(entrance.parent)
-        preserved = root / f"preimage-{uuid.uuid4().hex}-{entrance.name}"
+        # does a reader lose the old path; its original object remains here.
+        atomic_exchange_paths(temporary, public)
+        _fsync_directory(public.parent)
+        preserved = root / f"original-{uuid.uuid4().hex}-{public.name}"
         os.replace(temporary, preserved)
         _fsync_directory(root)
     else:
-        os.replace(temporary, entrance)
+        os.replace(temporary, public)
 
 
 def materialize_activity_content(
@@ -383,7 +383,7 @@ def materialize_activity_content(
 ) -> dict[str, Any]:
     """Stage the accumulator and both products, then select them together.
 
-    Old and interrupted generations remain recoverable. Stable file entrances
+    Old and interrupted generations remain recoverable. Stable file public paths
     traverse one directory pointer; readers resolve it before opening a product.
     """
     allow_history_bootstrap = allow_history_bootstrap or (start is None and end is None)
@@ -398,14 +398,14 @@ def materialize_activity_content(
             _copy_bundle(output.parent, legacy, names)
             _flush_bundle(legacy)
             _select_bundle(root, legacy)
-        # Preserve original entrances before replacing them with selected links.
+        # Preserve original public paths before replacing them with selected links.
         # An interrupted adoption serves the same legacy bytes through either path.
         for name in names:
-            entrance = output.parent / name
+            public = output.parent / name
             link_target = Path(root.name) / "current" / name
-            if entrance.is_symlink() and os.readlink(entrance) == str(link_target):
+            if public.is_symlink() and os.readlink(public) == str(link_target):
                 continue
-            _adopt_entrance(entrance, link_target, root)
+            _adopt_public_path(public, link_target, root)
         _fsync_directory(output.parent)
         previous = current.resolve(strict=True)
         selected_output = previous / output.name

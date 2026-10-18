@@ -399,7 +399,7 @@ def run_export(
 
 def _export_command(
     sqlite_path: Path = typer.Option(
-        None, "--db", help="SQLite source-set entrance (default: configured live database)"
+        None, "--db", help="SQLite source path (default: configured live database)"
     ),
     lake_root: Path = typer.Option(
         None,

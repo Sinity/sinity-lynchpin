@@ -154,7 +154,7 @@ runs its publication route. Both are declared AgentCTL operations.
 
 The existing health processors publish each JSONL product and its manifest in
 an immutable generation, then atomically switch one `current` pointer. The
-existing filenames remain the entrances. Fused sleep's two entrances and its
+existing filenames remain the public paths. Fused sleep's two public paths and its
 statistics, trim log and unmatched-session sidecar share that pointer. Writers
 serialize and sync the complete bundle before publication; manifest counts,
 date bounds and the full SHA-256 digest describe the emitted bytes.

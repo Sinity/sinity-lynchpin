@@ -54,118 +54,55 @@ Machine-facing MCP actions expose status, metrics, pressure, services,
 workloads, observations, benchmark runs, diagnostics, and context windows over
 this model.
 
-Machine promotion keeps earlier fact partitions when publishing a new generation.
-It reads the previous watermark's UTC day and later source rows in bounded
-batches. Typed readers and machine aggregates resolve the current partition
-and its predecessors under one logical refresh identity, excluding replaced
-dates and clipping retained history to the requested window. Raw SQL tables
-contain physical partitions; their rows alone are not a complete generation.
+## Machine telemetry
 
-Bounded service-state and cgroup-memory reads seek each existing composite
-index prefix and its timestamp range, then sort only matching rows. Legacy
-sources without eligible indexes retain the ordinary read. No source statistics
-maintenance or index build runs on the capture path. Explicit full rebuilds and uncovered historical prefixes require
-a complete population and remain subject to resource limits. Initial population
-reads the canonical SQLite source. Retained Parquet archives remain unchanged;
-they do not establish a current replacement-tail watermark.
+### Reading the SQLite source
 
-Machine fact tables use columnar storage without ART primary-key or secondary
-indexes. Their full historical indexes cannot be evicted by DuckDB's buffer
-manager, so they can prevent a bounded initial population. Promoters instead
-validate non-null, unique fact keys through spillable SQL before accepting a
-partition. A failed append rolls back and a failed staged replacement preserves
-the earlier partition. The additive migration copies existing machine rows
-exactly inside a transaction; it does not change owner-native captures.
-See [DuckDB's indexing guide](https://duckdb.org/docs/guides/performance/indexing).
+The collector may publish `DATABASE.segments.json`
+(`sinnix-machine-sqlite-segments-v1`) beside its current SQLite file: sealed
+member files, the current file, and each file's recorded identity. Without the
+manifest, the single file is the source. A manifest that is transitioning,
+malformed or incomplete makes the source unavailable; it never makes history
+empty. Sealed members must be checkpointed and unchanged.
 
-For explicit typed-fact restoration, run the declared `repair_machine_facts`
-operation with `--start`, `--end` and, for an initial repair, `--full`.
-It stops the existing `materialize-machine` DAG after source-selected
-promotion. It preserves the other retained products and does not run the
-Polylogue archive campaign. Publication records its separate machine refresh;
-the evidence graph retains its own refresh and coverage until rebuilt.
+Readers hold a shared lock on `DATABASE.segments.lock` (owned by the collector)
+for the whole read, check each member's identity before reading it, and merge
+per-member results in timestamp order. A reader given an explicit file path
+reads only that file. Bounded reads seek the existing composite indexes; they
+never build indexes or write statistics on the source.
 
-Inheritance requires a matching configured SQLite location observation. Unknown
-legacy locations and changed source files require fresh population. This marker
-identifies placement (path, device observation and inode); it is not a content
-digest or retrospective proof of byte continuity. Incremental promotion relies
-on the capture owner's append-only source contract.
+### Readiness and freshness
 
-GPU and cgroup observations retain the native SQLite record ID. Equal timestamps identify
-a sampling instant, not a unique capture: distinct source records remain
-separate facts with their original values. Earlier imported observations keep
-an unknown ID until explicit re-derivation. Native promotion stops after a
-failed machine stage so an already rejected candidate cannot continue scanning
-unrelated historical tables.
+Readiness checks each known table for one row and seeks the newest timestamp
+through an existing time index. It never counts history. Missing files, schema
+failures and read errors stay distinct from empty tables; without a usable
+index, freshness is reported as unknown. Samples older than 24 hours are stale.
 
-Typed machine readers use UTC day bounds, matching native source readers and
-partition windows regardless of the connection's display timezone.
+Promotion freshness compares the newest live timestamp with the newest row in
+the serving generation, per table. A windowed check also compares row counts
+over the same UTC range within a two-second budget; equal counts show matching
+cardinality, not equal payloads.
 
-Native promotion checks availability within each selected table's stage instead
-of counting unrelated historical tables as a readiness preflight. A successful
-zero-row read is empty; a missing or inaccessible selected table fails its stage.
+Producer-service evidence (coverage CLI, context packs, MCP readiness) reads
+service state for the units declared in the runtime inventory, within a
+three-second budget. Inactive and unobserved time are reported separately.
+Live application health (`sinexctl runtime health`, `polylogue status`) is
+reported only by the MCP readiness tool, never by graph or dataset readiness.
+`LYNCHPIN_APPLICATION_HEALTH=0` disables those probes;
+`LYNCHPIN_APPLICATION_HEALTH_TIMEOUT`, `SINEX_RUNTIME_TARGET_CONFIG` and
+`LYNCHPIN_SINEX_HEALTH_CA_CERT` configure them.
 
-An explicit repair may pass `--reuse-machine-candidate` with an owner-retained
-candidate path; repeat the option to recover completed stages from several
-retained attempts. All selected inputs stay protected during startup cleanup.
-Only full partitions with matching source-location and requested
-window evidence, successful stage receipts, exact schemas and matching row counts
-are admitted. Failed and incomplete tables remain excluded. Their validated rows
-are copied into the new private candidate, then normal tail reads pick up later
-captures under the final logical identity. The rejected database never becomes
-the serving store or the write predecessor; the original retained file remains
-unchanged. This option reuses completed repair work, not an entire failed refresh.
+### Promotion
 
-Work-observation promotions record their source observations and implementation digest in the published generation. A completed degraded attempt can satisfy freshness under the same implementation; its degraded status and rejection reason remain visible. Incoming rows follow the existing refresh interval. Changed inputs prevent indefinite reuse of a covered historical window. Changed implementation, missing bindings or unreadable inputs require a new attempt immediately. Source changes during promotion prevent binding publication. Today's growing window remains subject to the refresh interval even when its date bounds match. Explicit `materialize-machine --full` bypasses incremental and memoized skips, including when the plan is explained. Native inputs and rejected receipts remain unchanged.
+Promotion is incremental: it reads from the previous watermark's UTC day in
+bounded batches and keeps earlier partitions under one logical refresh
+identity. Fact keys are validated through spillable SQL instead of DuckDB
+indexes. A failed append rolls back; a failed replacement keeps the earlier
+partition. Inheriting earlier partitions requires the same source location
+(path, device, inode). GPU and cgroup rows keep the native record ID, so equal
+timestamps never merge distinct samples.
 
-Machine promotion freshness compares the newest live and substrate timestamps per supported table in one serving logical generation, including inherited partitions. Rows from failed attempts cannot hide serving-generation lag. The response identifies the selected refresh. A missing, unconfigured, or wrong-type live database makes the check unavailable; an invalid latest timestamp produces a table-specific error. A valid empty table does not establish promotion lag. Newest-row freshness alone does not prove complete historical promotion.
-
-Windowed source readiness also compares machine row counts over the same half-open UTC date range in the live SQLite snapshot and serving logical generation. It reports disagreements even when the newest timestamp is current. Live counts require an indexed time-range query and share a two-second budget; unavailable counts remain null with a reason. Equal counts establish cardinality agreement, not payload equality or uninterrupted capture.
-
-Readiness reports carry separate current application-health observations from `sinexctl runtime health` and `polylogue status --json`. Probes use bounded subprocess timeouts; timeout, missing executable, invalid schema, or transport failure is unavailable evidence. A valid degraded reply preserves its health state and exit code. Current application health does not replace historical dataset coverage. Configure `SINEX_RUNTIME_TARGET_CONFIG`, optional `LYNCHPIN_SINEX_HEALTH_CA_CERT`, and `LYNCHPIN_APPLICATION_HEALTH_TIMEOUT`; `LYNCHPIN_APPLICATION_HEALTH=0` disables live probes for offline use. Default tests disable live probes and use neutral replies.
-
-Coverage CLI JSON, context-pack readiness, and MCP readiness carry the same historical producer-service evidence product. It uses the runtime inventory’s declared host/manager/unit bindings, streamed indexed service-state reads, and a shared three-second query budget. Inactivity and unobserved time are separate; neither proves missing captures or operator inactivity. Bindings describe the current declaration, not historical ownership. Unbound, inaccessible, unindexed, or budget-exhausted evidence is explicit. Interval lists cap at 100 entries per service with truncation and total-count fields; duration totals cover the completed sweep.
-
-
-### Live machine readiness
-
-Readiness probes validate each known source table and seek at most one matching
-row. They do not count lifetime SQLite history. `live_rows` is null when no
-exact count was requested; a valid empty metric table reports zero. Missing
-files, unusable entrances, schema failures and read errors retain distinct
-reasons and per-table states instead of becoming zero samples.
-
-Freshness uses the existing time-index seek. Without a suitable time index,
-freshness is unknown rather than measured by a full-table scan. Indexed metric
-samples older than 24 hours carry stale freshness, independently of substrate
-promotion lag. Historical samples remain readable. Graph readiness reports
-unusable sources as blocked and measured empty sources as partial, preserving
-unknown counts. Explicit exact-count analysis remains available and propagates
-source/schema errors.
-
-
-### Native SQLite source sets
-
-A telemetry owner may publish `DATABASE.segments.json` beside its configured
-current SQLite file. The `sinnix-machine-sqlite-segments-v1` control names relative
-sealed members, the current member, physical observations and the original
-append-lineage observation. A missing manifest retains the single-file route.
-A published but transitioning, malformed or incomplete set is unavailable; it
-never makes historical days empty. Sealed members must be checkpointed and their
-recorded identity unchanged. Active WAL files participate in input fingerprints.
-
-Typed readers merge indexed requested windows across members, apply limits to
-the merged order, and close every cursor and connection on exhaustion or early
-close. Materialization, service evidence, freshness comparisons, native promotion,
-Parquet exports and daily pressure analysis use the same selection. Native
-DuckDB attachments are detached before releasing the source lock. Diagnostic
-reader calls with an explicit file path retain their single-file meaning; the
-archive exporter resolves the whole set beside its explicit entrance.
-
-The owner supplies `DATABASE.segments.lock`; readers take shared locks and
-refuse a concurrent exclusive cutover. Readers never create owner state.
-A lossless rename preserves the original append lineage so rotation alone does
-not invalidate retained predecessor partitions. This reader contract does not
-perform rotation, prove restored-copy identity, or change the existing timestamp
-tail policy for late observations. Those require owner cutover and recovery
-acceptance before publishing a production manifest.
+`repair_machine_facts --start D --end D [--full]` restores typed facts for a
+window; `--reuse-machine-candidate PATH` admits completed, schema- and
+count-matching stages from a retained candidate. `materialize-machine --full`
+bypasses incremental and memoized skips.

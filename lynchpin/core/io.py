@@ -203,7 +203,7 @@ def require_analysis_artifact(name: str) -> dict[str, Any]:
 
 
 def atomic_exchange_paths(left: Path, right: Path) -> None:
-    """Atomically exchange sibling filesystem entrances with Linux renameat2."""
+    """Atomically exchange two sibling paths with Linux renameat2."""
     libc = ctypes.CDLL(None, use_errno=True)
     renameat2 = getattr(libc, "renameat2", None)
     if renameat2 is None:

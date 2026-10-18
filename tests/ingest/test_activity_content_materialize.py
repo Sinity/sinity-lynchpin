@@ -446,7 +446,7 @@ def test_legacy_adoption_keeps_entrances_readable(content_refresh, monkeypatch, 
     original = materializer.os.replace
     with monkeypatch.context() as patch:
         def interrupt(source, destination):
-            if destination.name.startswith("preimage-") and destination.name.endswith("-" + entrance_name):
+            if destination.name.startswith("original-") and destination.name.endswith("-" + entrance_name):
                 assert sum(row.focused_seconds for row in activity_content.iter_activity_content_days(ensure=False)) == 120
                 assert sum(row.focused_seconds for row in activity_content.iter_activity_title_usage(ensure=False)) == 120
                 raise RuntimeError("injected adoption interruption")

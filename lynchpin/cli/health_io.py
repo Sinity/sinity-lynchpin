@@ -353,12 +353,12 @@ def _publish_product_locked(out: Path, records: list[dict[str, Any]], label: str
     if len(set(names)) != len(names) or any(Path(name).name != name or name in {".", ".."} for name in names):
         raise ValueError("health publication requires distinct local filenames")
     for name in names:
-        entrance = out.parent / name
+        public = out.parent / name
         target = f"{store.name}/current/{name}"
-        if entrance.is_symlink() and os.readlink(entrance) != target:
-            raise ValueError(f"unexpected health product link: {entrance}")
-        if entrance.exists() and not entrance.is_file():
-            raise ValueError(f"health product is not a regular file: {entrance}")
+        if public.is_symlink() and os.readlink(public) != target:
+            raise ValueError(f"unexpected health product link: {public}")
+        if public.exists() and not public.is_file():
+            raise ValueError(f"health product is not a regular file: {public}")
     current = store / "current"
     if current.is_symlink() and not re.fullmatch(r"[0-9a-f]{32}", os.readlink(current)):
         raise ValueError(f"unexpected health generation pointer: {current}")
@@ -367,7 +367,7 @@ def _publish_product_locked(out: Path, records: list[dict[str, Any]], label: str
     if current.is_symlink() and not current.exists():
         raise ValueError(f"health generation pointer is unavailable: {current}")
 
-    # Complete and sync the entire bundle before changing either entrance.
+    # Complete and sync the entire bundle before changing any public link.
     generation = store / uuid4().hex
     generation.mkdir(mode=0o700)
     data = generation / out.name
@@ -400,14 +400,14 @@ def _publish_product_locked(out: Path, records: list[dict[str, Any]], label: str
 
     if not current.exists():
         # Keep every original payload and original metadata as recovery evidence.
-        # Installing entrances is harmless while current selects this preimage.
+        # Installing the links is harmless while current selects these originals.
         previous = store / uuid4().hex
         previous.mkdir(mode=0o700)
         for name in names:
-            entrance = out.parent / name
-            if entrance.exists():
+            public = out.parent / name
+            if public.exists():
                 destination = previous / (f".original-{name}" if name in manifests.values() else name)
-                shutil.copy2(entrance, destination)
+                shutil.copy2(public, destination)
                 with destination.open("rb") as stream:
                     os.fsync(stream.fileno())
         for name, manifest_name in manifests.items():
