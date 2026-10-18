@@ -726,8 +726,10 @@ def test_freshness_missing_segment_table_is_unavailable(tmp_path, monkeypatch):
     payload = json.loads(manifest_path(current).read_text())
     payload["sealed"] = [entry(legacy, "legacy")]
     manifest_path(current).write_text(json.dumps(payload))
-    monkeypatch.setattr("lynchpin.substrate.machine.MACHINE_PROMOTION_FRESHNESS_TABLES",
-                        (("machine_metric_sample", "metric_sample"),))
+    monkeypatch.setattr(
+        "lynchpin.substrate.machine.MACHINE_PROMOTION_FRESHNESS_TABLES",
+        (("machine_metric_sample", "metric_sample"),),
+    )
     conn = duckdb.connect(config={"threads": 1, "memory_limit": "128MB"})
     try:
         conn.execute("CREATE TABLE machine_metric_sample(observed_at TIMESTAMPTZ)")
@@ -743,15 +745,79 @@ def test_freshness_accepts_empty_current_with_retained_history(tmp_path, monkeyp
     from lynchpin.substrate.machine import load_machine_promotion_freshness
 
     sqlite_sources(tmp_path, monkeypatch, new=[])
-    monkeypatch.setattr("lynchpin.substrate.machine.MACHINE_PROMOTION_FRESHNESS_TABLES",
-                        (("machine_metric_sample", "metric_sample"),))
+    monkeypatch.setattr(
+        "lynchpin.substrate.machine.MACHINE_PROMOTION_FRESHNESS_TABLES",
+        (("machine_metric_sample", "metric_sample"),),
+    )
     conn = duckdb.connect(config={"threads": 1, "memory_limit": "128MB"})
     try:
         conn.execute("CREATE TABLE machine_metric_sample(observed_at TIMESTAMPTZ)")
-        conn.execute("INSERT INTO machine_metric_sample VALUES ('2026-01-02T00:00:00Z')")
+        conn.execute(
+            "INSERT INTO machine_metric_sample VALUES ('2026-01-02T00:00:00Z')"
+        )
         result = load_machine_promotion_freshness(conn)
         assert "error" not in result[0]
         assert result[0]["stale"] is False
         assert result[0]["live_max_observed_at"] == "2026-01-02T00:00:00+00:00"
     finally:
         conn.close()
+
+
+def test_source_observations_include_control_members_and_active_wal(
+    tmp_path, monkeypatch
+):
+    import os
+    from datetime import date
+    from lynchpin.sources import source_observations as module
+
+    current, legacy = sqlite_sources(tmp_path, monkeypatch)
+    wal = current.with_name(current.name + "-wal")
+    wal.write_bytes(b"fixture active prefix")
+    os.utime(wal, (1800000000, 1800000000))
+    monkeypatch.setattr(
+        module,
+        "get_config",
+        lambda: SimpleNamespace(
+            machine_telemetry_db=current, available_sources=lambda: {"machine": True}
+        ),
+    )
+    monkeypatch.setattr(module, "_configured_path", lambda _: current)
+    monkeypatch.setattr(module, "_materialized_last_dates", lambda: {})
+    row = module.source_observations(today=date(2026, 1, 3))[0]
+    assert row.available is True
+    assert row.input_paths == tuple(
+        map(str, (manifest_path(current), legacy, current, wal))
+    )
+    assert row.path == str(manifest_path(current))
+    assert row.last_observed == module._mtime_date(wal)
+    legacy.unlink()
+    row = module.source_observations(today=date(2026, 1, 3))[0]
+    assert row.available is False
+    assert "telemetry source set" in row.recommendation
+    assert str(legacy) in row.recommendation
+
+
+def test_config_and_catalog_refuse_incomplete_source_set(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from lynchpin.core.config import LynchpinConfig
+    from lynchpin.sources.observability_catalog import ObservabilityInput
+
+    current, legacy = sqlite_sources(tmp_path, monkeypatch)
+    cfg = replace(LynchpinConfig.from_env(), machine_telemetry_db=current)
+    catalog = ObservabilityInput(
+        "machine.telemetry",
+        "fixture",
+        "raw_capture",
+        "canonical",
+        current,
+        None,
+        "sample",
+        (),
+        "retained",
+        "inspect",
+    )
+    assert cfg.available_sources()["machine"] is True
+    assert catalog.exists is True
+    legacy.unlink()
+    assert cfg.available_sources()["machine"] is False
+    assert catalog.exists is False

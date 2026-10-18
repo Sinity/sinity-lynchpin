@@ -24,6 +24,7 @@ class SourceObservation:
     basis: str | None
     recommendation: str | None
     path: str | None = None
+    input_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,21 @@ def _compute_source_observations(
     materialized_dates = materialized_dates or _materialized_last_dates()
     rows: list[SourceObservation] = []
     for source, is_available in sorted(available.items()):
+        inputs: tuple[Path, ...] = ()
+        machine_error = None
+        machine_entrance = None
+        if source == "machine":
+            from ..core.errors import SourceUnavailableError
+            from .machine_segments import resolve_machine_sources
+
+            try:
+                selected = resolve_machine_sources(cfg.machine_telemetry_db)
+                inputs = selected.input_files()
+                machine_entrance = selected.manifest or selected.current
+                is_available = bool(selected)
+            except SourceUnavailableError as exc:
+                is_available = False
+                machine_error = str(exc)
         observed, basis, path = _source_observed_date(
             source,
             substrate_dates,
@@ -77,6 +93,11 @@ def _compute_source_observations(
         )
         _ = reference
         hint = _REPAIR_HINTS.get(source) if not is_available else None
+        if source == "machine" and is_available and basis == "filesystem":
+            observed = max((value for value in (_mtime_date(member) for member in inputs) if value is not None), default=None)
+            path = machine_entrance
+        if machine_error is not None:
+            hint = "Inspect the configured telemetry source set: " + machine_error
         rows.append(SourceObservation(
             source=source,
             available=is_available,
@@ -84,6 +105,7 @@ def _compute_source_observations(
             basis=basis,
             recommendation=hint,
             path=str(path) if path is not None else None,
+            input_paths=tuple(str(member) for member in inputs),
         ))
     return tuple(rows)
 
