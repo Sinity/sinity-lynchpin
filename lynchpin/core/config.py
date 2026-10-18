@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Optional
 
 _SINNIX_POLYLOGUE_INDEX_DB = Path("/realm/state/polylogue/index.db")
+# Placeholder for capture roots whose placement registry is unavailable.
+_UNRESOLVED_CAPTURE_ROOT = Path("/nonexistent/lynchpin-unresolved-capture-root")
 
 
 
@@ -122,6 +124,8 @@ class LynchpinConfig:
     sinex_runtime_target: Path | None = Path("/etc/sinex/runtime-target.json")
     sinex_health_ca_cert: Path | None = None
     filesystem_layout: Path = Path("/etc/sinnix/filesystem-layout.json")
+    # Why capture roots could not be resolved; those sources then read as absent.
+    filesystem_layout_error: str | None = None
     chisel_cache_root: Path | None = None
     chisel_scratch_root: Path | None = None
 
@@ -196,8 +200,18 @@ class LynchpinConfig:
         repo_root = Path(os.environ.get("LYNCHPIN_REPO_ROOT", Path(__file__).resolve().parents[2]))
         data_root = Path(os.environ.get("LYNCHPIN_DATA_ROOT", "/realm"))
         filesystem_layout = Path(os.environ.get("LYNCHPIN_FILESYSTEM_LAYOUT", "/etc/sinnix/filesystem-layout.json"))
+        from .errors import SourceUnavailableError
+
+        layout_errors: list[str] = []
+
         def capture_default(lane: str) -> Path:
-            return _capture_path(data_root, filesystem_layout, lane)
+            # A missing or invalid layout registry makes these capture sources
+            # absent; it must not stop every other source from loading.
+            try:
+                return _capture_path(data_root, filesystem_layout, lane)
+            except SourceUnavailableError as exc:
+                layout_errors.append(f"{lane}: {exc}")
+                return _UNRESOLVED_CAPTURE_ROOT / lane
 
         # Platform-account exports and bounded communication archives
         # (google, reddit, spotify, raindrop, facebook-messenger, teams,
@@ -416,6 +430,7 @@ class LynchpinConfig:
 
         return cls(
             filesystem_layout=filesystem_layout,
+            filesystem_layout_error="; ".join(layout_errors) or None,
             chisel_cache_root=Path(os.environ["LYNCHPIN_CHISEL_CACHE_ROOT"]) if os.environ.get("LYNCHPIN_CHISEL_CACHE_ROOT") else None,
             chisel_scratch_root=Path(os.environ["LYNCHPIN_CHISEL_SCRATCH_ROOT"]) if os.environ.get("LYNCHPIN_CHISEL_SCRATCH_ROOT") else None,
             repo_root=repo_root, local_root=local_root, sinnix_root=sinnix_root, data_root=data_root,

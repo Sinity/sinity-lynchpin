@@ -298,3 +298,19 @@ def test_activitywatch_index_default_uses_shared_capture_home(monkeypatch, tmp_p
     assert activitywatch_event_index_dir() == tmp_path / "activity/shared/activitywatch/events_by_day"
     explicit = tmp_path / "custom-activity"
     assert activitywatch_event_index_dir(explicit) == explicit / "activitywatch/events_by_day"
+
+
+def test_config_loads_without_filesystem_layout(monkeypatch, tmp_path):
+    import pytest
+    from lynchpin.core.config import LynchpinConfig
+    from lynchpin.core.errors import SourceUnavailableError
+
+    for name in ("LYNCHPIN_ASCIINEMA_ROOT", "LYNCHPIN_KEYLOG_ROOT", "LYNCHPIN_AUDIO_ROOT",
+                 "LYNCHPIN_SCREENSHOT_ROOT", "LYNCHPIN_TRANSCRIPTS_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LYNCHPIN_FILESYSTEM_LAYOUT", str(tmp_path / "absent.json"))
+    cfg = LynchpinConfig.from_env()
+    assert not cfg.keylog_root.exists()
+    assert cfg.filesystem_layout_error is not None and "keylog" in cfg.filesystem_layout_error
+    with pytest.raises(SourceUnavailableError):
+        cfg.capture_path("keylog")
