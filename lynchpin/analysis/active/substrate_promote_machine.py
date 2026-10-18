@@ -7,6 +7,9 @@ SQLite extension is unavailable or the canonical DB path is absent.
 
 from __future__ import annotations
 
+from lynchpin.sources.machine_segments import MachineSourceSet, resolve_machine_sources, attach_machine_sources, iter_machine_segments
+from lynchpin.core.errors import SourceUnavailableError
+
 import gc
 from collections.abc import Callable
 from dataclasses import replace
@@ -192,7 +195,7 @@ def _run_machine_stage(
     except Exception as exc:
         from lynchpin.substrate.connection import CandidateGenerationRejected
 
-        if isinstance(exc, CandidateGenerationRejected):
+        if isinstance(exc, (CandidateGenerationRejected, SourceUnavailableError)):
             raise
         reason = f"{type(exc).__name__}: {exc}"
         row_count = _machine_count_delta(before, counts)
@@ -265,12 +268,14 @@ def promote_machine_tables(
     # cgroup-memory bug, just third in a queue that never drained.
     fast_ok = False
     sqlite_path = _machine_sqlite_path()
-    if sqlite_path and sqlite_path.exists():
+    sources = resolve_machine_sources(sqlite_path) if sqlite_path is not None else None
+    if sources and sqlite_path is not None:
         try:
             _promote_machine_fast(
                 conn,
                 refresh_id=refresh_id,
                 sqlite_path=sqlite_path,
+                sources=sources,
                 window_start=window_start,
                 window_end=window_end,
                 counts=counts,
@@ -481,6 +486,7 @@ def _promote_machine_fast(
     *,
     refresh_id: str,
     sqlite_path: Path,
+    sources: MachineSourceSet | None = None,
     window_start: date,
     window_end: date,
     counts: dict[str, int],
@@ -500,14 +506,13 @@ def _promote_machine_fast(
     under a new generation; typed readers resolve its retained predecessor
     partitions. Explicit full rebuilds and uncovered prefixes use full scans.
     """
-    from lynchpin.substrate.machine_lineage import machine_predecessor, machine_relation, record_machine_partition, validate_machine_keys, sqlite_location_identity
+    from lynchpin.substrate.machine_lineage import machine_predecessor, machine_relation, record_machine_partition, validate_machine_keys
 
-    input_fingerprint = sqlite_location_identity(sqlite_path)
+    sources = sources if sources is not None else resolve_machine_sources(sqlite_path)
+    input_fingerprint = sources.lineage_identity()
     t_total = time.monotonic()
     conn.execute("INSTALL SQLITE")
     conn.execute("LOAD SQLITE")
-    escaped_path = str(sqlite_path).replace("'", "''")
-    conn.execute(f"ATTACH '{escaped_path}' AS machine_src (TYPE SQLITE, READ_ONLY)")
 
     projections = _machine_projections()
 
@@ -522,82 +527,141 @@ def _promote_machine_fast(
         ("kill_event", "machine_kill_event", SOURCE_MACHINE_KILL_EVENT, selection.includes(SOURCE_MACHINE_KILL_EVENT)),
     ]
 
-    for src_table, dst_table, source, enabled in tables:
-        if not enabled:
-            continue
-        def promote_table() -> None:
-            t0 = time.monotonic()
-            # Validate the selected source's presence without scanning unrelated
-            # historical tables. A successful zero-row read means this lane is
-            # empty; missing/inaccessible tables fail their own stage.
-            source_columns = {column[0] for column in conn.execute(f"SELECT * FROM machine_src.{src_table} LIMIT 0").description}
-            if src_table in {"gpu_sample", "cgroup_memory_sample"}:
-                if "id" not in source_columns:
-                    projections[src_table][1]["source_row_id"] = "NULL"
-            watermark = None
-            predecessor = None
-            if not full_repromote or dst_table in recovered_tables:
-                current_rows = conn.execute(
-                    f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?", [refresh_id]
-                ).fetchone()[0]
-                existing_lineage = conn.execute(
-                    "SELECT predecessor_refresh_id, window_start, input_fingerprint FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?",
-                    [dst_table, refresh_id],
-                ).fetchone()
-                if not current_rows and existing_lineage is None:
-                    predecessor = machine_predecessor(
-                        conn, table=dst_table, source=source, refresh_id=refresh_id,
-                        window_start=window_start, window_end=window_end,
-                        input_fingerprint=input_fingerprint,
+    with attach_machine_sources(conn, sources, alias="machine_src", tables=(src for src, _, _, enabled in tables if enabled)):
+        for src_table, dst_table, source, enabled in tables:
+            if not enabled:
+                continue
+            def promote_table() -> None:
+                t0 = time.monotonic()
+                # Validate the selected source's presence without scanning unrelated
+                # historical tables. A successful zero-row read means this lane is
+                # empty; missing/inaccessible tables fail their own stage.
+                source_columns = {column[0] for column in conn.execute(f"SELECT * FROM machine_src.{src_table} LIMIT 0").description}
+                if src_table in {"gpu_sample", "cgroup_memory_sample"}:
+                    if "id" not in source_columns:
+                        projections[src_table][1]["source_row_id"] = "NULL"
+                watermark = None
+                predecessor = None
+                if not full_repromote or dst_table in recovered_tables:
+                    current_rows = conn.execute(
+                        f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?", [refresh_id]
+                    ).fetchone()[0]
+                    existing_lineage = conn.execute(
+                        "SELECT predecessor_refresh_id, window_start, input_fingerprint FROM substrate_product_lineage WHERE product = ? AND refresh_id = ?",
+                        [dst_table, refresh_id],
+                    ).fetchone()
+                    if not current_rows and existing_lineage is None:
+                        predecessor = machine_predecessor(
+                            conn, table=dst_table, source=source, refresh_id=refresh_id,
+                            window_start=window_start, window_end=window_end,
+                            input_fingerprint=input_fingerprint,
+                        )
+                    relation = machine_relation(conn, dst_table, predecessor or refresh_id)
+                    covers_prefix = existing_lineage is None or (
+                        existing_lineage[1] is not None and existing_lineage[1] <= window_start
+                        and existing_lineage[2] == input_fingerprint
                     )
-                relation = machine_relation(conn, dst_table, predecessor or refresh_id)
-                covers_prefix = existing_lineage is None or (
-                    existing_lineage[1] is not None and existing_lineage[1] <= window_start
-                    and existing_lineage[2] == input_fingerprint
-                )
-                watermark = conn.execute(
-                    f"SELECT MAX(observed_at) FROM {relation} "
-                    f"WHERE refresh_id = ? "
-                    f"AND observed_at >= CAST(? AS TIMESTAMPTZ) "
-                    f"AND observed_at < CAST(? AS TIMESTAMPTZ)",
-                    [
-                        predecessor or refresh_id,
-                        _utc_midnight(window_start),
-                        _utc_midnight(window_end + timedelta(days=1)),
-                    ],
-                ).fetchone()[0] if covers_prefix else None
-            if watermark is not None:
+                    watermark = conn.execute(
+                        f"SELECT MAX(observed_at) FROM {relation} "
+                        f"WHERE refresh_id = ? "
+                        f"AND observed_at >= CAST(? AS TIMESTAMPTZ) "
+                        f"AND observed_at < CAST(? AS TIMESTAMPTZ)",
+                        [
+                            predecessor or refresh_id,
+                            _utc_midnight(window_start),
+                            _utc_midnight(window_end + timedelta(days=1)),
+                        ],
+                    ).fetchone()[0] if covers_prefix else None
+                if watermark is not None:
+                    try:
+                        row_count = _promote_machine_table_incremental(
+                            conn,
+                            src_table=src_table,
+                            dst_table=dst_table,
+                            refresh_id=refresh_id,
+                            sqlite_path=sqlite_path,
+                            sources=sources,
+                            window_start=window_start,
+                            window_end=window_end,
+                            watermark=watermark,
+                            predecessor=predecessor,
+                        )
+                    except Exception as exc:
+                        if _is_memory_exhaustion(exc):
+                            raise
+                        if _is_fatal_duckdb_error(exc) or predecessor is not None or existing_lineage is not None:
+                            raise
+                        log.warning(
+                            "substrate_promote: %s incremental promotion failed, "
+                            "falling back to full re-promote: %s",
+                            dst_table,
+                            exc,
+                        )
+                    else:
+                        counts[dst_table] = row_count
+                        log.info(
+                            "substrate_promote: %s ← %s (incremental, watermark %s): "
+                            "%s rows in %.1fs",
+                            dst_table,
+                            src_table,
+                            watermark,
+                            f"{row_count:,}",
+                            time.monotonic() - t0,
+                        )
+                        record_source_status(
+                            conn,
+                            refresh_id=refresh_id,
+                            source=source,
+                            status="ok" if row_count else "empty",
+                            reason=None,
+                            row_count=row_count,
+                            window_start=window_start,
+                            window_end=window_end,
+                        )
+                        return
+
+                # Validate a complete private replacement before changing the
+                # target partition. The outer generation publishes only after
+                # every selected source has passed.
+                staging_table = _staging_table_name()
                 try:
-                    row_count = _promote_machine_table_incremental(
-                        conn,
-                        src_table=src_table,
-                        dst_table=dst_table,
-                        refresh_id=refresh_id,
-                        sqlite_path=sqlite_path,
-                        window_start=window_start,
-                        window_end=window_end,
-                        watermark=watermark,
-                        predecessor=predecessor,
+                    columns, overrides = projections[src_table]
+                    select_exprs = ", ".join(f"{overrides.get(c, c)} AS {c}" for c in columns)
+                    # DuckDB does not push this predicate down into SQLite, so one
+                    # statement per table is the measured scan-minimizing route.
+                    date_filter, date_params = _source_window_filter(window_start, window_end)
+                    conn.execute(
+                        f"CREATE TEMP TABLE {staging_table} AS SELECT * FROM {dst_table} WHERE FALSE"
                     )
-                except Exception as exc:
-                    if _is_memory_exhaustion(exc):
-                        raise
-                    if _is_fatal_duckdb_error(exc) or predecessor is not None or existing_lineage is not None:
-                        raise
-                    log.warning(
-                        "substrate_promote: %s incremental promotion failed, "
-                        "falling back to full re-promote: %s",
-                        dst_table,
-                        exc,
+                    conn.execute(
+                        f"INSERT INTO {staging_table} ({', '.join(columns)}, refresh_id) "
+                        f"SELECT {select_exprs}, ? AS refresh_id "
+                        f"FROM machine_src.{src_table} {date_filter}",
+                        [refresh_id, *date_params],
                     )
-                else:
+                    validate_machine_keys(conn, staging_table, refresh_id, table=dst_table)
+                    gc.collect()
+                    # These writes remain private to the candidate generation;
+                    # its atomic publication preserves the earlier serving store.
+                    conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [refresh_id])
+                    conn.execute(
+                        f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
+                        f"SELECT {', '.join(columns)}, refresh_id FROM {staging_table}"
+                    )
+                    row_count = conn.execute(
+                        f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?",
+                        [refresh_id],
+                    ).fetchone()[0]
+                    record_machine_partition(
+                        conn, table=dst_table, refresh_id=refresh_id,
+                        window_start=window_start, window_end=window_end,
+                        logical_row_count=row_count, input_fingerprint=input_fingerprint,
+                    )
                     counts[dst_table] = row_count
                     log.info(
-                        "substrate_promote: %s ← %s (incremental, watermark %s): "
-                        "%s rows in %.1fs",
+                        "substrate_promote: %s ← machine_src.%s: %s rows in %.1fs",
                         dst_table,
                         src_table,
-                        watermark,
                         f"{row_count:,}",
                         time.monotonic() - t0,
                     )
@@ -611,86 +675,29 @@ def _promote_machine_fast(
                         window_start=window_start,
                         window_end=window_end,
                     )
-                    return
+                finally:
+                    try:
+                        conn.execute(f"DROP TABLE IF EXISTS {staging_table}")
+                    except Exception:
+                        log.debug("could not drop machine promotion staging table", exc_info=True)
 
-            # Validate a complete private replacement before changing the
-            # target partition. The outer generation publishes only after
-            # every selected source has passed.
-            staging_table = _staging_table_name()
-            try:
-                columns, overrides = projections[src_table]
-                select_exprs = ", ".join(f"{overrides.get(c, c)} AS {c}" for c in columns)
-                # DuckDB does not push this predicate down into SQLite, so one
-                # statement per table is the measured scan-minimizing route.
-                date_filter, date_params = _source_window_filter(window_start, window_end)
-                conn.execute(
-                    f"CREATE TEMP TABLE {staging_table} AS SELECT * FROM {dst_table} WHERE FALSE"
-                )
-                conn.execute(
-                    f"INSERT INTO {staging_table} ({', '.join(columns)}, refresh_id) "
-                    f"SELECT {select_exprs}, ? AS refresh_id "
-                    f"FROM machine_src.{src_table} {date_filter}",
-                    [refresh_id, *date_params],
-                )
-                validate_machine_keys(conn, staging_table, refresh_id, table=dst_table)
-                gc.collect()
-                # These writes remain private to the candidate generation;
-                # its atomic publication preserves the earlier serving store.
-                conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [refresh_id])
-                conn.execute(
-                    f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
-                    f"SELECT {', '.join(columns)}, refresh_id FROM {staging_table}"
-                )
-                row_count = conn.execute(
-                    f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?",
-                    [refresh_id],
-                ).fetchone()[0]
-                record_machine_partition(
-                    conn, table=dst_table, refresh_id=refresh_id,
-                    window_start=window_start, window_end=window_end,
-                    logical_row_count=row_count, input_fingerprint=input_fingerprint,
-                )
-                counts[dst_table] = row_count
-                log.info(
-                    "substrate_promote: %s ← machine_src.%s: %s rows in %.1fs",
-                    dst_table,
-                    src_table,
-                    f"{row_count:,}",
-                    time.monotonic() - t0,
-                )
-                record_source_status(
-                    conn,
-                    refresh_id=refresh_id,
-                    source=source,
-                    status="ok" if row_count else "empty",
-                    reason=None,
-                    row_count=row_count,
-                    window_start=window_start,
-                    window_end=window_end,
-                )
-            finally:
-                try:
-                    conn.execute(f"DROP TABLE IF EXISTS {staging_table}")
-                except Exception:
-                    log.debug("could not drop machine promotion staging table", exc_info=True)
+            succeeded = _run_machine_stage(
+                conn,
+                refresh_id=refresh_id,
+                stage=_MACHINE_STAGE_NAMES[source],
+                source=source,
+                counts=counts,
+                window_start=window_start,
+                window_end=window_end,
+                fn=promote_table,
+            )
+            if not succeeded:
+                from lynchpin.substrate.connection import CandidateGenerationRejected
 
-        succeeded = _run_machine_stage(
-            conn,
-            refresh_id=refresh_id,
-            stage=_MACHINE_STAGE_NAMES[source],
-            source=source,
-            counts=counts,
-            window_start=window_start,
-            window_end=window_end,
-            fn=promote_table,
-        )
-        if not succeeded:
-            from lynchpin.substrate.connection import CandidateGenerationRejected
+                raise CandidateGenerationRejected(f"machine stage {_MACHINE_STAGE_NAMES[source]} failed; stop before further scans")
 
-            raise CandidateGenerationRejected(f"machine stage {_MACHINE_STAGE_NAMES[source]} failed; stop before further scans")
-
-    total_elapsed = time.monotonic() - t_total
-    log.info("substrate_promote: machine tables done in %.1fs", total_elapsed)
+        total_elapsed = time.monotonic() - t_total
+        log.info("substrate_promote: machine tables done in %.1fs", total_elapsed)
 
 
 def _utc_midnight(day: date) -> str:
@@ -705,6 +712,7 @@ def _promote_machine_table_incremental(
     dst_table: str,
     refresh_id: str,
     sqlite_path: Path,
+    sources: MachineSourceSet | None = None,
     window_start: date,
     window_end: date,
     watermark: datetime,
@@ -722,6 +730,7 @@ def _promote_machine_table_incremental(
     (``< window_start``), since the caller's window advances by roughly a day
     on every run and the full path would otherwise have dropped them.
     """
+    sources = sources if sources is not None else resolve_machine_sources(sqlite_path)
     reader, promoter, sample_kwarg = _incremental_reader_and_promoter(src_table)
     tail_start = max(watermark.astimezone(timezone.utc).date(), window_start)
 
@@ -735,9 +744,9 @@ def _promote_machine_table_incremental(
         f"AND observed_at < CAST(? AS TIMESTAMPTZ)",
         [refresh_id, _utc_midnight(window_start)],
     )
-    kwargs = {sample_kwarg: reader(start=tail_start, end=window_end, path=sqlite_path)}
+    kwargs = {sample_kwarg: iter_machine_segments(sources, reader, start=tail_start, end=window_end)}
     promoter(conn, refresh_id=refresh_id, delete_existing=False, **kwargs)
-    from lynchpin.substrate.machine_lineage import MACHINE_TABLES, machine_relation, record_machine_partition, sqlite_location_identity
+    from lynchpin.substrate.machine_lineage import MACHINE_TABLES, machine_relation, record_machine_partition
 
     relation = dst_table
     if dst_table in MACHINE_TABLES:
@@ -753,7 +762,7 @@ def _promote_machine_table_incremental(
             conn, table=dst_table, refresh_id=refresh_id,
             window_start=window_start, window_end=window_end,
             predecessor=predecessor, replacement_start=tail_start if predecessor else None,
-            input_fingerprint=sqlite_location_identity(sqlite_path),
+            input_fingerprint=sources.lineage_identity(),
         )
         relation = machine_relation(conn, dst_table, refresh_id)
     count = int(conn.execute(

@@ -15,12 +15,13 @@ import sqlite3
 import socket
 import stat
 from contextlib import closing
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
 from ..core.config import get_config
+from ..core.errors import SourceUnavailableError
 from .machine_models import (
     MachineBlockDeviceSample,
     MachineCgroupMemorySample,
@@ -73,6 +74,7 @@ from .machine_sqlite import (
     window_select,
 )
 from .machine_package import iter_machine_table_rows, machine_table_available
+from .machine_segments import MachineSourceSet, resolve_machine_sources, iter_machine_segments, read_machine_segment
 
 __all__ = [
     "MachineBlockDeviceSample",
@@ -110,9 +112,8 @@ def canonical_machine_table_path(table: str) -> Path:
     return get_config().machine_capture_root / f"processed/{table}.ndjson"
 
 
-def _default_machine_db() -> Path | None:
-    db = get_config().machine_telemetry_db
-    return db if db.exists() else None
+def _default_machine_sources() -> MachineSourceSet:
+    return resolve_machine_sources(get_config().machine_telemetry_db)
 
 
 def _observed_at_window(
@@ -156,8 +157,36 @@ def _as_date(value: date | datetime | None) -> date | None:
 
 
 def readiness(*, now: datetime | None = None) -> MachineSourceReadiness:
-    """Probe presence and indexed freshness; never count lifetime history."""
+    """Probe each required segment without counting history."""
     path = get_config().machine_telemetry_db
+    try:
+        sources = _default_machine_sources()
+        if not sources:
+            return _readiness_file(path=path, now=now)
+        probes = [(segment, read_machine_segment(segment, _readiness_file, now=now)) for segment in sources.segments]
+    except (OSError, sqlite3.Error, SourceUnavailableError) as error:
+        return MachineSourceReadiness("unavailable", f"machine telemetry unavailable: {error}", path)
+    states: dict[str, str] = {}
+    for table in dict.fromkeys(key for _, probe in probes for key in probe.table_status):
+        observed = [probe.table_status.get(table, "unavailable: segment could not be inspected") for _, probe in probes]
+        failures = [state for state in observed if state.startswith(("unavailable", "malformed"))]
+        states[table] = (failures[0] if failures else "present" if "present" in observed
+            else "empty" if all(state == "empty" for state in observed)
+            else "missing" if all(state == "missing" for state in observed)
+            else "unavailable: mixed missing and empty segment coverage")
+    primary = states.get("metric_sample", "unavailable")
+    status = ("ready" if primary == "present" else "empty" if primary == "empty"
+              else "missing" if primary == "missing" else "malformed" if primary.startswith("malformed:")
+              else "unavailable")
+    latest = max((probe.latest_sample_at for _, probe in probes if probe.latest_sample_at is not None), default=None)
+    freshness = "unknown" if latest is None else "stale" if (now or datetime.now(timezone.utc)) - latest > timedelta(hours=24) else "current"
+    reason = "; ".join(f"{segment.identity}: {probe.reason}" for segment, probe in probes)
+    return MachineSourceReadiness(status, reason, path, live_rows=0 if status == "empty" else None,
+        latest_sample_at=latest, freshness=freshness, table_status=states)
+
+
+def _readiness_file(*, path: Path, now: datetime | None = None) -> MachineSourceReadiness:
+    """Probe presence and indexed freshness for one already selected object."""
     states: dict[str, str] = {}
     latest: datetime | None = None
     freshness = "unknown"
@@ -236,8 +265,8 @@ def metric_samples(
     *, start: date | datetime | None = None, end: date | datetime | None = None, path: Path | None = None
 ) -> Iterator[MachineMetricSample]:
     if path is None:
-        if db := _default_machine_db():
-            yield from metric_samples(start=start, end=end, path=db)
+        if sources := _default_machine_sources():
+            yield from iter_machine_segments(sources, metric_samples, start=start, end=end)
             return
         yield from _metric_samples_from_ndjson(
             canonical_machine_table_path("metric_sample"), start=start, end=end
@@ -262,8 +291,9 @@ def metric_samples(
 
 def latest_metric_sample(*, path: Path | None = None) -> MachineMetricSample | None:
     if path is None:
-        if db := _default_machine_db():
-            return latest_metric_sample(path=db)
+        if sources := _default_machine_sources():
+            samples = (read_machine_segment(segment, latest_metric_sample) for segment in sources.segments)
+            return max((sample for sample in samples if sample is not None), key=lambda sample: sample.observed_at, default=None)
         latest: MachineMetricSample | None = None
         for latest in _metric_samples_from_ndjson(
             canonical_machine_table_path("metric_sample"),
@@ -434,8 +464,8 @@ def service_states(
     if isinstance(end, datetime):
         end = end.astimezone(timezone.utc)
     if path is None:
-        if db := _default_machine_db():
-            yield from service_states(start=start, end=end, path=db)
+        if sources := _default_machine_sources():
+            yield from iter_machine_segments(sources, service_states, start=start, end=end)
             return
         yield from _service_states_from_ndjson(
             canonical_machine_table_path("service_state"), start=start, end=end
@@ -511,8 +541,8 @@ def block_device_samples(
     path: Path | None = None,
 ) -> Iterator[MachineBlockDeviceSample]:
     if path is None:
-        if db := _default_machine_db():
-            yield from block_device_samples(start=start, end=end, path=db)
+        if sources := _default_machine_sources():
+            yield from iter_machine_segments(sources, block_device_samples, start=start, end=end)
             return
         yield from _block_device_samples_from_ndjson(
             canonical_machine_table_path("block_device_sample"),
@@ -577,8 +607,8 @@ def service_cgroup_io_samples(
     path: Path | None = None,
 ) -> Iterator[MachineServiceCgroupIOSample]:
     if path is None:
-        if db := _default_machine_db():
-            yield from service_cgroup_io_samples(start=start, end=end, path=db)
+        if sources := _default_machine_sources():
+            yield from iter_machine_segments(sources, service_cgroup_io_samples, start=start, end=end)
             return
         yield from _service_cgroup_io_samples_from_ndjson(
             canonical_machine_table_path("service_cgroup_io_sample"),
@@ -634,8 +664,8 @@ def service_cgroup_pressure_samples(
     path: Path | None = None,
 ) -> Iterator[MachineServiceCgroupPressureSample]:
     if path is None:
-        if db := _default_machine_db():
-            yield from service_cgroup_pressure_samples(start=start, end=end, path=db)
+        if sources := _default_machine_sources():
+            yield from iter_machine_segments(sources, service_cgroup_pressure_samples, start=start, end=end)
             return
         yield from _service_cgroup_pressure_samples_from_ndjson(
             canonical_machine_table_path("service_cgroup_pressure_sample"),
@@ -703,8 +733,8 @@ def process_io_delta_samples(
     path: Path | None = None,
 ) -> Iterator[MachineProcessIODeltaSample]:
     if path is None:
-        if db := _default_machine_db():
-            yield from process_io_delta_samples(start=start, end=end, path=db)
+        if sources := _default_machine_sources():
+            yield from iter_machine_segments(sources, process_io_delta_samples, start=start, end=end)
             return
         yield from _process_io_delta_samples_from_ndjson(
             canonical_machine_table_path("process_io_delta_sample"),
@@ -772,17 +802,14 @@ def process_memory_samples(
     limit: int | None = None,
 ) -> Iterator[MachineProcessMemorySample]:
     if path is None:
-        if db := _default_machine_db():
+        if sources := _default_machine_sources():
             yielded = False
-            for sample in process_memory_samples(
-                start=start,
-                end=end,
-                path=db,
-                limit=limit,
+            for sample in iter_machine_segments(
+                sources, process_memory_samples, start=start, end=end, limit=limit,
             ):
                 yielded = True
                 yield sample
-            if yielded:
+            if yielded or sources.manifest is not None:
                 return
         ndjson = canonical_machine_table_path("process_memory_sample")
         if machine_table_available(ndjson):
@@ -846,6 +873,7 @@ def process_memory_growth_candidates(
     end: date | datetime | None = None,
     path: Path | None = None,
     min_samples: int = 2,
+    _include_single: bool = False,
 ) -> list[MachineProcessMemoryGrowth]:
     """First/last pss_anon_kb per process lifetime in the window, via SQL.
 
@@ -856,10 +884,24 @@ def process_memory_growth_candidates(
     that made ``machine explain`` miss its 5s AC before the sinnix-6o2 fix).
     """
     if path is None:
-        db = _default_machine_db()
-        if db is None:
-            return []
-        path = db
+        sources = _default_machine_sources()
+        merged: dict[tuple[int, int | None, str | None], MachineProcessMemoryGrowth] = {}
+        for segment in sources.segments:
+            candidates = read_machine_segment(segment, process_memory_growth_candidates,
+                start=start, end=end, min_samples=1, _include_single=True)
+            for candidate in candidates:
+                key = (candidate.pid, candidate.process_start_time_ticks, candidate.comm)
+                prior = merged.get(key)
+                if prior is None:
+                    merged[key] = candidate
+                    continue
+                first = min((prior, candidate), key=lambda item: item.first_observed_at)
+                last = max((candidate, prior), key=lambda item: item.last_observed_at)
+                merged[key] = replace(last, sample_count=prior.sample_count + candidate.sample_count,
+                    first_observed_at=first.first_observed_at, first_pss_anon_kb=first.first_pss_anon_kb)
+        return [row for row in sorted(merged.values(), key=lambda row: (row.pid, row.process_start_time_ticks or -1, row.comm or ""))
+                if row.sample_count >= max(int(min_samples), 1)
+                and (_include_single or row.last_observed_at > row.first_observed_at)]
     if not path.exists():
         return []
     where, params = _observed_at_window(start, end)
@@ -877,7 +919,7 @@ def process_memory_growth_candidates(
                 FROM process_memory_sample
                 {where_sql}
                 GROUP BY pid, process_start_time_ticks, comm
-                HAVING COUNT(*) >= ? AND MAX(observed_at) > MIN(observed_at)
+                HAVING COUNT(*) >= ? AND (MAX(observed_at) > MIN(observed_at) OR ?)
             )
             SELECT b.pid, b.process_start_time_ticks, b.comm, b.n,
                    b.first_ts, f.pss_anon_kb AS first_pss_anon_kb,
@@ -892,7 +934,7 @@ def process_memory_growth_candidates(
                 AND l.comm IS b.comm AND l.observed_at = b.last_ts
         """
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(sql, [*params, max(int(min_samples), 1)]).fetchall()
+        rows = conn.execute(sql, [*params, max(int(min_samples), 1), int(_include_single)]).fetchall()
     out: list[MachineProcessMemoryGrowth] = []
     for row in rows:
         first_ts = as_utc(row["first_ts"])
@@ -923,8 +965,8 @@ def cgroup_memory_samples(
     path: Path | None = None,
 ) -> Iterator[MachineCgroupMemorySample]:
     if path is None:
-        if db := _default_machine_db():
-            yield from cgroup_memory_samples(start=start, end=end, path=db)
+        if sources := _default_machine_sources():
+            yield from iter_machine_segments(sources, cgroup_memory_samples, start=start, end=end)
             return
         ndjson = canonical_machine_table_path("cgroup_memory_sample")
         if machine_table_available(ndjson):
@@ -1009,8 +1051,8 @@ def kill_events(
     this host so far — the others are schema-supported, not yet populated.
     """
     if path is None:
-        if db := _default_machine_db():
-            yield from kill_events(start=start, end=end, path=db)
+        if sources := _default_machine_sources():
+            yield from iter_machine_segments(sources, kill_events, start=start, end=end)
             return
         ndjson = canonical_machine_table_path("kill_event")
         if machine_table_available(ndjson):
@@ -1210,8 +1252,8 @@ def gpu_samples(
     path: Path | None = None,
 ) -> Iterator[MachineGpuSample]:
     if path is None:
-        if db := _default_machine_db():
-            yield from gpu_samples(start=start, end=end, path=db)
+        if sources := _default_machine_sources():
+            yield from iter_machine_segments(sources, gpu_samples, start=start, end=end)
             return
         yield from _gpu_samples_from_ndjson(
             canonical_machine_table_path("gpu_sample"), start=start, end=end
@@ -1264,8 +1306,8 @@ def network_samples(
     path: Path | None = None,
 ) -> Iterator[MachineNetworkSample]:
     if path is None:
-        if db := _default_machine_db():
-            yield from network_samples(start=start, end=end, path=db)
+        if sources := _default_machine_sources():
+            yield from iter_machine_segments(sources, network_samples, start=start, end=end)
             return
         yield from _network_samples_from_ndjson(
             canonical_machine_table_path("network_sample"), start=start, end=end

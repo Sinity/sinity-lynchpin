@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import json
+import fcntl
+import os
+import stat
 import re
 import sqlite3
 from collections.abc import Sequence
-from contextlib import closing
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator, BinaryIO
+
+from ..core.errors import SourceUnavailableError
 
 from .machine_schema import (
     validate_block_device_schema,
@@ -34,8 +41,106 @@ def as_utc(value: str) -> datetime | None:
         return None
 
 
+_EXPECTED_SQLITE_INODE: ContextVar[tuple[Path, int] | None] = ContextVar(
+    "machine_sqlite_inode", default=None
+)
+
+
+@contextmanager
+def expect_sqlite_inode(path: Path, inode: int) -> Iterator[None]:
+    """Bind opening a configured segment to the manifest's selected object."""
+    token = _EXPECTED_SQLITE_INODE.set((path.absolute(), inode))
+    try:
+        yield
+    finally:
+        _EXPECTED_SQLITE_INODE.reset(token)
+
+
+def machine_lock_path(current: Path) -> Path:
+    return current.with_name(current.name + ".segments.lock")
+
+
+def acquire_machine_read_lock(
+    current: Path, *, required: bool = False
+) -> BinaryIO | None:
+    """The producer creates this file; source readers never write native state."""
+    path = machine_lock_path(current)
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        if required:
+            raise SourceUnavailableError(
+                "machine", path=str(path), reason="source-set lock is missing"
+            )
+        return None
+    if not stat.S_ISREG(before.st_mode):
+        raise SourceUnavailableError(
+            "machine", path=str(path), reason="source-set lock is not a regular file"
+        )
+    held = path.open("rb")
+    try:
+        opened = os.fstat(held.fileno())
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise SourceUnavailableError(
+                "machine", path=str(path), reason="source-set lock was replaced"
+            )
+        try:
+            fcntl.flock(held.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise SourceUnavailableError(
+                "machine", path=str(current), reason="SQLite cutover in progress"
+            ) from exc
+        return held
+    except BaseException:
+        held.close()
+        raise
+
+
+class _ReadConnection(sqlite3.Connection):
+    _source_lock: BinaryIO | None = None
+
+    def close(self) -> None:
+        super().close()
+        held, self._source_lock = self._source_lock, None
+        if held is not None:
+            held.close()
+
+
 def connect_readonly(path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    expected = _EXPECTED_SQLITE_INODE.get()
+
+    def validate() -> None:
+        if expected is None or expected[0] != path.absolute():
+            return
+        try:
+            if path.stat().st_ino != expected[1]:
+                raise SourceUnavailableError(
+                    "machine",
+                    path=str(path),
+                    reason="SQLite segment replaced while opening",
+                )
+        except OSError as exc:
+            raise SourceUnavailableError(
+                "machine", path=str(path), reason=str(exc)
+            ) from exc
+
+    held = acquire_machine_read_lock(path)
+    try:
+        validate()
+        conn = sqlite3.connect(
+            f"{path.resolve().as_uri()}?mode=ro", uri=True, factory=_ReadConnection
+        )
+        conn._source_lock = held
+        try:
+            validate()
+        except BaseException:
+            conn.close()
+            raise
+        return conn
+    except BaseException:
+        if held is not None:
+            held.close()
+        raise
 
 
 def has_leading_index(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -116,12 +221,13 @@ def window_select(
     )
     index_columns = (
         [row[2] for row in conn.execute(f"PRAGMA index_info({index})")]
-        if indexed else []
+        if indexed
+        else []
     )
     if where and nonnull and index_columns[:2] == [prefix, "observed_at"]:
         return (
             _prefixes_sql(table, prefix, index)
-            +             f"SELECT {', '.join(columns)} FROM prefixes CROSS JOIN {table} "
+            + f"SELECT {', '.join(columns)} FROM prefixes CROSS JOIN {table} "
             f"INDEXED BY {index} WHERE prefixes.value IS NOT NULL "
             f"AND {table}.{prefix}=prefixes.value AND {' AND '.join(where)} "
             f"ORDER BY {order}"

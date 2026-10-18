@@ -26,6 +26,8 @@ from typing import Any
 
 import typer
 
+from lynchpin.sources.machine_segments import MachineSourceSet, resolve_machine_sources, attach_machine_sources
+
 log = logging.getLogger(__name__)
 
 # (source table, day-partition column). Every time-series table in the
@@ -288,6 +290,7 @@ def _write_coverage_manifest(
     lake_root: Path,
     sqlite_path: Path,
     generated_at: datetime,
+    sources: MachineSourceSet | None = None,
     metadata_rows: dict[str, int],
 ) -> None:
     """Publish an atomic receipt of every collector table's lake coverage."""
@@ -311,6 +314,10 @@ def _write_coverage_manifest(
         "source_database": str(sqlite_path),
         "tables": tables,
     }
+    if sources is not None and sources.manifest is not None:
+        manifest["source_set"] = {"manifest":str(sources.manifest), "generation":sources.generation,
+            "lineage_identity":sources.lineage_identity(), "input_files":[str(path) for path in sources.input_files()],
+            "segments":[{"id":segment.identity,"path":str(segment.path),"sealed":segment.sealed} for segment in sources.segments]}
     manifest_path = lake_root / "manifest.json"
     fd, tmp_name = tempfile.mkstemp(prefix=".manifest-", dir=lake_root)
     os.close(fd)
@@ -336,6 +343,7 @@ def run_export(
         unknown = set(tables) - {table for table, _ in _TABLES} - set(_METADATA_TABLES)
         if unknown:
             raise ValueError(f"unknown telemetry export tables: {', '.join(sorted(unknown))}")
+    sources = resolve_machine_sources(sqlite_path)
     export_time = now or datetime.now(timezone.utc)
     today = export_time.astimezone(timezone.utc).date()
     lake_root.mkdir(parents=True, exist_ok=True)
@@ -347,50 +355,51 @@ def run_export(
         with _bounded_connect(duckdb, ":memory:") as conn:
             conn.execute(f"SET temp_directory = {_sql_literal(scratch)}")
             conn.execute("INSTALL sqlite; LOAD sqlite;")
-            conn.execute(f"ATTACH {_sql_literal(sqlite_path)} AS src (TYPE SQLITE, READ_ONLY)")
+            with attach_machine_sources(conn, sources, alias="src", tables=(*[table for table, _ in _TABLES if not tables or table in tables], *_METADATA_TABLES)):
 
-            results = []
-            for table, time_col in _TABLES:
-                if tables and table not in tables:
-                    continue
-                log.info(
-                    "machine-telemetry-export: %s (sealed days before %s)",
-                    table,
-                    today.isoformat(),
-                )
-                result = export_table(
-                    conn,
-                    table=table,
-                    time_col=time_col,
-                    lake_root=lake_root,
-                    today=today,
-                    full=full,
-                )
-                results.append(result)
-                if result.days_exported:
+                results = []
+                for table, time_col in _TABLES:
+                    if tables and table not in tables:
+                        continue
                     log.info(
-                        "machine-telemetry-export: %s: %d day(s), %s rows, %.2f MB verified",
+                        "machine-telemetry-export: %s (sealed days before %s)",
                         table,
-                        len(result.days_exported),
-                        f"{result.rows_exported:,}",
-                        result.bytes_written / 1e6,
+                        today.isoformat(),
                     )
-            metadata_rows = {
-                table: _export_metadata_table(conn, table=table, lake_root=lake_root)
-                for table in _METADATA_TABLES
-            }
-            _write_coverage_manifest(
-                lake_root=lake_root,
-                sqlite_path=sqlite_path,
-                generated_at=export_time,
-                metadata_rows=metadata_rows,
-            )
-            return results
+                    result = export_table(
+                        conn,
+                        table=table,
+                        time_col=time_col,
+                        lake_root=lake_root,
+                        today=today,
+                        full=full,
+                    )
+                    results.append(result)
+                    if result.days_exported:
+                        log.info(
+                            "machine-telemetry-export: %s: %d day(s), %s rows, %.2f MB verified",
+                            table,
+                            len(result.days_exported),
+                            f"{result.rows_exported:,}",
+                            result.bytes_written / 1e6,
+                        )
+                metadata_rows = {
+                    table: _export_metadata_table(conn, table=table, lake_root=lake_root)
+                    for table in _METADATA_TABLES
+                }
+                _write_coverage_manifest(
+                    lake_root=lake_root,
+                    sqlite_path=sqlite_path,
+                    sources=sources,
+                    generated_at=export_time,
+                    metadata_rows=metadata_rows,
+                )
+                return results
 
 
 def _export_command(
     sqlite_path: Path = typer.Option(
-        None, "--db", help="Source SQLite (default: configured live database)"
+        None, "--db", help="SQLite source-set entrance (default: configured live database)"
     ),
     lake_root: Path = typer.Option(
         None,

@@ -1073,7 +1073,7 @@ def test_incremental_watermark_appends_new_day_without_full_rescan(
         # forward by one day too (dropping 05-01, adding 05-04).
         _insert_process_io_day(live_db, "2026-05-04")
         conn.statements.clear()
-        real_conn.execute("DETACH machine_src")
+        assert not any(row[0] == "machine_src" for row in real_conn.execute("SELECT database_name FROM duckdb_databases()").fetchall())
         _promote_machine_fast(
             conn,
             refresh_id="test-refresh",
@@ -1380,6 +1380,7 @@ def test_incremental_lake_watermark_uses_utc_day(tmp_path, monkeypatch):
 
     monkeypatch.setattr(module, "_incremental_reader_and_promoter",
                         lambda _: (reader, promoter, "samples"))
+    (tmp_path / "source.sqlite").touch()
     count = module._promote_machine_table_incremental(
         conn, src_table="gpu_sample", dst_table="samples", refresh_id="test",
         sqlite_path=tmp_path / "source.sqlite", window_start=date(2026, 10, 10),
@@ -1499,7 +1500,7 @@ def test_unindexed_machine_tables_reuse_history(tmp_path, monkeypatch, src_table
                 # A late arrival on the watermark day must survive the tail reread.
                 insert("2026-05-03", 20)
                 insert("2026-05-04", 30)
-                real.execute("DETACH machine_src")
+                assert not any(row[0] == "machine_src" for row in real.execute("SELECT database_name FROM duckdb_databases()").fetchall())
                 conn.statements.clear()
             module._promote_machine_fast(
                 conn, refresh_id=refresh, sqlite_path=db, window_start=start,
@@ -1722,16 +1723,16 @@ def test_gpu_samples_with_equal_timestamp_keep_native_record_ids(tmp_path, monke
         promoter._promote_machine_fast(c, refresh_id="first", sqlite_path=db, window_start=date(2026, 5, 1), window_end=date(2026, 5, 1), counts=counts, selection=SourceSelection.from_collection({"machine_gpu_sample"}))
         assert counts["machine_gpu_sample"] == 2
         assert [(row.source_row_id, row.gpu_power_w) for row in load_machine_gpu_samples(c, refresh_id="first")] == [(17, 10.0), (18, 20.0)]
-        c.execute("DETACH machine_src")
+        assert not any(row[0] == "machine_src" for row in c.execute("SELECT database_name FROM duckdb_databases()").fetchall())
         promoter._promote_machine_fast(c, refresh_id="second", sqlite_path=db, window_start=date(2026, 5, 1), window_end=date(2026, 5, 1), counts=counts, selection=SourceSelection.from_collection({"machine_gpu_sample"}))
         assert [(row.source_row_id, row.gpu_power_w) for row in load_machine_gpu_samples(c, refresh_id="second")] == [(17, 10.0), (18, 20.0)]
-        c.execute("DETACH machine_src")
+        assert not any(row[0] == "machine_src" for row in c.execute("SELECT database_name FROM duckdb_databases()").fetchall())
         with sqlite3.connect(db) as native:
             native.execute("DELETE FROM gpu_sample")
         promoter._promote_machine_fast(c, refresh_id="empty", sqlite_path=db, window_start=date(2026, 5, 1), window_end=date(2026, 5, 1), counts=counts, selection=SourceSelection.from_collection({"machine_gpu_sample"}), full_repromote=True)
         assert counts["machine_gpu_sample"] == 0
         assert c.execute("SELECT status FROM substrate_source_status WHERE refresh_id='empty' AND source='machine_gpu_sample' AND kind='stage'").fetchone() == ("empty",)
-        c.execute("DETACH machine_src")
+        assert not any(row[0] == "machine_src" for row in c.execute("SELECT database_name FROM duckdb_databases()").fetchall())
         with sqlite3.connect(db) as native:
             native.execute("DROP TABLE gpu_sample")
         from lynchpin.substrate.connection import CandidateGenerationRejected
@@ -1778,7 +1779,7 @@ def test_cgroup_samples_with_equal_label_and_timestamp_keep_native_ids(tmp_path)
         for refresh in ["first", "second"]:
             _promote_machine_fast(c, refresh_id=refresh, sqlite_path=source, window_start=date(2026, 5, 1), window_end=date(2026, 5, 1), counts={}, selection=SourceSelection.from_collection({"machine_cgroup_memory_sample"}))
             assert [(r.source_row_id, r.memory_current_bytes) for r in load_machine_cgroup_memory_samples(c, refresh_id=refresh)] == [(1, 4096), (2, 8192)]
-            c.execute("DETACH machine_src")
+            assert not any(row[0] == "machine_src" for row in c.execute("SELECT database_name FROM duckdb_databases()").fetchall())
 
 
 def test_machine_predecessor_searches_past_ineligible_newer_candidates(tmp_path):

@@ -142,3 +142,30 @@ promotion lag. Historical samples remain readable. Graph readiness reports
 unusable sources as blocked and measured empty sources as partial, preserving
 unknown counts. Explicit exact-count analysis remains available and propagates
 source/schema errors.
+
+
+### Native SQLite source sets
+
+A telemetry owner may publish `DATABASE.segments.json` beside its configured
+current SQLite file. The `sinnix-machine-sqlite-segments-v1` control names relative
+sealed members, the current member, physical observations and the original
+append-lineage observation. A missing manifest retains the single-file route.
+A published but transitioning, malformed or incomplete set is unavailable; it
+never makes historical days empty. Sealed members must be checkpointed and their
+recorded identity unchanged. Active WAL files participate in input fingerprints.
+
+Typed readers merge indexed requested windows across members, apply limits to
+the merged order, and close every cursor and connection on exhaustion or early
+close. Materialization, service evidence, freshness comparisons, native promotion,
+Parquet exports and daily pressure analysis use the same selection. Native
+DuckDB attachments are detached before releasing the source lock. Diagnostic
+reader calls with an explicit file path retain their single-file meaning; the
+archive exporter resolves the whole set beside its explicit entrance.
+
+The owner supplies `DATABASE.segments.lock`; readers take shared locks and
+refuse a concurrent exclusive cutover. Readers never create owner state.
+A lossless rename preserves the original append lineage so rotation alone does
+not invalidate retained predecessor partitions. This reader contract does not
+perform rotation, prove restored-copy identity, or change the existing timestamp
+tail policy for late observations. Those require owner cutover and recovery
+acceptance before publishing a production manifest.

@@ -1,19 +1,21 @@
 """Historical service observations for currently declared capture producers."""
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, ExitStack
 from datetime import datetime, timezone
 import hashlib
+import heapq
 import json
 import sqlite3
 import time
 from typing import Any
 
 from lynchpin.core.config import get_config
-from lynchpin.core.errors import LynchpinError
+from lynchpin.core.errors import LynchpinError, SourceUnavailableError
 from lynchpin.sources.machine_models import MachineServiceState
 from lynchpin.sources.machine_schema import validate_service_state_schema
-from lynchpin.sources.machine_sqlite import as_utc, connect_readonly
+from lynchpin.sources.machine_sqlite import as_utc, connect_readonly, expect_sqlite_inode
+from lynchpin.sources.machine_segments import resolve_machine_sources
 from lynchpin.sources.service_health import MAX_OBSERVATION_GAP, _sweep_unit
 from lynchpin.sources.sinnix_runtime_inventory import read_inventory
 
@@ -32,11 +34,20 @@ def capture_service_evidence(*, start: datetime, end: datetime, cfg: Any = None)
         result["binding_sha256"] = hashlib.sha256(json.dumps({"hostname":inventory.hostname,"captures":inventory.captures},sort_keys=True).encode()).hexdigest()
         if not inventory.hostname:
             raise ValueError("inventory hostname is missing")
-        with closing(connect_readonly(cfg.machine_telemetry_db)) as conn:
-            conn.execute("BEGIN")
-            validate_service_state_schema(conn)
+        sources = resolve_machine_sources(cfg.machine_telemetry_db)
+        if not sources:
+            raise SourceUnavailableError("machine", reason="no telemetry SQLite source")
+        with ExitStack() as stack:
             deadline = time.monotonic()+3.0
-            conn.set_progress_handler(lambda:int(time.monotonic()>=deadline),1000)
+            connections = []
+            for segment in sources.segments:
+                segment.validate()
+                with expect_sqlite_inode(segment.path, segment.version[0]):
+                    conn = stack.enter_context(closing(connect_readonly(segment.path)))
+                conn.execute("BEGIN")
+                validate_service_state_schema(conn)
+                conn.set_progress_handler(lambda:int(time.monotonic()>=deadline),1000)
+                connections.append(conn)
             cache: dict[tuple[str,str],dict[str,Any]] = {}
             for capture in inventory.captures:
                 producer = capture.get("producer")
@@ -46,39 +57,48 @@ def capture_service_evidence(*, start: datetime, end: datetime, cfg: Any = None)
                     continue
                 key=(producer["unit"],producer["manager"])
                 if key not in cache:
-                    cache[key]=_read_service(conn,host=inventory.hostname,unit=key[0],scope=key[1],start=start,end=end,deadline=deadline)
+                    cache[key]=_read_service(tuple(connections),host=inventory.hostname,unit=key[0],scope=key[1],start=start,end=end,deadline=deadline)
                 result["captures"].append({**record,**cache[key]})
+        for segment in sources.segments:
+            segment.validate()
         result["status"]="available" if all(row["status"] in {"observed","unbound"} for row in result["captures"]) else "partial"
     except (OSError,ValueError,TypeError,KeyError,sqlite3.Error,RuntimeError,LynchpinError) as exc:
         result["reason"]=str(exc)
     return result
 
 
-def _read_service(conn:sqlite3.Connection,*,host:str,unit:str,scope:str,start:datetime,end:datetime,deadline:float)->dict[str,Any]:
+def _read_service(conn:sqlite3.Connection | tuple[sqlite3.Connection, ...],*,host:str,unit:str,scope:str,start:datetime,end:datetime,deadline:float)->dict[str,Any]:
     sql="SELECT observed_at,host,boot_id,unit,scope,active_state,sub_state FROM service_state WHERE unit=? AND observed_at>=? AND observed_at<? AND host=? AND scope=? ORDER BY observed_at"
     args=[unit,(start-MAX_OBSERVATION_GAP).isoformat(),end.isoformat(),host,scope]
     unknown={"status":"unavailable","inactive_seconds":None,"unobserved_seconds":None,"intervals":[]}
     try:
         if time.monotonic()>=deadline:
             return {**unknown,"reason":"service evidence budget exhausted"}
-        plan=conn.execute("EXPLAIN QUERY PLAN "+sql,args).fetchall()
-        if not any("SEARCH" in row[3] and "observed_at" in row[3] for row in plan):
-            return {**unknown,"reason":"no indexed service time-range read"}
+        connections = conn if isinstance(conn, tuple) else (conn,)
+        for connection in connections:
+            with closing(connection.execute("EXPLAIN QUERY PLAN "+sql,args)) as cursor:
+                plan=cursor.fetchall()
+            if not any("SEARCH" in row[3] and "observed_at" in row[3] for row in plan):
+                return {**unknown,"reason":"no indexed service time-range read"}
+        def decoded(cursor):
+            for raw in cursor:
+                observed=as_utc(raw[0])
+                if observed is None:
+                    raise ValueError("invalid service observation timestamp")
+                yield MachineServiceState(observed,*raw[1:])
         def rows():
-            with closing(conn.execute(sql,args)) as cursor:
-                for raw in cursor:
-                    observed=as_utc(raw[0])
-                    if observed is None:
-                        raise ValueError("invalid service observation timestamp")
-                    yield MachineServiceState(observed,*raw[1:])
+            with ExitStack() as stack:
+                streams = [decoded(stack.enter_context(closing(connection.execute(sql,args)))) for connection in connections]
+                yield from heapq.merge(*streams, key=lambda row: row.observed_at)
         totals={"inactive":0.0,"unobserved":0.0}
         intervals=[]
         interval_count=0
-        for interval in _sweep_unit(unit,rows(),start,end):
-            totals[interval.kind]+=(interval.end-interval.start).total_seconds()
-            interval_count+=1
-            if len(intervals)<100:
-                intervals.append({"kind":interval.kind,"start":interval.start.isoformat(),"end":interval.end.isoformat(),"states":list(interval.observed_states)})
+        with closing(rows()) as observations:
+            for interval in _sweep_unit(unit,observations,start,end):
+                totals[interval.kind]+=(interval.end-interval.start).total_seconds()
+                interval_count+=1
+                if len(intervals)<100:
+                    intervals.append({"kind":interval.kind,"start":interval.start.isoformat(),"end":interval.end.isoformat(),"states":list(interval.observed_states)})
         return {"status":"observed","host":host,"scope":scope,
             "inactive_seconds":totals["inactive"],"unobserved_seconds":totals["unobserved"],
             "intervals":intervals,"interval_count":interval_count,"intervals_truncated":interval_count>len(intervals)}

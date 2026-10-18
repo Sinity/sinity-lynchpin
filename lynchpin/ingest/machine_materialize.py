@@ -41,6 +41,7 @@ from ..sources.machine import (
     service_states,
 )
 from ..sources.machine_package import load_machine_manifest, machine_table_files
+from ..sources.machine_segments import machine_source_input_files, resolve_machine_sources, iter_machine_segments
 from ._manifest import atomic_text_writer, write_manifest
 
 MACHINE_TELEMETRY_SCHEMA_VERSION = 2
@@ -261,104 +262,83 @@ def _materialize_machine_telemetry(
         )
     stage_started = time.monotonic()
     cfg = get_config()
-    input_files = machine_input_files(cfg)
+    sources = resolve_machine_sources(Path(cfg.machine_telemetry_db))
+    input_files = sources.input_files()
     source_end = end - timedelta(days=1) if end is not None else None
     reports = {
         "metric_sample": _materialize_table(
             "metric_sample",
-            lambda: metric_samples(
-                start=start, end=source_end, path=cfg.machine_telemetry_db
-            ),
+            lambda: iter_machine_segments(sources, metric_samples, start=start, end=source_end),
             start=start,
             end=end,
             created=created,
         ),
         "gpu_sample": _materialize_table(
             "gpu_sample",
-            lambda: gpu_samples(
-                start=start, end=source_end, path=cfg.machine_telemetry_db
-            ),
+            lambda: iter_machine_segments(sources, gpu_samples, start=start, end=source_end),
             start=start,
             end=end,
             created=created,
         ),
         "network_sample": _materialize_table(
             "network_sample",
-            lambda: network_samples(
-                start=start, end=source_end, path=cfg.machine_telemetry_db
-            ),
+            lambda: iter_machine_segments(sources, network_samples, start=start, end=source_end),
             start=start,
             end=end,
             created=created,
         ),
         "service_state": _materialize_table(
             "service_state",
-            lambda: service_states(
-                start=start, end=source_end, path=cfg.machine_telemetry_db
-            ),
+            lambda: iter_machine_segments(sources, service_states, start=start, end=source_end),
             start=start,
             end=end,
             created=created,
         ),
         "block_device_sample": _materialize_table(
             "block_device_sample",
-            lambda: block_device_samples(
-                start=start, end=source_end, path=cfg.machine_telemetry_db
-            ),
+            lambda: iter_machine_segments(sources, block_device_samples, start=start, end=source_end),
             start=start,
             end=end,
             created=created,
         ),
         "service_cgroup_io_sample": _materialize_table(
             "service_cgroup_io_sample",
-            lambda: service_cgroup_io_samples(
-                start=start, end=source_end, path=cfg.machine_telemetry_db
-            ),
+            lambda: iter_machine_segments(sources, service_cgroup_io_samples, start=start, end=source_end),
             start=start,
             end=end,
             created=created,
         ),
         "service_cgroup_pressure_sample": _materialize_table(
             "service_cgroup_pressure_sample",
-            lambda: service_cgroup_pressure_samples(
-                start=start, end=source_end, path=cfg.machine_telemetry_db
-            ),
+            lambda: iter_machine_segments(sources, service_cgroup_pressure_samples, start=start, end=source_end),
             start=start,
             end=end,
             created=created,
         ),
         "process_io_delta_sample": _materialize_table(
             "process_io_delta_sample",
-            lambda: process_io_delta_samples(
-                start=start, end=source_end, path=cfg.machine_telemetry_db
-            ),
+            lambda: iter_machine_segments(sources, process_io_delta_samples, start=start, end=source_end),
             start=start,
             end=end,
             created=created,
         ),
         "process_memory_sample": _materialize_table(
             "process_memory_sample",
-            lambda: process_memory_samples(
-                start=start, end=source_end, path=cfg.machine_telemetry_db
-            ),
+            lambda: iter_machine_segments(sources, process_memory_samples, start=start, end=source_end),
             start=start,
             end=end,
             created=created,
         ),
         "cgroup_memory_sample": _materialize_table(
             "cgroup_memory_sample",
-            lambda: cgroup_memory_samples(
-                start=start, end=source_end, path=cfg.machine_telemetry_db
-            ),
+            lambda: iter_machine_segments(sources, cgroup_memory_samples, start=start, end=source_end),
             start=start,
             end=end,
             created=created,
         ),
         "kill_event": _materialize_table(
             "kill_event",
-            lambda: kill_events(
-                start=start, end=source_end, path=cfg.machine_telemetry_db
-            ),
+            lambda: iter_machine_segments(sources, kill_events, start=start, end=source_end),
             start=start,
             end=end,
             created=created,
@@ -402,8 +382,7 @@ def _materialize_machine_telemetry(
 
 
 def machine_input_files(cfg: Any) -> tuple[Path, ...]:
-    db = Path(cfg.machine_telemetry_db)
-    return (db,) if db.exists() else ()
+    return machine_source_input_files(cfg)
 
 
 def _materialize_table(

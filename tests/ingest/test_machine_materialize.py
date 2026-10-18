@@ -24,7 +24,9 @@ def _timestamp(day: int, hour: int = 12) -> datetime:
 def _setup_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, samples: list[_Sample]) -> None:
     from lynchpin.ingest import machine_materialize as module
 
-    monkeypatch.setattr(module, "get_config", lambda: SimpleNamespace(machine_telemetry_db=tmp_path / "absent.sqlite"))
+    source = tmp_path / "source.sqlite"
+    source.touch()
+    monkeypatch.setattr(module, "get_config", lambda: SimpleNamespace(machine_telemetry_db=source))
     monkeypatch.setattr(module, "canonical_machine_table_path", lambda table: tmp_path / f"{table}.ndjson")
 
     def metric_rows(*, start=None, end=None, path=None):

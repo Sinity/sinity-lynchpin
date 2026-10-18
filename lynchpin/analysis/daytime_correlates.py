@@ -60,7 +60,6 @@ import json
 import logging
 import math
 import sqlite3
-import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -274,44 +273,50 @@ def _load_git_commits(start: date, end: date) -> dict[date, float]:
 
 def _load_machine_daily() -> dict[str, dict[date, float]]:
     """Daily machine-pressure aggregates from the telemetry capture (read-only)."""
-    path = get_config().machine_telemetry_db
+    from contextlib import closing, nullcontext
+    from lynchpin.sources.machine_segments import resolve_machine_sources
+    from lynchpin.sources.machine_sqlite import acquire_machine_read_lock, connect_readonly, expect_sqlite_inode
+
+    sources = resolve_machine_sources(get_config().machine_telemetry_db)
     out: dict[str, dict[date, float]] = {
         "io_psi_mean": {}, "mem_psi_mean": {}, "swap_max_mb": {}, "kill_events": {},
     }
-    if not path.exists():
-        return out
-    acc: dict[date, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    try:
-        for observed_at, io_psi, mem_psi, swap in conn.execute(
-            "SELECT observed_at, io_psi_some_avg60, memory_psi_some_avg60,"
-            " swap_used_mb FROM metric_sample"
-        ):
-            day = logical_date(datetime.fromisoformat(observed_at))
-            row = acc[day]
-            if io_psi is not None:
-                row["io"].append(float(io_psi))
-            if mem_psi is not None:
-                row["mem"].append(float(mem_psi))
-            if swap is not None:
-                row["swap"].append(float(swap))
-        kill_days = [
-            logical_date(datetime.fromisoformat(observed_at))
-            for (observed_at,) in conn.execute("SELECT observed_at FROM kill_event")
-        ]
-    finally:
-        conn.close()
-    for day, cols in acc.items():
-        if cols["io"]:
-            out["io_psi_mean"][day] = statistics.mean(cols["io"])
-        if cols["mem"]:
-            out["mem_psi_mean"][day] = statistics.mean(cols["mem"])
-        if cols["swap"]:
-            out["swap_max_mb"][day] = max(cols["swap"])
-        out["kill_events"][day] = 0.0
-    for day in kill_days:
-        if day in out["kill_events"]:
-            out["kill_events"][day] += 1.0
+    # Keep running sums and denominators, never a list per historical sample.
+    sums: dict[date, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    counts: dict[date, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    kills: dict[date, int] = defaultdict(int)
+    held = acquire_machine_read_lock(sources.current, required=sources.manifest is not None)
+    with closing(held) if held is not None else nullcontext():
+        for segment in sources.segments:
+            segment.validate()
+            with expect_sqlite_inode(segment.path, segment.version[0]):
+                opened = connect_readonly(segment.path)
+            with closing(opened) as conn:
+                with closing(conn.execute(
+                    "SELECT observed_at, io_psi_some_avg60, memory_psi_some_avg60,"
+                    " swap_used_mb FROM metric_sample"
+                )) as cursor:
+                    for observed_at, io_psi, mem_psi, swap in cursor:
+                        day = logical_date(datetime.fromisoformat(observed_at))
+                        out["kill_events"][day] = 0.0
+                        for key, value in (("io", io_psi), ("mem", mem_psi)):
+                            if value is not None:
+                                sums[day][key] += float(value)
+                                counts[day][key] += 1
+                        if swap is not None:
+                            out["swap_max_mb"][day] = max(
+                                out["swap_max_mb"].get(day, float("-inf")), float(swap)
+                            )
+                with closing(conn.execute("SELECT observed_at FROM kill_event")) as cursor:
+                    for (observed_at,) in cursor:
+                        kills[logical_date(datetime.fromisoformat(observed_at))] += 1
+            segment.validate()
+    for day, columns in counts.items():
+        for key, output in (("io", "io_psi_mean"), ("mem", "mem_psi_mean")):
+            if columns[key]:
+                out[output][day] = sums[day][key] / columns[key]
+    for day in out["kill_events"]:
+        out["kill_events"][day] = float(kills[day])
     return out
 
 

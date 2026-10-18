@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
-import hashlib
-import json
 from typing import Any
 
 MACHINE_KEYS = {
@@ -54,13 +52,12 @@ def validate_machine_keys(conn: Any, physical_table: str, refresh_id: str, *, ta
 def sqlite_location_identity(path: Path) -> str:
     """Bind a partition to its configured SQLite object, not to its byte digest.
 
-    Device numbers are observations: drift safely requires fresh population.
-    The source owner supplies the append-only capture contract.
+    A source-set manifest retains the original observation across lossless
+    rotation. Segment membership/WAL fingerprints are separate evidence inputs;
+    a conserved lineage does not certify content or allow mutable old segments.
     """
-    resolved = path.resolve()
-    stat = resolved.stat()
-    observation = json.dumps([str(resolved), stat.st_dev, stat.st_ino], separators=(",", ":"))
-    return "sqlite-location-v1:" + hashlib.sha256(observation.encode()).hexdigest()
+    from lynchpin.sources.machine_segments import resolve_machine_sources
+    return resolve_machine_sources(path).lineage_identity()
 
 
 def _literal(value: str) -> str:
