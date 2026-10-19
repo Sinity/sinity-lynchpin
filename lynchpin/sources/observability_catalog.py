@@ -116,7 +116,7 @@ def observability_inputs() -> tuple[ObservabilityInput, ...]:
             owner="sinnix",
             layer="operational_view",
             integration_state="derived",
-            path=cfg.sinnix_root / "pkgs/sinnix-observe",
+            path=cfg.sinnix_root / "pkgs/sinnix-hub-server/sinnix_hub_server/observe",
             substrate_table=None,
             grain="on-demand report window",
             state_dimensions=("pressure_snapshot", "systemd_state", "below_window", "project_ledgers"),

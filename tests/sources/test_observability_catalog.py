@@ -43,7 +43,7 @@ def test_observability_catalog_keeps_operational_views_out_of_canonical_data():
     assert "bounded windows" in below.next_action
     assert observe.layer == "operational_view"
     assert observe.path is not None
-    assert observe.path.name == "sinnix-observe"
+    assert observe.path.name == "observe"
     assert observe.retention == "not a canonical dataset"
 
 
