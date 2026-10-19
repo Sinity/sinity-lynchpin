@@ -1,8 +1,7 @@
 """Sinnix generated runtime inventory source.
 
 Reads ``/etc/sinnix/runtime-inventory.json`` by default. Sinnix owns this
-present-tense inventory of runtime classes, managed surfaces, and capture
-outputs; Lynchpin treats it as reference context for interpreting machine
+present-tense inventory of slices, managed units, and capture outputs; Lynchpin treats it as reference context for interpreting machine
 telemetry, not as a substrate fact table.
 """
 
@@ -18,19 +17,17 @@ from ..core.errors import SchemaVersionError
 from ..core.source import SourceReadiness
 
 
-SCHEMA = "sinnix-runtime-inventory-v1"
+SCHEMA = "sinnix-runtime-inventory-v2"
 
 
 @dataclass(frozen=True)
 class SinnixRuntimeInventory:
     hostname: str
-    classes: dict[str, Any]
     slices: dict[str, Any]
-    surfaces: dict[str, Any]
+    units: dict[str, Any]
     observed_services: tuple[dict[str, Any], ...]
     captures: tuple[dict[str, Any], ...]
     mounts: tuple[dict[str, Any], ...]
-    backups: dict[str, Any]
     path: Path
 
 
@@ -72,13 +69,11 @@ def read_inventory(path: Path | None = None) -> SinnixRuntimeInventory:
         raise SchemaVersionError(found=schema, expected=SCHEMA, source="sinnix_runtime_inventory")
     return SinnixRuntimeInventory(
         hostname=str(payload.get("hostname") or ""),
-        classes=_dict_value(payload.get("classes"), "classes"),
         slices=_dict_value(payload.get("slices"), "slices"),
-        surfaces=_dict_value(payload.get("surfaces"), "surfaces"),
+        units=_dict_value(payload.get("units"), "units"),
         observed_services=tuple(_dict_rows(payload.get("observedServices"), "observedServices")),
         captures=tuple(_dict_rows(payload.get("captures"), "captures")),
         mounts=tuple(_dict_rows(payload.get("mounts"), "mounts")),
-        backups=_dict_value(payload.get("backups"), "backups"),
         path=inventory_path,
     )
 

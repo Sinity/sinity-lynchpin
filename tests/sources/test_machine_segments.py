@@ -434,12 +434,10 @@ def test_service_evidence_sweeps_across_the_file_boundary(tmp_path, monkeypatch)
     inventory.write_text(
         json.dumps(
             {
-                "schema": "sinnix-runtime-inventory-v1",
+                "schema": "sinnix-runtime-inventory-v2",
                 "hostname": "fixture-host",
-                "classes": {},
                 "slices": {},
-                "surfaces": {},
-                "backups": {},
+                "units": {},
                 "observedServices": [],
                 "mounts": [],
                 "captures": [

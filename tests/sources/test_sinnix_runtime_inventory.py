@@ -8,15 +8,13 @@ def test_sinnix_runtime_inventory_reads_inventory(tmp_path):
     path.write_text(
         json.dumps(
             {
-                "schema": "sinnix-runtime-inventory-v1",
+                "schema": "sinnix-runtime-inventory-v2",
                 "hostname": "sinnix-prime",
-                "classes": {"observability": {"serviceConfig": {"Slice": "system-critical.slice"}}},
                 "slices": {"system": {"system-critical": {}}, "user": {}},
-                "surfaces": {"machine-telemetry": {"unit": "machine-telemetry.service"}},
+                "units": {"machine-telemetry": {"unit": "machine-telemetry.service"}},
                 "observedServices": [{"name": "machine-telemetry", "unit": "machine-telemetry.service"}],
                 "captures": [{"name": "machine-telemetry", "path": "/realm/data/captures/machine"}],
                 "mounts": [{"path": "/realm", "warnPct": 80, "failPct": 90}],
-                "backups": {"snapshotDirs": [], "backupTargets": []},
             }
         ),
         encoding="utf-8",
@@ -38,13 +36,11 @@ def test_sinnix_runtime_inventory_rejects_wrong_schema(tmp_path):
             {
                 "schema": "old",
                 "hostname": "sinnix-prime",
-                "classes": {},
                 "slices": {},
-                "surfaces": {},
+                "units": {},
                 "observedServices": [],
                 "captures": [],
                 "mounts": [],
-                "backups": {},
             }
         ),
         encoding="utf-8",
@@ -53,4 +49,4 @@ def test_sinnix_runtime_inventory_rejects_wrong_schema(tmp_path):
     status = readiness(path)
 
     assert status.status == "error"
-    assert "sinnix-runtime-inventory-v1" in status.reason
+    assert "sinnix-runtime-inventory-v2" in status.reason
