@@ -28,6 +28,8 @@ the operator's datasets or generated personal results.
   `.agentctl/project.toml` descriptor.
 - Commit and push verified work directly to `master` unless the operator or an
   active workflow says to hold.
+- New batch admission is closed. Use native changes and declared operations;
+  historical batch records remain readable.
 
 ## Tasks
 
@@ -148,8 +150,7 @@ agentctl job start lynchpin converge
 agentctl job start lynchpin chisel
 ```
 
-The descriptor maps both focused and candidate verification to `check`, which
-runs lint, maintained type checks, and the default tests. `materialize_plan`
+The `check` operation runs lint, maintained type checks, and the default tests. `materialize_plan`
 previews the typed catalog; `materialize_node` runs one typed product node;
 `promote_node` atomically publishes a complete substrate generation after its
 product nodes; `promote_incremental` refreshes stale source tails and promotes
