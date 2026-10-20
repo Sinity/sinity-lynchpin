@@ -46,7 +46,7 @@ from .maps import cli as maps_cli
 from .machine.attribution import export_below_windows_for_pressure_episodes, write_below_attribution_analysis
 from .machine.attribution_candidates import write_machine_attribution_candidates
 from .machine.baselines import write_machine_observational_baselines
-from .machine.below import export_live_below_window, write_below_analysis
+from .machine.below import DEFAULT_STABILITY_ROOT, export_live_below_window, write_below_analysis
 from .machine.benchmark_manifest_bundle import (
     analyze_machine_benchmark_manifest_bundle,
     export_machine_benchmark_manifest_bundle,
@@ -226,7 +226,7 @@ def _register_machine(app: typer.Typer) -> None:
 
     @app.command("machine-below", help="Build bounded below process/cgroup analysis from exported windows")
     def _machine_below(
-        root: str = typer.Option("/realm/device/sinnix-prime/stability-lab", "--root"),
+        root: str = typer.Option(str(DEFAULT_STABILITY_ROOT), "--root"),
         top_n: int = typer.Option(20, "--top-n"),
         out: str | None = typer.Option(None, "--out"),
     ) -> None:
@@ -239,7 +239,7 @@ def _register_machine(app: typer.Typer) -> None:
         begin: str = typer.Option(..., "--begin", help="Begin time accepted by below replay/dump"),
         end: str | None = typer.Option(None, "--end", help="End time accepted by below replay/dump"),
         duration: str | None = typer.Option("5 min", "--duration", help="Duration when --end is omitted"),
-        root: str = typer.Option("/realm/device/sinnix-prime/stability-lab", "--root"),
+        root: str = typer.Option(str(DEFAULT_STABILITY_ROOT), "--root"),
         capture_id: str | None = typer.Option(None, "--capture-id"),
         top_n: int = typer.Option(20, "--top-n"),
         timeout_s: int = typer.Option(60, "--timeout-s"),
@@ -267,7 +267,7 @@ def _register_machine(app: typer.Typer) -> None:
     def _machine_below_attribution(
         start: str = typer.Option(None, "--start"),
         end: str = typer.Option(None, "--end"),
-        root: str = typer.Option("/realm/device/sinnix-prime/stability-lab", "--root"),
+        root: str = typer.Option(str(DEFAULT_STABILITY_ROOT), "--root"),
         top_n: int = typer.Option(5, "--top-n"),
         max_attributions: int = typer.Option(500, "--max-attributions"),
         out: str | None = typer.Option(None, "--out"),
@@ -295,7 +295,7 @@ def _register_machine(app: typer.Typer) -> None:
     def _machine_below_export_pressure_windows(
         start: str = typer.Option(None, "--start"),
         end: str = typer.Option(None, "--end"),
-        root: str = typer.Option("/realm/device/sinnix-prime/stability-lab", "--root"),
+        root: str = typer.Option(str(DEFAULT_STABILITY_ROOT), "--root"),
         limit: int = typer.Option(10, "--limit"),
         padding_seconds: int = typer.Option(60, "--padding-seconds"),
         min_duration_seconds: int = typer.Option(120, "--min-duration-seconds"),

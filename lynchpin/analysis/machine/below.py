@@ -11,10 +11,11 @@ import statistics
 import subprocess
 from typing import Any, Sequence
 
+from lynchpin.core.config import get_config
 from lynchpin.core.io import save_json
 
 
-DEFAULT_STABILITY_ROOT = Path("/realm/device/sinnix-prime/stability-lab")
+DEFAULT_STABILITY_ROOT = get_config().machine_host_root / "stability-lab"
 DEFAULT_LIVE_BELOW_STORE = Path("/realm/state/below/store")
 
 

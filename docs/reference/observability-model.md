@@ -106,3 +106,12 @@ timestamps never merge distinct samples.
 window; `--reuse-machine-candidate PATH` admits completed, schema- and
 count-matching stages from a retained candidate. `materialize-machine --full`
 bypasses incremental and memoized skips.
+
+Optional bounded Below bundles default to `stability-lab` beneath the
+configured machine-host root (`LYNCHPIN_MACHINE_HOST_ROOT`). The analysis APIs
+and CLI share that default; `--root` still selects an explicit retained
+bundle location. This directory is an exported-window collection, distinct
+from Below's native live store. Cartography writes beneath the configured
+analysis-output directory through the common resolver, rather than creating
+a canonical source under the published report tree. Historical locations and
+bundle formats remain valid explicit inputs.
