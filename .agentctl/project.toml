@@ -18,8 +18,6 @@ unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME"
 [workspace]
 root = "/realm/worktree"
 default_base = "origin/master"
-verify = { focused = "check", candidate = "check" }
-publish = "master"
 
 [operations.check]
 description = "Run Lynchpin lint, maintained type checks, and default tests"
@@ -218,9 +216,6 @@ result = "exit"
 cache = "none"
 scratch = "nvme"
 timeout_seconds = 3600
-
-[packets]
-admission = "closed"
 
 [operations.snapshot_locations]
 description = "Plan or publish current snapshot lookup address changes without rebuilding captures"
