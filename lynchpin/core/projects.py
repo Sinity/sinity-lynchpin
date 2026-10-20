@@ -128,8 +128,8 @@ ALL_PROJECTS: dict[str, ProjectEntry] = {
     "polylogue": ProjectEntry("polylogue", "/realm/project/polylogue/repo", "ai", True, (".py",), classify_rust_simple),
     "intercept-bounce": ProjectEntry("intercept-bounce", "/realm/project/intercept-bounce/repo", "ai", True, (".rs",), classify_rust_simple),
     "scribe-tap": ProjectEntry("scribe-tap", "/realm/project/scribe-tap/repo", "ai", True, (".c", ".h", ".py"), classify_rust_simple),
-    "knowledge-extract": ProjectEntry("knowledge-extract", "/realm/project/knowledge-extract/repo", "ai", True, (".py",), classify_rust_simple),
-    "pwrank": ProjectEntry("pwrank", "/realm/project/pwrank/repo", "pre-ai", True, (".py", ".vue", ".js"), classify_rust_simple),
+    "knowledge-extract": ProjectEntry("knowledge-extract", "/realm/project/knowledge-extract/repo", "ai", True, (".py",), classify_rust_simple),  # sinnix-path: optional
+    "pwrank": ProjectEntry("pwrank", "/realm/project/pwrank/repo", "pre-ai", True, (".py", ".vue", ".js"), classify_rust_simple),  # sinnix-path: optional
     "knowledgebase": ProjectEntry("knowledgebase", "/realm/archive/knowledgebase", "ai", False, (), classify_knowledgebase),
     # Inactive
     "WSoC13-SpaceCombat-Game": ProjectEntry("WSoC13-SpaceCombat-Game", "_inactive/WSoC13-SpaceCombat-Game", "pre-ai", False, (".cpp", ".h"), None),
@@ -180,7 +180,7 @@ def canonical_project_name(value: object, *, include_inactive: bool = False) -> 
     text = text.rstrip("/").removesuffix(".git")
     text = text.split("#", 1)[0]
 
-    marker = next((root for root in ("/realm/project/", "/realm/projects/") if root in text), None)
+    marker = next((root for root in ("/realm/project/", "/realm/projects/") if root in text), None)  # sinnix-path: pattern
     if marker is not None:
         rel = text.split(marker, 1)[1]
         head = rel.split("/", 1)[0]

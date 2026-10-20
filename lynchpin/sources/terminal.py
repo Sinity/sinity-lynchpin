@@ -229,7 +229,7 @@ def _commands_from_ndjson(path: Path) -> Iterator[AtuinCommand]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 _LAST_CMD_FALLBACK = timedelta(seconds=5)
-_PROJECT_RE = re.compile(r"/realm/projects?/([^/]+)")
+_PROJECT_RE = re.compile(r"/realm/projects?/([^/]+)")  # sinnix-path: pattern
 
 
 def shell_sessions(
@@ -276,9 +276,9 @@ def _categorise_command(cwd: str) -> str:
         return "development:sinex"
     if "sinnix" in lowered:
         return "infrastructure:sinnix"
-    if any(root in lowered for root in ("/realm/project/", "/realm/projects/")):
+    if any(root in lowered for root in ("/realm/project/", "/realm/projects/")):  # sinnix-path: pattern
         return "development:other"
-    if lowered.startswith(("/realm/home", "/home")):
+    if lowered.startswith(("/realm/home", "/home")):  # sinnix-path: pattern
         return "home"
     return "misc"
 
