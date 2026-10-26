@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-from ..core.io import atomic_exchange_paths, latest_mtime_iso
+from ..core.io import atomic_exchange_paths, clone_file, latest_mtime_iso
 from ..core.errors import MaterializationError
 from ..core.cache import input_versions, manifest_versions_current
 from ..core.parse import as_local
@@ -339,12 +339,25 @@ def _copy_bundle(source: Path, destination: Path, names: tuple[str, ...]) -> Non
             # Artifact bytes are immutable; manifest updates replace their inode.
             shutil.copytree(original, target, copy_function=os.link)
         elif name.endswith(".sqlite3"):
-            # Even a legacy accumulator with a live WAL needs a native snapshot.
-            with closing(sqlite3.connect(original.resolve().as_uri() + "?mode=ro", uri=True)) as reader:
-                with closing(sqlite3.connect(target)) as writer:
-                    reader.backup(writer)
+            resolved = original.resolve()
+            if _sqlite_closed(resolved):
+                # A closed rollback-journal database is exactly its file. Shared
+                # extents spare each generation a full rewrite of the accumulator;
+                # the staged run then allocates only the pages it changes.
+                clone_file(resolved, target)
+            else:
+                # A legacy accumulator with a live WAL or journal needs a native snapshot.
+                with closing(sqlite3.connect(resolved.as_uri() + "?mode=ro", uri=True)) as reader:
+                    with closing(sqlite3.connect(target)) as writer:
+                        reader.backup(writer)
         else:
             os.link(original.resolve(), target)
+
+
+def _sqlite_closed(path: Path) -> bool:
+    journal = path.with_name(f"{path.name}-journal")
+    wal = path.with_name(f"{path.name}-wal")
+    return not journal.exists() and (not wal.exists() or wal.stat().st_size == 0)
 
 
 def _select_bundle(root: Path, generation: Path) -> None:

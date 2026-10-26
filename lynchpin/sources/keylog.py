@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime, timedelta
 from collections import Counter
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -21,10 +22,14 @@ from ..core.coverage import CoverageBounds
 from ..core.parse import as_local, iter_dates, parse_datetime
 from ..core.primitives import _instant, date_to_dt_range
 from ..core.primitives import logical_date
+from ..core.input_snapshot import read_input_path
 from ..core.source import read_jsonl_with
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "KeylogEvent",
+    "KeylogAnalysisTail",
     "KeylogDayActivity",
     "KeylogTextSnapshot",
     "log_files",
@@ -212,23 +217,78 @@ def _analysis_records(
     end_local = as_local(end)
 
     def _hydrate(rec: dict[str, Any]) -> _KeylogAnalysisRecord | None:
-        ts = parse_datetime(rec.get("ts"))
-        if ts is None:
+        record = _analysis_record(rec)
+        if record is None:
             return None
-        ts_local = as_local(ts)
-        if _instant(ts_local) < _instant(start_local) or _instant(ts_local) >= _instant(end_local):
+        if _instant(record.ts) < _instant(start_local) or _instant(record.ts) >= _instant(end_local):
             return None
-        return _KeylogAnalysisRecord(
-            ts=ts_local,
-            event=str(rec.get("event") or ""),
-            keycode=rec.get("keycode"),
-            changed=rec.get("changed") if isinstance(rec.get("changed"), bool) else None,
-            modifiers=_modifier_state(rec),
-            text=_text_payload(rec),
-        )
+        return record
 
     for path in _candidate_files(start_local, end_local, ensure=ensure):
         yield from read_jsonl_with(path, _hydrate, source_name="keylog")
+
+
+def _analysis_record(rec: dict[str, Any]) -> _KeylogAnalysisRecord | None:
+    ts = parse_datetime(rec.get("ts"))
+    if ts is None:
+        return None
+    return _KeylogAnalysisRecord(
+        ts=as_local(ts),
+        event=str(rec.get("event") or ""),
+        keycode=rec.get("keycode"),
+        changed=rec.get("changed") if isinstance(rec.get("changed"), bool) else None,
+        modifiers=_modifier_state(rec),
+        text=_text_payload(rec),
+    )
+
+
+class KeylogAnalysisTail:
+    """Analysis records appended to one raw day file after a byte offset.
+
+    Raw day files are append-only, so a refresh that remembers how far it read
+    only needs the bytes written since. Iteration advances ``offset`` past every
+    complete line, including unparseable ones, which a full read skips as well.
+    A final line without its newline is consumed only when it is already a
+    complete JSON object; otherwise the writer is mid-line and the next refresh
+    reads it again from the same offset.
+    """
+
+    def __init__(self, path: Path, offset: int = 0) -> None:
+        self.path = path
+        self.offset = offset
+
+    def __iter__(self) -> Iterator[_KeylogAnalysisRecord]:
+        with read_input_path(self.path).open("rb") as stream:
+            stream.seek(self.offset)
+            for raw in stream:
+                complete = raw.endswith(b"\n")
+                payload: Any = None
+                parsed = False
+                if raw.strip():
+                    try:
+                        payload = json.loads(raw)
+                        parsed = True
+                    except ValueError as exc:
+                        if complete:
+                            logger.warning(
+                                "keylog %s: unparseable JSON at byte %d: %s", self.path.name, self.offset, exc
+                            )
+                if not complete and not isinstance(payload, dict):
+                    return
+                line_offset = self.offset
+                self.offset += len(raw)
+                if not parsed:
+                    continue
+                if not isinstance(payload, dict):
+                    logger.warning("keylog %s: JSON at byte %d is not an object", self.path.name, line_offset)
+                    continue
+                try:
+                    record = _analysis_record(payload)
+                except Exception as exc:  # noqa: BLE001 - a full read skips the same lines
+                    logger.warning("keylog %s: record at byte %d failed: %s", self.path.name, line_offset, exc)
+                    continue
+                if record is not None:
+                    yield record
 
 
 def keypresses(*, start: datetime, end: datetime, ensure: bool = True) -> list[KeylogEvent]:

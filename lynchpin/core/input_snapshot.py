@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import fcntl
 import os
-import shutil
 import stat
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -14,6 +12,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import RLock
 from typing import Iterator
+
+from .io import clone_file
 
 
 @dataclass(frozen=True)
@@ -31,16 +31,6 @@ def _version(path: Path) -> tuple[int, ...] | None:
     if not stat.S_ISREG(value.st_mode):
         raise ValueError(f"materialization input is not a regular file: {path}")
     return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
-
-
-def _copy_file(source: Path, target: Path) -> None:
-    # Clone extents on supporting filesystems; retain a bounded-memory copy
-    # route elsewhere. Never borrow an inode that a producer can append to.
-    try:
-        with source.open("rb") as incoming, target.open("wb") as outgoing:
-            fcntl.ioctl(outgoing.fileno(), 0x40049409, incoming.fileno())  # FICLONE
-    except OSError:
-        shutil.copyfile(source, target)
 
 
 def _copy_prefix(source: Path, target: Path, length: int) -> None:
@@ -117,7 +107,8 @@ class InputSnapshot:
                     if original in append_paths:
                         _copy_prefix(original, target, before[2])
                     else:
-                        _copy_file(original, target)
+                        # Never borrow an inode that a producer can append to.
+                        clone_file(original, target)
                     target.chmod(0o600)
                     os.utime(target, ns=(before[3], before[3]))
                     if original not in append_paths and _version(original) != before:

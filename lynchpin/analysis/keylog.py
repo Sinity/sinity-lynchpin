@@ -6,17 +6,19 @@ products so callers can choose the level of detail they need.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from lynchpin.core.cache import input_versions, manifest_versions_current
 from lynchpin.core.errors import MaterializationError
+from lynchpin.core.input_snapshot import read_input_path
 from lynchpin.core.io import (
     latest_mtime_iso,
     load_json,
@@ -24,6 +26,7 @@ from lynchpin.core.io import (
     save_json,
 )
 from lynchpin.core.primitives import date_to_dt_range, logical_date
+from lynchpin.ingest._manifest import atomic_write_text
 from lynchpin.materializers.partition_store import (
     ArtifactStore,
     ProductPartitionKey,
@@ -341,9 +344,9 @@ def _quoted_bind_lines(text: str) -> tuple[str, ...]:
 class _DayCounters:
     """Per-logical-day accumulation of every keylog analysis measure.
 
-    Each measure is additive across days, so a window's analysis is the sum of
-    its days. That is what lets an incremental refresh rescan only the days
-    whose raw inputs changed.
+    Each measure is additive, so a window's analysis is the sum of its days and
+    a day's counters are the sum of what each raw file contributes to it. That
+    is what lets a refresh read only the bytes appended since the last one.
     """
 
     source_event_count: int = 0
@@ -352,6 +355,16 @@ class _DayCounters:
     shape: Counter[str] = field(default_factory=Counter)
     text: Counter[str] = field(default_factory=Counter)
     text_terms: Counter[str] = field(default_factory=Counter)
+
+    def plus(self, other: _DayCounters) -> _DayCounters:
+        return _DayCounters(
+            source_event_count=self.source_event_count + other.source_event_count,
+            usage=self.usage + other.usage,
+            temporal=self.temporal + other.temporal,
+            shape=self.shape + other.shape,
+            text=self.text + other.text,
+            text_terms=self.text_terms + other.text_terms,
+        )
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -375,6 +388,97 @@ class _DayCounters:
         )
 
 
+class _DayCounterFold:
+    """Fold analysis records, in capture order, into per-logical-day counters.
+
+    The only state carried between records is when each modifier was last
+    pressed, which inferred chords need. Seeding it and the counters from a
+    previous fold continues that fold exactly.
+    """
+
+    def __init__(
+        self,
+        *,
+        by_chord: dict[str, HyprlandKeybind],
+        chord_window_ms: int,
+        recent_modifiers: dict[str, datetime] | None = None,
+        days: dict[date, _DayCounters] | None = None,
+    ) -> None:
+        self.by_chord = by_chord
+        self.chord_window = timedelta(milliseconds=chord_window_ms)
+        self.recent_modifiers = dict(recent_modifiers or {})
+        self.days: dict[date, _DayCounters] = {}
+        self.event_counts: Counter[date] = Counter()
+        for day, counters in (days or {}).items():
+            # Copy the counters so a resumed fold never mutates its seed.
+            self.days[day] = _DayCounters().plus(counters)
+            self.event_counts[day] = counters.source_event_count
+
+    def _day(self, day: date) -> _DayCounters:
+        counters = self.days.get(day)
+        if counters is None:
+            counters = self.days[day] = _DayCounters()
+        return counters
+
+    def add(self, event: Any) -> None:
+        day = logical_date(event.ts)
+        if event.text is not None:
+            counters = self._day(day)
+            counters.text["snapshots"] += 1
+            counters.text["chars"] += len(event.text)
+            words = _content_terms(event.text)
+            counters.text["words"] += len(words)
+            counters.text["lines"] += event.text.count("\n") + 1
+            counters.text_terms.update(words)
+        if event.event != "press":
+            return
+        self.event_counts[day] += 1
+        counters = self._day(day)
+        key = _normalize_event_key(event.keycode)
+        if key is None:
+            return
+        counters.shape["keypress"] += 1
+        if event.changed is True:
+            counters.shape["changed"] += 1
+        else:
+            counters.shape["commandish"] += 1
+        if key in TEXT_SHAPE_KEYS:
+            counters.shape[TEXT_SHAPE_KEYS[key]] += 1
+
+        modifier = MODIFIER_KEYCODES.get(key)
+        if modifier is not None:
+            self.recent_modifiers[modifier] = event.ts
+            return
+
+        exact_modifiers = tuple(sorted(event.modifiers))
+        if exact_modifiers:
+            chord = _chord(exact_modifiers, key)
+            if chord in self.by_chord:
+                counters.usage[(chord, "exact_modifier_state")] += 1
+                counters.temporal[(chord, event.ts.weekday(), event.ts.hour)] += 1
+                return
+
+        active_modifiers = tuple(
+            sorted(
+                name
+                for name, ts in self.recent_modifiers.items()
+                if event.ts - ts <= self.chord_window
+            )
+        )
+        if not active_modifiers:
+            return
+        chord = _chord(active_modifiers, key)
+        if chord in self.by_chord:
+            counters.usage[(chord, "inferred_adjacent_modifier_press")] += 1
+            counters.temporal[(chord, event.ts.weekday(), event.ts.hour)] += 1
+
+    def result(self) -> dict[date, _DayCounters]:
+        return {
+            day: replace(counters, source_event_count=self.event_counts[day])
+            for day, counters in self.days.items()
+        }
+
+
 def _scan_day_counters(
     *,
     start: date,
@@ -385,81 +489,13 @@ def _scan_day_counters(
     """Stream the raw day files once, accumulating measures per logical day."""
 
     start_dt, end_dt = date_to_dt_range(start, end)
-    usage_by_day: dict[date, Counter[tuple[str, str]]] = defaultdict(Counter)
-    temporal_by_day: dict[date, Counter[tuple[str, int, int]]] = defaultdict(Counter)
-    shape_by_day: dict[date, Counter[str]] = defaultdict(Counter)
-    text_by_day: dict[date, Counter[str]] = defaultdict(Counter)
-    terms_by_day: dict[date, Counter[str]] = defaultdict(Counter)
-    events_by_day: Counter[date] = Counter()
-
-    recent_modifiers: dict[str, datetime] = {}
-    chord_window = timedelta(milliseconds=chord_window_ms)
+    fold = _DayCounterFold(by_chord=by_chord, chord_window_ms=chord_window_ms)
     # Keylog files are append-only daily JSONL products, and ``keylog.events``
     # yields them in UTC filename order. Process the stream directly so the
     # analysis does not retain and sort millions of press events at once.
     for event in keylog._analysis_records(start=start_dt, end=end_dt):
-        day = logical_date(event.ts)
-        if event.text is not None:
-            text_by_day[day]["snapshots"] += 1
-            text_by_day[day]["chars"] += len(event.text)
-            words = _content_terms(event.text)
-            text_by_day[day]["words"] += len(words)
-            text_by_day[day]["lines"] += event.text.count("\n") + 1
-            terms_by_day[day].update(words)
-        if event.event != "press":
-            continue
-        events_by_day[day] += 1
-        key = _normalize_event_key(event.keycode)
-        if key is None:
-            continue
-        shape_by_day[day]["keypress"] += 1
-        if event.changed is True:
-            shape_by_day[day]["changed"] += 1
-        else:
-            shape_by_day[day]["commandish"] += 1
-        if key in TEXT_SHAPE_KEYS:
-            shape_by_day[day][TEXT_SHAPE_KEYS[key]] += 1
-
-        modifier = MODIFIER_KEYCODES.get(key)
-        if modifier is not None:
-            recent_modifiers[modifier] = event.ts
-            continue
-
-        exact_modifiers = tuple(sorted(event.modifiers))
-        if exact_modifiers:
-            chord = _chord(exact_modifiers, key)
-            if chord in by_chord:
-                usage_by_day[day][(chord, "exact_modifier_state")] += 1
-                temporal_by_day[day][(chord, event.ts.weekday(), event.ts.hour)] += 1
-                continue
-
-        active_modifiers = tuple(
-            sorted(
-                name
-                for name, ts in recent_modifiers.items()
-                if event.ts - ts <= chord_window
-            )
-        )
-        if not active_modifiers:
-            continue
-        chord = _chord(active_modifiers, key)
-        if chord in by_chord:
-            usage_by_day[day][(chord, "inferred_adjacent_modifier_press")] += 1
-            temporal_by_day[day][(chord, event.ts.weekday(), event.ts.hour)] += 1
-
-    days = set(usage_by_day) | set(temporal_by_day) | set(shape_by_day)
-    days |= set(text_by_day) | set(terms_by_day) | set(events_by_day)
-    return {
-        day: _DayCounters(
-            source_event_count=events_by_day[day],
-            usage=usage_by_day[day],
-            temporal=temporal_by_day[day],
-            shape=shape_by_day[day],
-            text=text_by_day[day],
-            text_terms=terms_by_day[day],
-        )
-        for day in days
-    }
+        fold.add(event)
+    return fold.result()
 
 
 def _compose_analysis(
@@ -727,7 +763,6 @@ def write_keylog_analysis(
             day_counters=_windowed_day_counters(
                 start=start,
                 end=end,
-                bindings_path=bindings_path,
                 by_chord=by_chord,
                 chord_window_ms=1500,
                 cache_path=cache_path,
@@ -776,108 +811,183 @@ def write_keylog_analysis(
     return analysis
 
 
-_DAY_COUNTER_CACHE_SCHEMA = "lynchpin.keylog-day-counters.v1"
+_FILE_COUNTER_CACHE_SCHEMA = "lynchpin.keylog-file-counters.v1"
+_TAIL_CHECK_BYTES = 4096
 
 
-def _day_input_signature(day: date, bindings_path: Path) -> str:
-    """Signature of every raw file a single logical day's counters depend on.
+@dataclass(frozen=True)
+class _FileCounters:
+    """What one raw day file contributed, and how far it has been read."""
 
-    ``keylog._candidate_files`` pads by one day on each side because files are
-    named by UTC date while the logical day is local, so a day's counters can
-    change when any of those three files changes.
-    """
-    inputs = list(
-        keylog.log_files(start=day - timedelta(days=1), end=day + timedelta(days=1), ensure=False)
-    )
-    if bindings_path.exists():
-        inputs.append(bindings_path)
-    return _input_signature(tuple(sorted(dict.fromkeys(inputs))))
+    device: int
+    inode: int
+    offset: int
+    tail_digest: str
+    start_modifiers: dict[str, datetime]
+    end_modifiers: dict[str, datetime]
+    days: dict[date, _DayCounters]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "device": self.device,
+            "inode": self.inode,
+            "offset": self.offset,
+            "tail_digest": self.tail_digest,
+            "start_modifiers": {name: ts.isoformat() for name, ts in sorted(self.start_modifiers.items())},
+            "end_modifiers": {name: ts.isoformat() for name, ts in sorted(self.end_modifiers.items())},
+            "days": {day.isoformat(): counters.to_json() for day, counters in sorted(self.days.items())},
+        }
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> _FileCounters:
+        return cls(
+            device=int(payload["device"]),
+            inode=int(payload["inode"]),
+            offset=int(payload["offset"]),
+            tail_digest=str(payload["tail_digest"]),
+            start_modifiers={str(k): datetime.fromisoformat(str(v)) for k, v in payload["start_modifiers"].items()},
+            end_modifiers={str(k): datetime.fromisoformat(str(v)) for k, v in payload["end_modifiers"].items()},
+            days={date.fromisoformat(str(k)): _DayCounters.from_json(v) for k, v in payload["days"].items()},
+        )
 
 
-def _load_day_counter_cache(path: Path, chord_window_ms: int) -> dict[date, tuple[str, _DayCounters]]:
+def _chords_digest(by_chord: dict[str, HyprlandKeybind]) -> str:
+    return deterministic_input_digest(sorted(by_chord))
+
+
+def _load_file_counter_cache(
+    path: Path, *, chord_window_ms: int, chords_digest: str
+) -> dict[str, _FileCounters]:
     if not path.exists():
         return {}
     try:
         payload = load_json(path)
     except (OSError, ValueError):
         return {}
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or payload.get("schema") != _FILE_COUNTER_CACHE_SCHEMA:
         return {}
-    if payload.get("schema") != _DAY_COUNTER_CACHE_SCHEMA:
+    if payload.get("chord_window_ms") != chord_window_ms or payload.get("chords_digest") != chords_digest:
         return {}
-    if int(payload.get("chord_window_ms") or -1) != chord_window_ms:
-        return {}
-    cached: dict[date, tuple[str, _DayCounters]] = {}
-    for raw_day, entry in (payload.get("days") or {}).items():
+    cached: dict[str, _FileCounters] = {}
+    for name, entry in (payload.get("files") or {}).items():
         try:
-            day = date.fromisoformat(str(raw_day))
-        except ValueError:
+            cached[str(name)] = _FileCounters.from_json(entry)
+        except (KeyError, TypeError, ValueError, AttributeError):
             continue
-        if not isinstance(entry, dict) or not entry.get("digest"):
-            continue
-        cached[day] = (str(entry["digest"]), _DayCounters.from_json(entry.get("counters") or {}))
     return cached
 
 
-def _save_day_counter_cache(
-    path: Path, chord_window_ms: int, entries: dict[date, tuple[str, _DayCounters]]
+def _save_file_counter_cache(
+    path: Path, *, chord_window_ms: int, chords_digest: str, entries: dict[str, _FileCounters]
 ) -> None:
-    save_json(
-        path,
+    # Replace atomically: a refresh stopped mid-write must not cost a cold fold.
+    atomic_write_text(path, json.dumps(
         {
-            "schema": _DAY_COUNTER_CACHE_SCHEMA,
+            "schema": _FILE_COUNTER_CACHE_SCHEMA,
             "chord_window_ms": chord_window_ms,
-            "days": {
-                day.isoformat(): {"digest": digest, "counters": counters.to_json()}
-                for day, (digest, counters) in sorted(entries.items())
-            },
+            "chords_digest": chords_digest,
+            "files": {name: entry.to_json() for name, entry in sorted(entries.items())},
         },
         sort_keys=True,
-    )
+    ))
+
+
+def _tail_digest(path: Path, offset: int) -> str:
+    """Digest the bytes just before ``offset`` to notice an in-place rewrite."""
+
+    begin = max(0, offset - _TAIL_CHECK_BYTES)
+    with path.open("rb") as stream:
+        stream.seek(begin)
+        return hashlib.sha256(stream.read(offset - begin)).hexdigest()
 
 
 def _windowed_day_counters(
     *,
     start: date,
     end: date,
-    bindings_path: Path,
     by_chord: dict[str, HyprlandKeybind],
     chord_window_ms: int,
     cache_path: Path,
 ) -> dict[date, _DayCounters]:
-    """Return the window's per-day counters, rescanning only stale days.
+    """Return the window's per-day counters, reading only appended raw bytes.
 
-    Raw day files are append-only, so on a routine refresh only the current day
-    (and whatever the capture appended to its neighbour) is stale; the rest are
-    served from the counter cache instead of reparsing gigabytes of JSONL.
+    Every raw day file that can hold events of a window day is folded once and
+    remembered with the byte offset it was read to. A later refresh resumes each
+    file at that offset with the modifier state it ended on, so the open capture
+    day costs only what was appended since. A file that was replaced, shrunk,
+    rewritten before its offset, or that follows a file whose final modifier
+    state changed is folded again from its start.
     """
-    days = _date_range(start, end)
-    digests = {day: _day_input_signature(day, bindings_path) for day in days}
-    cached = _load_day_counter_cache(cache_path, chord_window_ms)
-    stale = [day for day in days if cached.get(day, (None,))[0] != digests[day]]
 
-    counters = {day: cached[day][1] for day in days if day not in stale}
-    if stale:
-        # Scan adjacent stale days together without reparsing cached days
-        # between separate changes. A single min/max span can be years long.
-        group_start = group_end = stale[0]
-        for day in (*stale[1:], None):
-            if day is not None and day == group_end + timedelta(days=1):
-                group_end = day
-                continue
-            scanned = _scan_day_counters(
-                start=group_start, end=group_end, by_chord=by_chord,
-                chord_window_ms=chord_window_ms,
-            )
-            for affected in _date_range(group_start, group_end):
-                counters[affected] = scanned.get(affected, _DayCounters())
-            if day is not None:
-                group_start = group_end = day
-        _save_day_counter_cache(
-            cache_path,
-            chord_window_ms,
-            {day: (digests[day], counters[day]) for day in days},
+    files = keylog.log_files(start=start - timedelta(days=1), end=end + timedelta(days=1))
+    chords_digest = _chords_digest(by_chord)
+    cached = _load_file_counter_cache(cache_path, chord_window_ms=chord_window_ms, chords_digest=chords_digest)
+    entries: dict[str, _FileCounters] = {}
+    changed = set(cached) != {str(path) for path in files}
+    carried: dict[str, datetime] | None = None
+    for path in files:
+        source = read_input_path(path)
+        try:
+            stat = source.stat()
+        except FileNotFoundError:
+            continue
+        previous = cached.get(str(path))
+        resumable = (
+            previous is not None
+            and previous.device == stat.st_dev
+            and previous.inode == stat.st_ino
+            and previous.offset <= stat.st_size
+            # The first file's predecessor lies outside the window.
+            and (carried is None or previous.start_modifiers == carried)
+            and _tail_digest(source, previous.offset) == previous.tail_digest
         )
+        if resumable and previous is not None and previous.offset == stat.st_size:
+            entry = previous
+        else:
+            if resumable and previous is not None:
+                start_modifiers = previous.start_modifiers
+                fold = _DayCounterFold(
+                    by_chord=by_chord, chord_window_ms=chord_window_ms,
+                    recent_modifiers=previous.end_modifiers, days=previous.days,
+                )
+                tail = keylog.KeylogAnalysisTail(path, previous.offset)
+            else:
+                start_modifiers = dict(carried or {})
+                fold = _DayCounterFold(
+                    by_chord=by_chord, chord_window_ms=chord_window_ms, recent_modifiers=start_modifiers,
+                )
+                tail = keylog.KeylogAnalysisTail(path)
+            for event in tail:
+                fold.add(event)
+            entry = _FileCounters(
+                device=stat.st_dev,
+                inode=stat.st_ino,
+                offset=tail.offset,
+                tail_digest=_tail_digest(source, tail.offset),
+                start_modifiers=start_modifiers,
+                end_modifiers=fold.recent_modifiers,
+                days=fold.result(),
+            )
+            changed = changed or entry != previous
+            if not resumable:
+                # A whole-file fold can take minutes on a cold cache. Keep it
+                # even if this refresh is interrupted before the window is done.
+                _save_file_counter_cache(
+                    cache_path, chord_window_ms=chord_window_ms, chords_digest=chords_digest,
+                    entries={**cached, **entries, str(path): entry},
+                )
+        entries[str(path)] = entry
+        carried = entry.end_modifiers
+    if changed:
+        _save_file_counter_cache(
+            cache_path, chord_window_ms=chord_window_ms, chords_digest=chords_digest, entries=entries,
+        )
+
+    counters = {day: _DayCounters() for day in _date_range(start, end)}
+    for entry in entries.values():
+        for day, contribution in entry.days.items():
+            if day in counters:
+                counters[day] = counters[day].plus(contribution)
     return counters
 
 

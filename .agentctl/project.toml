@@ -77,9 +77,9 @@ exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "refresh", "--product", "k
 pool = "normal"
 result = "json"
 cache = "none"
-# A routine refresh rescans only the days whose raw keylog files changed and
-# finishes in seconds. The budget covers a cold cache, which reparses the whole
-# 14-day window at roughly 11 MB/s.
+# A routine refresh reads only the keylog bytes appended since the previous one.
+# The budget covers a cold cache, which reparses the whole 14-day window at
+# roughly 11 MB/s; each completed file is kept even if that run times out.
 timeout_seconds = 1800
 
 [operations.repair_operator_day]

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import fcntl
 import json
 import os
+import shutil
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from os import PathLike
@@ -200,6 +202,22 @@ def materialize_analysis_artifacts() -> dict[str, Any]:
 def require_analysis_artifact(name: str) -> dict[str, Any]:
     """Load a required analysis artifact as a JSON object or raise typed errors."""
     return load_json_object(resolve_analysis_path(name), label=name)
+
+
+_FICLONE = 0x40049409  # linux/fs.h
+
+
+def clone_file(source: Path, target: Path) -> None:
+    """Create ``target`` sharing ``source``'s extents, or copy it elsewhere.
+
+    On Btrfs a clone writes no data; later writes to either file allocate only
+    the blocks they change. Filesystems without clones get a streamed copy.
+    """
+    with source.open("rb") as incoming, target.open("xb") as outgoing:
+        try:
+            fcntl.ioctl(outgoing.fileno(), _FICLONE, incoming.fileno())
+        except OSError:
+            shutil.copyfileobj(incoming, outgoing, 1024 * 1024)
 
 
 def atomic_exchange_paths(left: Path, right: Path) -> None:

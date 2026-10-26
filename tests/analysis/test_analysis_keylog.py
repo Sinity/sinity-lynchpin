@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 from lynchpin.analysis import keylog as keylog_analysis
@@ -220,15 +220,7 @@ def test_write_keylog_analysis_saves_metadata_only(tmp_path, monkeypatch) -> Non
     bindings = tmp_path / "bindings.nix"
     bindings.write_text('{ bind = [ "SUPER, Return, exec, kitty" ]; }', encoding="utf-8")
     monkeypatch.setattr(keylog, "get_config", lambda: SimpleNamespace(keylog_root=tmp_path))
-    read_jsonl_with = keylog.read_jsonl_with
-    scans = 0
-
-    def counted_read_jsonl_with(*args, **kwargs):
-        nonlocal scans
-        scans += 1
-        return read_jsonl_with(*args, **kwargs)
-
-    monkeypatch.setattr(keylog, "read_jsonl_with", counted_read_jsonl_with)
+    reads = _record_tails(monkeypatch)
     out = tmp_path / "analysis.json"
 
     analysis = keylog_analysis.write_keylog_analysis(
@@ -253,7 +245,7 @@ def test_write_keylog_analysis_saves_metadata_only(tmp_path, monkeypatch) -> Non
         {"term": "secret", "count": 1},
         {"term": "words", "count": 1},
     ]
-    assert scans == 1
+    assert reads == [("2026-06-05.jsonl", 0)]
     assert "Secret Lynchpin words" not in out.read_text(encoding="utf-8")
     assert saved["caveats"]
 
@@ -354,7 +346,21 @@ def _write_day(logs, day: str, keycode: str, count: int) -> None:
     )
 
 
-def test_write_keylog_analysis_rescans_only_days_whose_inputs_changed(
+def _record_tails(monkeypatch) -> list[tuple[str, int]]:
+    """Record which raw files a refresh reads and from which byte offset."""
+    reads: list[tuple[str, int]] = []
+    original = keylog.KeylogAnalysisTail
+
+    class RecordingTail(original):
+        def __init__(self, path, offset=0):
+            reads.append((path.name, offset))
+            super().__init__(path, offset)
+
+    monkeypatch.setattr(keylog, "KeylogAnalysisTail", RecordingTail)
+    return reads
+
+
+def test_write_keylog_analysis_reads_only_bytes_appended_since_the_last_refresh(
     tmp_path, monkeypatch
 ) -> None:
     logs = tmp_path / "logs"
@@ -370,82 +376,113 @@ def test_write_keylog_analysis_rescans_only_days_whose_inputs_changed(
     first = keylog_analysis.write_keylog_analysis(out, bindings_path=bindings, **window)
     assert first.keypress_count == 6
 
-    # Only the last day gains events. Without per-day counter caching the whole
-    # window is reparsed, so this test goes red on a rescan of the early days.
+    # Only the last file grows. Its earlier bytes and every other file were
+    # already folded, so rereading them is the waste this cache prevents.
+    previous_size = (logs / "2026-06-07.jsonl").stat().st_size
     _write_day(logs, "2026-06-07", "KEY_A", 5)
     keylog._indexed_log_files.cache_clear()
-    scanned: list[tuple[date, date]] = []
-    original = keylog_analysis._scan_day_counters
-
-    def recording_scan(**kwargs):
-        scanned.append((kwargs["start"], kwargs["end"]))
-        return original(**kwargs)
-
-    monkeypatch.setattr(keylog_analysis, "_scan_day_counters", recording_scan)
+    reads = _record_tails(monkeypatch)
 
     second = keylog_analysis.write_keylog_analysis(out, bindings_path=bindings, **window)
 
-    assert scanned == [(date(2026, 6, 6), date(2026, 6, 7))]
+    assert reads == [("2026-06-07.jsonl", previous_size)]
     assert second.keypress_count == 9
     assert [row.keypress_count for row in second.text_shape_days] == [2, 2, 5]
 
 
-def test_keylog_day_counter_cache_ignores_a_different_chord_window(tmp_path) -> None:
+def test_keylog_file_counter_cache_ignores_a_different_chord_recipe(tmp_path) -> None:
     cache = tmp_path / "counters.json"
-    entry = keylog_analysis._DayCounters(source_event_count=3)
-    keylog_analysis._save_day_counter_cache(cache, 1500, {date(2026, 6, 5): ("digest", entry)})
+    moment = datetime(2026, 6, 5, 10, tzinfo=UTC)
+    entry = keylog_analysis._FileCounters(
+        device=1, inode=2, offset=3, tail_digest="digest",
+        start_modifiers={}, end_modifiers={"SUPER": moment},
+        days={date(2026, 6, 5): keylog_analysis._DayCounters(source_event_count=3)},
+    )
+    keylog_analysis._save_file_counter_cache(
+        cache, chord_window_ms=1500, chords_digest="chords", entries={"a.jsonl": entry},
+    )
 
-    assert keylog_analysis._load_day_counter_cache(cache, 1500)[date(2026, 6, 5)][1] == entry
-    assert keylog_analysis._load_day_counter_cache(cache, 900) == {}
+    assert keylog_analysis._load_file_counter_cache(
+        cache, chord_window_ms=1500, chords_digest="chords"
+    ) == {"a.jsonl": entry}
+    assert keylog_analysis._load_file_counter_cache(cache, chord_window_ms=900, chords_digest="chords") == {}
+    assert keylog_analysis._load_file_counter_cache(cache, chord_window_ms=1500, chords_digest="other") == {}
 
 
-def test_keylog_day_counter_cache_scans_disjoint_stale_ranges_separately(
+def _super_return_chords(tmp_path) -> dict[str, keylog_analysis.HyprlandKeybind]:
+    bindings = tmp_path / "bindings.nix"
+    bindings.write_text('{ bind = [ "SUPER, Return, exec, kitty" ]; }', encoding="utf-8")
+    return {row.chord: row for row in keylog_analysis.parse_hyprland_keybinds(bindings)}
+
+
+def _press(ts: str, keycode: str) -> str:
+    return json.dumps({"ts": ts, "event": "press", "keycode": keycode, "changed": False}) + "\n"
+
+
+def test_incremental_counters_match_a_full_scan_across_appends_and_file_boundaries(
     tmp_path, monkeypatch
 ) -> None:
-    start, end = date(2026, 6, 1), date(2026, 6, 10)
-    days = keylog_analysis._date_range(start, end)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(keylog, "get_config", lambda: SimpleNamespace(keylog_root=tmp_path))
+    by_chord = _super_return_chords(tmp_path)
+    first = logs / "2026-06-05.jsonl"
+    second = logs / "2026-06-06.jsonl"
+    # The modifier pressed at the end of one UTC file completes a chord at the
+    # start of the next, and a partially written line is completed later.
+    first.write_text(_press("2026-06-05T10:00:00Z", "KEY_125") + _press("2026-06-05T23:59:59.500Z", "KEY_125"))
+    partial = _press("2026-06-06T00:00:00.200Z", "KEY_RETURN")
+    second.write_text(partial[:20])
     cache = tmp_path / "counters.json"
-    keylog_analysis._save_day_counter_cache(
-        cache,
-        1500,
-        {
-            day: (
-                f"old-{day.isoformat()}",
-                keylog_analysis._DayCounters(source_event_count=day.day),
-            )
-            for day in days
-        },
-    )
-    stale = {date(2026, 6, 2), date(2026, 6, 9)}
-    monkeypatch.setattr(
-        keylog_analysis,
-        "_day_input_signature",
-        lambda day, _bindings: (
-            f"new-{day.isoformat()}" if day in stale else f"old-{day.isoformat()}"
-        ),
-    )
-    scans: list[tuple[date, date]] = []
+    window = {"start": date(2026, 6, 4), "end": date(2026, 6, 6)}
 
-    def scan(*, start, end, **_kwargs):
-        scans.append((start, end))
-        return {
-            day: keylog_analysis._DayCounters(source_event_count=100 + day.day)
-            for day in keylog_analysis._date_range(start, end)
-        }
+    def incremental():
+        keylog._indexed_log_files.cache_clear()
+        return keylog_analysis._windowed_day_counters(
+            by_chord=by_chord, chord_window_ms=1500, cache_path=cache, **window,
+        )
 
-    monkeypatch.setattr(keylog_analysis, "_scan_day_counters", scan)
+    def full():
+        return keylog_analysis._scan_day_counters(by_chord=by_chord, chord_window_ms=1500, **window)
 
-    counters = keylog_analysis._windowed_day_counters(
-        start=start, end=end, bindings_path=tmp_path / "bindings", by_chord={},
-        chord_window_ms=1500, cache_path=cache,
-    )
+    incremental()
+    with second.open("a") as stream:
+        stream.write(partial[20:] + _press("2026-06-06T10:00:00Z", "KEY_A"))
+    reads = _record_tails(monkeypatch)
+    after_append = incremental()
 
-    assert scans == [
-        (date(2026, 6, 2), date(2026, 6, 2)),
-        (date(2026, 6, 9), date(2026, 6, 9)),
-    ]
-    assert counters[date(2026, 6, 5)].source_event_count == 5
-    assert counters[date(2026, 6, 9)].source_event_count == 109
+    assert reads == [("2026-06-06.jsonl", 0)]
+    expected = full()
+    assert {day: value for day, value in after_append.items() if value != keylog_analysis._DayCounters()} == expected
+    assert sum(sum(value.usage.values()) for value in after_append.values()) == 1
+
+
+def test_incremental_counters_refold_a_rewritten_file_and_its_successor(tmp_path, monkeypatch) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(keylog, "get_config", lambda: SimpleNamespace(keylog_root=tmp_path))
+    first = logs / "2026-06-05.jsonl"
+    second = logs / "2026-06-06.jsonl"
+    first.write_text(_press("2026-06-05T12:00:00Z", "KEY_A") + _press("2026-06-05T23:59:59.500Z", "KEY_B"))
+    second.write_text(_press("2026-06-06T00:00:00.200Z", "KEY_RETURN"))
+    cache = tmp_path / "counters.json"
+    by_chord = _super_return_chords(tmp_path)
+    window = {"start": date(2026, 6, 5), "end": date(2026, 6, 6)}
+
+    def incremental():
+        keylog._indexed_log_files.cache_clear()
+        return keylog_analysis._windowed_day_counters(
+            by_chord=by_chord, chord_window_ms=1500, cache_path=cache, **window,
+        )
+
+    incremental()
+    # A repair rewrites the first file in place: its last key becomes a
+    # modifier, so the state carried into the second file changes as well.
+    first.write_text(_press("2026-06-05T12:00:00Z", "KEY_A") + _press("2026-06-05T23:59:59.500Z", "KEY_125"))
+    reads = _record_tails(monkeypatch)
+    incremental()
+
+    assert reads == [("2026-06-05.jsonl", 0), ("2026-06-06.jsonl", 0)]
 
 
 def test_analysis_input_files_exclude_the_still_open_capture_day(tmp_path, monkeypatch) -> None:
@@ -507,23 +544,19 @@ def test_refresh_observes_open_day_growth_without_rescanning_closed_days(tmp_pat
     window = {"start": date(2026, 6, 5), "end": today}
     first = keylog_analysis.write_keylog_analysis(out, bindings_path=bindings, **window)
     assert first.keypress_count == 6
+    previous_size = (logs / "2026-06-07.jsonl").stat().st_size
     _write_day(logs, "2026-06-07", "KEY_A", 5)
     keylog._indexed_log_files.cache_clear()
-    scanned = []
-    original = keylog_analysis._scan_day_counters
-    def recording_scan(**kwargs):
-        scanned.append((kwargs["start"], kwargs["end"]))
-        return original(**kwargs)
-    monkeypatch.setattr(keylog_analysis, "_scan_day_counters", recording_scan)
+    reads = _record_tails(monkeypatch)
     second = keylog_analysis.write_keylog_analysis(out, bindings_path=bindings, **window)
     assert second.keypress_count == 9
-    assert scanned == [(date(2026, 6, 6), today)]
-    scanned.clear()
+    assert reads == [("2026-06-07.jsonl", previous_size)]
+    reads.clear()
     third = keylog_analysis.write_keylog_analysis(out, bindings_path=bindings, **window)
     assert third.keypress_count == 9
-    assert scanned == []
+    assert reads == []
     narrower = keylog_analysis.write_keylog_analysis(
         out, bindings_path=bindings, start=today, end=today,
     )
     assert narrower.keypress_count == 5
-    assert scanned == []
+    assert reads == []

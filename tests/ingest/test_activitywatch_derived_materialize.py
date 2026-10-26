@@ -857,7 +857,7 @@ def test_keyboard_capture_handles_rollover_after_operation_start(monkeypatch, tm
     monkeypatch.setattr(mod, "activitywatch_event_index_manifest_path", lambda: tmp_path / "index")
     monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: tmp_path / "events")
     monkeypatch.setattr(mod, "datetime", SimpleNamespace(now=lambda tz: datetime(2020, 1, 2, tzinfo=timezone.utc)))
-    copy, prefix = module._copy_file, module._copy_prefix
+    copy, prefix = module.clone_file, module._copy_prefix
     def append(source):
         with source.open("ab") as stream:
             stream.write(b"{}\n")
@@ -867,7 +867,7 @@ def test_keyboard_capture_handles_rollover_after_operation_start(monkeypatch, tm
     def growing_prefix(source, target, length):
         prefix(source, target, length)
         append(source)
-    monkeypatch.setattr(module, "_copy_file", growing_copy)
+    monkeypatch.setattr(module, "clone_file", growing_copy)
     monkeypatch.setattr(module, "_copy_prefix", growing_prefix)
     monkeypatch.setattr(mod, "_materialize_activitywatch_derived", lambda **kwargs: {path.name: module.read_input_path(path).read_bytes() for path in paths})
     with module.input_snapshot() as snapshot:

@@ -54,14 +54,14 @@ def test_change_during_capture_does_not_publish_partial_set(tmp_path, monkeypatc
     first, second = tmp_path / "first", tmp_path / "second"
     first.write_text("first")
     second.write_text("second")
-    copy = module._copy_file
+    copy = module.clone_file
 
     def changing(source, target):
         copy(source, target)
         if source == second:
             source.write_text("changed")
 
-    monkeypatch.setattr(module, "_copy_file", changing)
+    monkeypatch.setattr(module, "clone_file", changing)
     with input_snapshot() as snapshot:
         with pytest.raises(RuntimeError, match="changed during capture"):
             snapshot.capture((first, second))

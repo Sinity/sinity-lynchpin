@@ -636,3 +636,44 @@ def test_incremental_accumulator_failure_requires_explicit_full_repair(content_r
     assert repaired["window_start"] == "2026-01-01"
     assert repaired["window_end"] == "2026-01-06"
     assert totals() == (120,) * 4
+
+
+def test_generation_copy_clones_a_closed_accumulator_and_snapshots_a_live_one(tmp_path):
+    import sqlite3
+    from contextlib import closing
+    from lynchpin.ingest import activity_content_materialize as materializer
+
+    closed = tmp_path / "closed"
+    closed.mkdir()
+    with closing(sqlite3.connect(closed / "title_usage.facts.sqlite3")) as connection:
+        connection.execute("CREATE TABLE facts (value INTEGER)")
+        connection.executemany("INSERT INTO facts VALUES (?)", [(n,) for n in range(1000)])
+        connection.commit()
+    copied = tmp_path / "copied"
+    materializer._copy_bundle(closed, copied, ("title_usage.facts.sqlite3",))
+    source = closed / "title_usage.facts.sqlite3"
+    clone = copied / "title_usage.facts.sqlite3"
+    assert clone.read_bytes() == source.read_bytes()
+    assert clone.stat().st_ino != source.stat().st_ino
+    with closing(sqlite3.connect(clone)) as connection:
+        connection.execute("DELETE FROM facts")
+        connection.commit()
+    with closing(sqlite3.connect(source)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM facts").fetchone()[0] == 1000
+
+    live = tmp_path / "live"
+    live.mkdir()
+    writer = sqlite3.connect(live / "title_usage.facts.sqlite3")
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE facts (value INTEGER)")
+        writer.execute("INSERT INTO facts VALUES (7)")
+        writer.commit()
+        assert (live / "title_usage.facts.sqlite3-wal").stat().st_size > 0
+        snapshot = tmp_path / "snapshot"
+        materializer._copy_bundle(live, snapshot, ("title_usage.facts.sqlite3",))
+    finally:
+        writer.close()
+    with closing(sqlite3.connect(snapshot / "title_usage.facts.sqlite3")) as connection:
+        assert connection.execute("SELECT value FROM facts").fetchall() == [(7,)]
