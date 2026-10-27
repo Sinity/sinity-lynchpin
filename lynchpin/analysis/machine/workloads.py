@@ -92,6 +92,7 @@ _COMM_RULES: list[tuple[re.Pattern[str], WorkloadKind]] = [
     (re.compile(r"^(nix|nix-daemon|nix-store|nix-collect-garbage)$"), WorkloadKind.NixBuild),
     (re.compile(r"^(pytest|\.pytest-wrapped|\[pytest-xdist)$"), WorkloadKind.TestSuite),
     (re.compile(r"^(sinexd|nats-server|\.postgres-wrapp|postgres|psql)$"), WorkloadKind.SinexStack),
+    (re.compile(r"^(\.polylogued-wra|polylogued)$"), WorkloadKind.PolylogueDaemon),
     (re.compile(r"^(\.borg-wrapped|borgbackup|borgbackup-chec|borgbackup-job-)"), WorkloadKind.Backup),
     (re.compile(r"^(chrome|chromium|\.chromium-brows|qutebrowser|firefox|kitty)$"), WorkloadKind.Browser),
     (re.compile(r"^(stash|ffmpeg|transmission-da)$"), WorkloadKind.MediaService),
@@ -468,12 +469,12 @@ def detect_orphans(
     process instances (not a class of process) that have been running for hours,
     which for transient work (nix check, pytest, cargo, claude) signals orphaning.
 
-    The always-on daemons (postgres, nats-server, sinexd, polylogue-live.service) are
-    excluded since multi-hour runtime is expected for them.
+    Always-on service processes are excluded because multi-hour runtime is
+    expected for them.
     """
     _ALWAYS_ON_COMMS = frozenset({
         "sinexd", "nats-server", ".postgres-wrapp", "postgres",
-        "transmission-da", "below",
+        ".polylogued-wra", "polylogued", "transmission-da", "below",
         "machine-telemetry", "wireguard", "systemd-journal", "NetworkManager",
         "chrome", "kitty", "Hyprland", "noctalia", "quickshell", "aw-server",
     })
