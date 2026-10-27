@@ -142,6 +142,9 @@
               typing-extensions
             ];
 
+            postInstall = ''
+              rm -r "$out/bin"
+            '';
             doCheck = false;
             pythonImportsCheck = [
               "polylogue"

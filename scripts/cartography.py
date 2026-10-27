@@ -97,12 +97,12 @@ def gather_corrections(run_dir: Path) -> dict:
 
 
 def gather_facets(run_dir: Path) -> dict:
-    """Session origins and repositories, and tag values written in the window."""
+    """Session origins and repositories, and tag names written in the window."""
     errors = run_dir / "facets.stderr"
     queries = {
         "origins": f"sessions since:{SINCE_DAYS}d | group by origin | count",
         "repos": f"sessions since:{SINCE_DAYS}d | group by repo | count",
-        "tags": f"notes where kind:tag current:true withdrawn:false since:{SINCE_DAYS}d | group by value | count",
+        "tags": f"notes where kind:tag current:true withdrawn:false since:{SINCE_DAYS}d | group by key | count",
     }
     try:
         return {"status": "available", "queries": queries,

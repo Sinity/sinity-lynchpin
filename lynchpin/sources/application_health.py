@@ -86,4 +86,4 @@ def _probe(application: str, argv: list[str], timeout: float) -> dict[str, Any]:
         error = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", completed.stderr).strip()[:400]
         return {**result, "reason": f"invalid or unavailable health response: {exc}" + (f"; {error}" if error else "")}
     return {**result, "probe_status": "available", "health": state,
-            "reason": "application reports " + state, "details": details}
+            "reason": "status probe indicates " + state, "details": details}

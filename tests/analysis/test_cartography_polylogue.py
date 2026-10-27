@@ -58,6 +58,7 @@ def test_facets_use_group_queries_and_keep_their_scope(cartography, tmp_path):
     assert set(result["facets"]) == {"origins", "repos", "tags"}
     assert all("| group by" in query and "since:" in query for query in queries)
     assert "notes where kind:tag current:true withdrawn:false" in queries[2]
+    assert queries[2].endswith("| group by key | count")
 
 
 @pytest.mark.parametrize("page", [{"error": {"kind": "invalid_query"}}, {"rows": []}, {"next": None}])
