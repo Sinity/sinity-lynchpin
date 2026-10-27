@@ -40,43 +40,77 @@ def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
 
 
+def _polylogue_pages(command: list[str], errors: Path) -> list[dict]:
+    pages = []
+    cursor = None
+    seen = set()
+    while True:
+        argv = ["polylogue", "--json"]
+        if cursor is not None:
+            argv += ["--cursor", cursor]
+        argv += command
+        proc = _run(argv, timeout=60)
+        with errors.open("a") as output:
+            output.write(proc.stderr)
+        if proc.returncode != 0:
+            raise ValueError("Polylogue command failed")
+        page = json.loads(proc.stdout)
+        if not isinstance(page, dict) or "next" not in page or "error" in page:
+            raise ValueError("Polylogue response is not a page")
+        if command[0] == "read":
+            if not isinstance(page.get("text"), str):
+                raise ValueError("Polylogue read page has no text")
+        elif not isinstance(page.get("rows"), list):
+            raise ValueError("Polylogue query page has no rows")
+        pages.append(page)
+        cursor = page.get("next")
+        if cursor is None:
+            return pages
+        if not isinstance(cursor, str) or not cursor or cursor in seen:
+            raise ValueError("Polylogue returned an invalid or repeated cursor")
+        seen.add(cursor)
+
+
 def gather_corrections(run_dir: Path) -> dict:
-    """Operator messages that catch/correct an agent (high-signal for real knowledge)."""
+    """Human correction matches and the complete prompt view of their sessions."""
+    errors = run_dir / "corrections.stderr"
     query = (
-        'role:user AND (text:"no wait" OR text:"actually" OR text:"that.s wrong" '
-        'OR text:"you are wrong" OR text:"incorrect")'
+        f'messages where written_by:human since:{SINCE_DAYS}d '
+        '("no wait" or actually or "that.s wrong" '
+        'or "you are wrong" or incorrect)'
     )
-    proc = _run([
-        "polylogue", "--since", f"{SINCE_DAYS} days ago",
-        "find", query,
-        "then", "read", "--view", "messages", "--format", "json", "--all",
-    ])
-    (run_dir / "corrections.stderr").write_text(proc.stderr)
-    if proc.returncode != 0 or not proc.stdout.strip():
-        return {"status": "unavailable", "note": "polylogue query failed, see corrections.stderr"}
     try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return {"status": "unavailable", "note": "polylogue query returned non-JSON, see corrections.stderr"}
+        pages = _polylogue_pages([query], errors)
+        sessions = {}
+        for page in pages:
+            for row in page["rows"]:
+                session = row["session"]
+                if session not in sessions:
+                    sessions[session] = _polylogue_pages(
+                        ["read", session, "--view", "prompts", "--budget", "2000"], errors
+                    )
+        return {"status": "available", "matches": pages, "sessions": sessions}
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as exc:
+        with errors.open("a") as output:
+            output.write(str(exc))
+        return {"status": "unavailable", "note": "Polylogue query/read failed, see corrections.stderr"}
 
 
 def gather_facets(run_dir: Path) -> dict:
-    """Domain/topic facets discussed, bounded window."""
+    """Session origins and repositories, and tag values written in the window."""
+    errors = run_dir / "facets.stderr"
+    queries = {
+        "origins": f"sessions since:{SINCE_DAYS}d | group by origin | count",
+        "repos": f"sessions since:{SINCE_DAYS}d | group by repo | count",
+        "tags": f"notes where kind:tag current:true withdrawn:false since:{SINCE_DAYS}d | group by value | count",
+    }
     try:
-        proc = _run(
-            ["polylogue", "--since", f"{SINCE_DAYS} days ago", "facets", "--format", "json"],
-            timeout=60,
-        )
-    except subprocess.TimeoutExpired:
-        (run_dir / "facets.stderr").write_text("timed out after 60s")
-        return {"status": "unavailable", "note": "facets query timed out or failed, see facets.stderr"}
-    (run_dir / "facets.stderr").write_text(proc.stderr)
-    if proc.returncode != 0 or not proc.stdout.strip():
-        return {"status": "unavailable", "note": "facets query timed out or failed, see facets.stderr"}
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return {"status": "unavailable", "note": "facets query returned non-JSON, see facets.stderr"}
+        return {"status": "available", "queries": queries,
+                "facets": {key: _polylogue_pages([query], errors) for key, query in queries.items()}}
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError) as exc:
+        with errors.open("a") as output:
+            output.write(str(exc))
+        return {"status": "unavailable", "note": "Polylogue grouping failed, see facets.stderr"}
 
 
 def gather_atuin(run_dir: Path) -> dict:

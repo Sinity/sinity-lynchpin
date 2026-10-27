@@ -2378,7 +2378,7 @@ def _codex_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.codex_sessions_root,),
         authority="Codex session JSONL archive",
         query_surface="lynchpin.sources.polylogue once Polylogue has archived Codex sessions",
-        materialization_hint="polylogued tails Codex session logs into the Polylogue archive",
+        materialization_hint="polylogue-live.service tails Codex session logs into the Polylogue archive",
         row_count=_count_files(cfg.codex_sessions_root, suffixes=(".jsonl",)),
     )
 

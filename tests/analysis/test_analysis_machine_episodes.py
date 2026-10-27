@@ -79,7 +79,7 @@ def test_sustained_multisource_pressure_emits_split_kinds(tmp_path):
             INSERT INTO machine_service_state (
                 observed_at, host, unit, scope, active_state, sub_state,
                 memory_current_bytes, refresh_id
-            ) VALUES (?, 'host', 'polylogued.service', 'user', 'failed', 'failed', 10, 'r1')
+            ) VALUES (?, 'host', 'polylogue-live.service', 'user', 'failed', 'failed', 10, 'r1')
             """,
             [_ts(1)],
         )

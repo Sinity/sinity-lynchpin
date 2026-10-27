@@ -88,3 +88,7 @@ inference.
 Readiness flows from Polylogue health into Lynchpin source readiness, then into
 substrate and context-pack readiness. Each layer reports its own contract
 without claiming ownership of the one below it.
+
+## Live command consumers
+
+Application health reads the rewrite's `polylogue status --json`: a daemon reply, the archive mode and pending inputs are separate observations. Machine health identifies `polylogue-live.service`; an unrelated `polylogue` CLI process is not classified as the daemon. Cartography pages query and read JSON using the owner's `next` cursors. Its facet evidence groups sessions by origin and repository, and current tag notes by value and note creation time. Private Python library readers keep their configured archived-data dependency.

@@ -62,10 +62,24 @@ def _probe(application: str, argv: list[str], timeout: float) -> dict[str, Any]:
             details = {key: health.get(key) for key in ("healthy", "serving", "status")}
             details.update({key: payload.get(key) for key in ("runtime_target", "source_surface", "generated_at")})
         else:
-            if not isinstance(payload.get("ok"), bool) or not isinstance(payload.get("source"), str) or not isinstance(payload.get("daemon_liveness"), bool):
-                raise ValueError("Polylogue health fields are missing or invalid")
-            state = "unavailable" if payload["daemon_liveness"] is False else "healthy" if payload["ok"] else "degraded"
-            details = {key: payload.get(key) for key in ("ok", "source", "daemon_liveness")}
+            mode = payload.get("mode")
+            store = payload.get("store")
+            pid = payload.get("pid")
+            if (not isinstance(payload.get("archive"), str)
+                    or not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0
+                    or not isinstance(payload.get("busy"), bool)
+                    or not isinstance(mode, dict)
+                    or mode.get("state") not in {"standalone", "primary", "blocked"}
+                    or (store is not None and not isinstance(store, dict))):
+                raise ValueError("Polylogue status fields are missing or invalid")
+            pending = store.get("pending_inputs") if store is not None else None
+            if store is not None and not isinstance(pending, list):
+                raise ValueError("Polylogue pending inputs are missing or invalid")
+            state = "degraded" if mode["state"] == "blocked" or store is None or pending else "healthy"
+            details = {key: payload[key] for key in ("archive", "pid", "busy", "mode")}
+            details["daemon_available"] = completed.returncode == 0
+            details["store_available"] = store is not None
+            details["pending_inputs"] = pending
         if completed.returncode != 0 and state == "healthy":
             raise ValueError("failed health command reported healthy")
     except (ValueError, AttributeError, TypeError) as exc:

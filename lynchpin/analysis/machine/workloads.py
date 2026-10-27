@@ -12,7 +12,7 @@ Workload classification uses two signals:
 WorkloadKind taxonomy:
   Always-on daemons:
     SinexStack        sinexd + postgres + nats-server
-    PolylogueDaemon   polylogued
+    PolylogueDaemon   polylogue-live.service
   Agent sessions (the agent process itself):
     AgentSession      claude / codex processes
   Agent-spawned transient work (runs inside agent.slice):
@@ -92,7 +92,6 @@ _COMM_RULES: list[tuple[re.Pattern[str], WorkloadKind]] = [
     (re.compile(r"^(nix|nix-daemon|nix-store|nix-collect-garbage)$"), WorkloadKind.NixBuild),
     (re.compile(r"^(pytest|\.pytest-wrapped|\[pytest-xdist)$"), WorkloadKind.TestSuite),
     (re.compile(r"^(sinexd|nats-server|\.postgres-wrapp|postgres|psql)$"), WorkloadKind.SinexStack),
-    (re.compile(r"^(\.polylogued-wra|polylogued)$"), WorkloadKind.PolylogueDaemon),
     (re.compile(r"^(\.borg-wrapped|borgbackup|borgbackup-chec|borgbackup-job-)"), WorkloadKind.Backup),
     (re.compile(r"^(chrome|chromium|\.chromium-brows|qutebrowser|firefox|kitty)$"), WorkloadKind.Browser),
     (re.compile(r"^(stash|ffmpeg|transmission-da)$"), WorkloadKind.MediaService),
@@ -113,6 +112,8 @@ def _classify(comm: str | None, cgroup: str | None) -> WorkloadKind | None:
     if comm in _EXCLUDED_COMMS:
         return None  # session-manager parents double-count child IO
     if cgroup:
+        if "polylogue-live.service" in cgroup.split("/"):
+            return WorkloadKind.PolylogueDaemon
         if "stashbox.service" in cgroup or "transmission.service" in cgroup:
             return WorkloadKind.MediaService
         if (
@@ -467,12 +468,12 @@ def detect_orphans(
     process instances (not a class of process) that have been running for hours,
     which for transient work (nix check, pytest, cargo, claude) signals orphaning.
 
-    The always-on daemons (postgres, nats-server, sinexd, polylogued) are
+    The always-on daemons (postgres, nats-server, sinexd, polylogue-live.service) are
     excluded since multi-hour runtime is expected for them.
     """
     _ALWAYS_ON_COMMS = frozenset({
         "sinexd", "nats-server", ".postgres-wrapp", "postgres",
-        ".polylogued-wra", "polylogued", "transmission-da", "below",
+        "transmission-da", "below",
         "machine-telemetry", "wireguard", "systemd-journal", "NetworkManager",
         "chrome", "kitty", "Hyprland", "noctalia", "quickshell", "aw-server",
     })
@@ -481,6 +482,8 @@ def detect_orphans(
 
     for s in process_io_delta_samples(start=start, end=end):
         if not s.comm or s.comm in _EXCLUDED_COMMS or s.comm in _ALWAYS_ON_COMMS:
+            continue
+        if s.cgroup and "polylogue-live.service" in s.cgroup.split("/"):
             continue
         key = (s.pid, s.process_start_time_ticks)
         if key not in procs:

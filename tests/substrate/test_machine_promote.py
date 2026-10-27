@@ -246,7 +246,7 @@ def test_promote_machine_service_states_round_trip(tmp_path):
         observed_at=datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc),
         host="sinnix-prime",
         boot_id="boot-a",
-        unit="polylogued.service",
+        unit="polylogue-live.service",
         scope="user",
         active_state="active",
         sub_state="running",
@@ -268,7 +268,7 @@ def test_promote_machine_service_states_round_trip(tmp_path):
         loaded = load_machine_service_states(conn, refresh_id="r1")
 
     assert len(loaded) == 1
-    assert loaded[0].unit == "polylogued.service"
+    assert loaded[0].unit == "polylogue-live.service"
     assert loaded[0].scope == "user"
     assert loaded[0].memory_current_bytes == 1234
     assert loaded[0].memory_anon_bytes == 1000

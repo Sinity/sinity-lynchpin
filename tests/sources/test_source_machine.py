@@ -40,7 +40,7 @@ def test_machine_source_reads_live_sqlite(monkeypatch, tmp_path):
             );
             INSERT INTO service_state VALUES (
               '2026-05-12T12:00:00+00:00', 'sinnix-prime', 'boot-a',
-              'polylogued.service', 'user', 'active', 'running', 42,
+              'polylogue-live.service', 'user', 'active', 'running', 42,
               '/user.slice/user-1000.slice', 1234, 5678, 90, 12
             );
             CREATE TABLE block_device_sample (
@@ -259,7 +259,7 @@ def test_machine_source_reads_live_sqlite(monkeypatch, tmp_path):
         machine.service_states(start=date(2026, 5, 12), end=date(2026, 5, 12))
     )
     assert len(states) == 1
-    assert states[0].unit == "polylogued.service"
+    assert states[0].unit == "polylogue-live.service"
     assert states[0].scope == "user"
     assert states[0].memory_current_bytes == 1234
     assert states[0].memory_anon_bytes == 1000
