@@ -12,13 +12,13 @@ def cartography():
     return runpy.run_path("scripts/cartography.py")
 
 
-def test_query_and_prompt_reads_follow_every_owner_page(cartography, tmp_path):
+def test_query_and_message_reads_follow_every_owner_page(cartography, tmp_path):
     calls = []
     answers = iter([
         {"rows": [{"session": "fixture:s1", "id": "fixture:m1"}], "next": "q2"},
         {"rows": [{"session": "fixture:s1", "id": "fixture:m2"}], "next": None},
         {"text": "first prompt", "next": "r2"},
-        {"text": "second prompt", "next": None},
+        {"text": "assistant context", "next": None},
     ])
     def run(argv, **kwargs):
         calls.append(argv)
@@ -28,10 +28,10 @@ def test_query_and_prompt_reads_follow_every_owner_page(cartography, tmp_path):
     result = cartography["gather_corrections"](tmp_path)
     assert result["status"] == "available"
     assert len(result["matches"]) == 2
-    assert [page["text"] for page in result["sessions"]["fixture:s1"]] == ["first prompt", "second prompt"]
+    assert [page["text"] for page in result["sessions"]["fixture:s1"]] == ["first prompt", "assistant context"]
     assert "written_by:human" in calls[0][2]
     assert calls[1][2:4] == ["--cursor", "q2"]
-    assert calls[2][2:6] == ["read", "fixture:s1", "--view", "prompts"]
+    assert calls[2][2:6] == ["read", "fixture:s1", "--view", "full"]
     assert calls[3][2:4] == ["--cursor", "r2"]
 
 

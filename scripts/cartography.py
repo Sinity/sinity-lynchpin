@@ -72,7 +72,7 @@ def _polylogue_pages(command: list[str], errors: Path) -> list[dict]:
 
 
 def gather_corrections(run_dir: Path) -> dict:
-    """Human correction matches and the complete prompt view of their sessions."""
+    """Human correction matches and the complete message context of their sessions."""
     errors = run_dir / "corrections.stderr"
     query = (
         f'messages where written_by:human since:{SINCE_DAYS}d '
@@ -87,7 +87,7 @@ def gather_corrections(run_dir: Path) -> dict:
                 session = row["session"]
                 if session not in sessions:
                     sessions[session] = _polylogue_pages(
-                        ["read", session, "--view", "prompts", "--budget", "2000"], errors
+                        ["read", session, "--view", "full", "--budget", "2000"], errors
                     )
         return {"status": "available", "matches": pages, "sessions": sessions}
     except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as exc:
