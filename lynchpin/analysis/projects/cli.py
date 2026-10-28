@@ -7,7 +7,6 @@ from pathlib import Path
 
 import typer
 
-from ..active.ai_attribution import run_active_ai_attribution
 from ..active.git_facts import run_active_git_facts
 from ..active.snapshot import run_active_project_snapshot
 from ..change.commit_capsules import run_active_commit_semantics
@@ -442,23 +441,6 @@ def register_commands(parent: typer.Typer) -> None:
             commit_facts_file=commit_facts,
         )
 
-    @parent.command(
-        "active-ai-attribution",
-        help="Backfill AI co-authorship attribution by joining commits with polylogue sessions",
-    )
-    def _active_ai_attribution(
-        start: str = typer.Option(None, "--start"),
-        end: str = typer.Option(None, "--end"),
-        project: list[str] = typer.Option(None, "--project"),
-        commit_facts: str | None = typer.Option(None, "--commit-facts"),
-        out: str | None = typer.Option(None, "--out"),
-    ) -> None:
-        target = out or resolve_analysis_path("active_ai_attribution.json")
-        run_active_ai_attribution(
-            target,
-            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
-            commit_facts_file=commit_facts,
-        )
 
     @parent.command(
         "active-github-frontier",

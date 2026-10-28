@@ -140,110 +140,6 @@ def list_evidence_graph_builds(
 # ---------------------------------------------------------------------------
 
 
-def _format_evidence(prefix: str, items: list[str]) -> str:
-    """Format the evidence string using the same truncation logic as the Python builders.
-
-    ``prefix`` is either ``'shared paths'`` or ``'shared symbols'``.
-    Items should already be sorted before being passed in.
-    """
-    preview = ", ".join(items[:3])
-    suffix = f" (+{len(items) - 3})" if len(items) > 3 else ""
-    return f"{prefix}: {preview}{suffix}"
-
-
-def compute_file_overlap_edges(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    we_refresh_id: str | None = None,
-    commit_refresh_id: str | None = None,
-) -> "tuple[Any, ...]":
-    """Compute file_overlap edges via SQL view; return same shape as
-    the ``work_event_file_overlap`` SQL view produces.
-
-    Each returned ``EvidenceEdge`` has weight 0.85 and an evidence string of the
-    form ``'shared paths: a, b, c'`` or ``'shared paths: a, b, c (+N)'``,
-    exactly matching the Python builder.
-
-    ``shared_paths`` from DuckDB ``list_intersect`` is returned as a Python
-    list; we sort in Python to guarantee deterministic evidence strings
-    (list_intersect does not guarantee order).
-    """
-    from lynchpin.core.evidence_graph import EvidenceEdge
-
-    clauses: list[str] = ["overlap_count > 0"]
-    params: list[Any] = []
-    if we_refresh_id is not None:
-        clauses.append("we_refresh_id = ?")
-        params.append(we_refresh_id)
-    if commit_refresh_id is not None:
-        clauses.append("commit_refresh_id = ?")
-        params.append(commit_refresh_id)
-
-    where = "WHERE " + " AND ".join(clauses)
-    sql = f"""
-        SELECT source_id, target_id, shared_paths
-        FROM work_event_file_overlap
-        {where}
-    """
-    rows = conn.execute(sql, params).fetchall()
-
-    edges: list[Any] = []
-    for source_id, target_id, shared_paths in rows:
-        shared = sorted(p for p in (shared_paths or []) if p)
-        if not shared:
-            continue
-        evidence = _format_evidence("shared paths", shared)
-        edges.append(
-            EvidenceEdge(source_id, target_id, "file_overlap", evidence, weight=0.85)
-        )
-    return tuple(edges)
-
-
-def compute_symbol_overlap_edges(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    we_refresh_id: str | None = None,
-    commit_refresh_id: str | None = None,
-) -> "tuple[Any, ...]":
-    """Compute symbol_overlap edges via SQL view; return same shape as
-    the ``work_event_symbol_overlap`` SQL view produces.
-
-    Each returned ``EvidenceEdge`` has weight 0.95 and an evidence string of the
-    form ``'shared symbols: a, b, c'`` or ``'shared symbols: a, b, c (+N)'``,
-    exactly matching the Python builder.
-
-    ``shared_symbols`` from ``ARRAY_AGG(DISTINCT ...)`` is a Python list with
-    non-deterministic order; we sort in Python before formatting.
-    """
-    from lynchpin.core.evidence_graph import EvidenceEdge
-
-    clauses: list[str] = ["symbol_count > 0"]
-    params: list[Any] = []
-    if we_refresh_id is not None:
-        clauses.append("we_refresh_id = ?")
-        params.append(we_refresh_id)
-    if commit_refresh_id is not None:
-        clauses.append("commit_refresh_id = ?")
-        params.append(commit_refresh_id)
-
-    where = "WHERE " + " AND ".join(clauses)
-    sql = f"""
-        SELECT source_id, target_id, shared_symbols
-        FROM work_event_symbol_overlap
-        {where}
-    """
-    rows = conn.execute(sql, params).fetchall()
-
-    edges: list[Any] = []
-    for source_id, target_id, shared_symbols in rows:
-        symbol_names = sorted(s for s in (shared_symbols or []) if s)
-        if not symbol_names:
-            continue
-        evidence = _format_evidence("shared symbols", symbol_names)
-        edges.append(
-            EvidenceEdge(source_id, target_id, "symbol_overlap", evidence, weight=0.95)
-        )
-    return tuple(edges)
 
 
 def load_evidence_graph(
@@ -1128,8 +1024,6 @@ def promote_evidence_graph(
 
 
 __all__ = [
-    "compute_file_overlap_edges",
-    "compute_symbol_overlap_edges",
     "compatible_graph_predecessor",
     "list_evidence_graph_builds",
     "archive_evidence_graph_partition",

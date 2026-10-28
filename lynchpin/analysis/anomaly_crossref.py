@@ -46,7 +46,6 @@ class AnomalyDay:
     substance_doses: int = 0
     substance_mg_total: float = 0.0
     wykop_comments: int = 0
-    polylogue_sessions: int = 0
     web_visits: int = 0
     spotify_hours: Optional[float] = None
     machine_kill_events: int = 0
@@ -244,7 +243,6 @@ def _build_anomaly(
         substance_doses=r.substance_doses,
         substance_mg_total=sum(r.substance_mg_by_name.values()),
         wykop_comments=r.wykop_comments,
-        polylogue_sessions=r.polylogue_sessions,
         web_visits=r.web_visits,
         spotify_hours=r.spotify_hours,
         machine_kill_events=r.machine_kill_events,

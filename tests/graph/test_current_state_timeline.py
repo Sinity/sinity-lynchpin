@@ -47,12 +47,10 @@ def test_timeline_groups_events_by_day():
               summary="feat: x (#5)",
               payload={"commit": "abc123def456", "github_refs": {"prs": [5], "issues": []},
                        "paths": ("src/foo.py",), "files_changed": 1}),
-        _node(kind="ai_work_event", source="polylogue",
+        _node(kind="deep_work_block", source="activitywatch",
               day=date(2026, 5, 7), when=base - timedelta(hours=1),
               summary="Implement foo",
-              payload={"event_id": "we1", "kind": "implementation", "kind_tier": "high",
-                       "kind_source": "agreement", "duration_ms": 30 * 60_000,
-                       "file_paths": ["/realm/project/demo/src/foo.py"]}),
+              payload={"duration_s": 1800}),
         _node(kind="commit", source="git", day=date(2026, 5, 8),
               when=base + timedelta(days=1),
               summary="fix: y", payload={"commit": "def789", "github_refs": {}, "paths": (), "files_changed": 1}),
@@ -64,7 +62,7 @@ def test_timeline_groups_events_by_day():
     assert len(timeline.days) == 2
     assert timeline.days[0].day == date(2026, 5, 7)
     assert timeline.days[1].day == date(2026, 5, 8)
-    assert len(timeline.days[0].rows) == 2  # commit + ai_work_event
+    assert len(timeline.days[0].rows) == 2  # commit + focus block
     assert len(timeline.days[1].rows) == 1
 
 
@@ -122,22 +120,6 @@ def test_render_includes_citation_for_commit_with_refs():
     assert "abc12345" in md
     assert "pr#5" in md
     assert "issue#3" in md
-
-
-def test_render_includes_kind_tier_for_ai_work_event():
-    base = datetime(2026, 5, 7, 14, tzinfo=UTC)
-    nodes = [
-        _node(kind="ai_work_event", source="polylogue", day=date(2026, 5, 7), when=base,
-              summary="implementation",
-              payload={"event_id": "we1", "kind": "debugging", "kind_tier": "low",
-                       "duration_ms": 5 * 60_000, "file_paths": []}),
-    ]
-    timeline = build_current_state_timeline(
-        _graph(nodes, start=date(2026, 5, 7), end=date(2026, 5, 7)),
-        start=date(2026, 5, 7), end=date(2026, 5, 7),
-    )
-    md = render_current_state_timeline(timeline)
-    assert "debugging[low]" in md
 
 
 def test_empty_window_renders_no_evidence_message():

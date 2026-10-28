@@ -48,13 +48,6 @@ def isolate_operator_data(
         "LYNCHPIN_ACTIVITYWATCH_ARCHIVE_DB_DIR": root / "activitywatch-archives",
         "LYNCHPIN_ACTIVITYWATCH_RAW_DIR": root / "activitywatch-raw",
         "LYNCHPIN_ATUIN_DB": root / "atuin.sqlite",
-        "LYNCHPIN_CODEX_ROOT": root / "codex-sessions",
-        "LYNCHPIN_POLYLOGUE_ROOT": root / "polylogue/markdown",
-        "LYNCHPIN_POLYLOGUE_ARCHIVE_ROOT": root / "polylogue/archive",
-        "LYNCHPIN_POLYLOGUE_DB": root / "polylogue/index.db",
-        "POLYLOGUE_DB_PATH": root / "polylogue/index.db",
-        "POLYLOGUE_ROOT": root / "polylogue-project",
-        "LYNCHPIN_POLYLOGUE_PROJECT_ROOT": root / "polylogue-project",
         "LYNCHPIN_CLIPBOARD_LIVE_FILE": root / "clipboard.json",
         "LYNCHPIN_RAW_LOG_FILE": root / "raw-log.md",
         "LYNCHPIN_DENDRON_ROOT": root / "knowledgebase",
@@ -63,7 +56,6 @@ def isolate_operator_data(
         "LYNCHPIN_SINNIX_RUNTIME_INVENTORY_JSON": root / "runtime-inventory.json",
         "LYNCHPIN_XTASK_HISTORY_DB": root / "xtask-history.db",
         "XDG_DATA_HOME": root / "xdg-data",
-        "POLYLOGUE_VERIFICATION_EVIDENCE_PATH": root / "polylogue-verification/evidence.jsonl",
     }
     for name, path in isolated_paths.items():
         monkeypatch.setenv(name, str(path))

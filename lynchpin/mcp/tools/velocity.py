@@ -521,9 +521,7 @@ def engineering_throughput(
 
     Composes commit_fact + file_change_fact + symbol_change so that the
     "is project X actually accelerating, or just committing more
-    granularly?" question can be answered from one tool rather than four
-    silo'd ones (velocity_series, symbol_velocity, file_hotspots,
-    commit_kind_attribution).
+    granularly?" question can be answered from one tool rather than separate tools (velocity_series, symbol_velocity, file_hotspots).
 
     Parameters:
         project:     canonical project name (required — windowing across

@@ -272,12 +272,6 @@ def _annotations_for_node(node: EvidenceNode) -> tuple[WeakTagAnnotation, ...]:
     elif node.kind in {"github_issue", "github_pr", "github_ref"}:
         lifecycle = str(payload.get("lifecycle") or "referenced")
         add(_annotation(node, "workload", f"github_{lifecycle}", f"GitHub lifecycle: {lifecycle}", 0.78, payload))
-    elif node.kind == "ai_session":
-        add(_annotation(node, "activity", "ai_assisted_work", f"AI session: {node.summary}", 0.65, {
-            "message_count": payload.get("message_count"),
-            "tool_use_count": payload.get("tool_use_count"),
-            "work_event_kind": payload.get("work_event_kind"),
-        }, caveats=node.caveats))
     elif node.kind == "raw_log":
         for category, label, confidence in _text_weak_tags(text):
             add(_annotation(node, category, label, node.summary, confidence, {"source": "raw_log"}))
@@ -458,8 +452,6 @@ def _cluster_score(nodes: Sequence[EvidenceNode], labels: Sequence[str], sources
     score += sum(0.9 for label in labels if label in high_value)
     if any(node.kind == "commit" for node in nodes):
         score += 0.35
-    if any(node.kind == "ai_session" for node in nodes):
-        score += 0.35
     if any(node.kind == "machine_pressure_incident" for node in nodes):
         score += 0.35
     return round(score, 3)
@@ -492,7 +484,6 @@ def _node_weight(node: EvidenceNode) -> float:
         "github_issue": 3,
         "github_pr": 3,
         "machine_pressure_incident": 3,
-        "ai_session": 2,
     }
     return weights.get(node.kind, 1)
 

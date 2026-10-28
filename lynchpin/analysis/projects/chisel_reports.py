@@ -328,7 +328,7 @@ def build_reports(package: Path, *, project: str, task_roots: list[str]) -> dict
             bead_refs=[f"sinnix://projects/{owner_project}/beads/{root}" for root in task_roots],
             task_snapshot=frozen["tasks"], runtime_snapshot=frozen["batches"],
             native_evidence_snapshot=frozen["native"],
-            session_snapshot={"coverage": "unavailable", "sessions": [], "gaps": ["not acquired"]})
+            )
         (out / "campaign-evidence.json").write_text(json.dumps(report, indent=2) + "\n")
         baseline = package / "owners/task-baseline.json"
         delta = campaign_scope_delta(json.loads(baseline.read_text()), frozen["tasks"]) if baseline.exists() else {

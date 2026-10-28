@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lynchpin.core.config import LynchpinConfig, _default_polylogue_db, get_config, resolve_latest_dated_dir
+from lynchpin.core.config import LynchpinConfig, get_config, resolve_latest_dated_dir
 
 
 def test_default_pytest_config_isolated_from_operator_data(tmp_path: Path) -> None:
@@ -14,7 +14,6 @@ def test_default_pytest_config_isolated_from_operator_data(tmp_path: Path) -> No
     assert cfg.local_root.is_relative_to(tmp_path)
     assert cfg.activitywatch_db.is_relative_to(tmp_path)
     assert cfg.atuin_db.is_relative_to(tmp_path)
-    assert cfg.polylogue_db.is_relative_to(tmp_path)
     assert cfg.raw_log_file.is_relative_to(tmp_path)
     assert cfg.substack_root.is_relative_to(tmp_path)
     assert cfg.substack_downloader.is_relative_to(tmp_path)
@@ -100,37 +99,6 @@ def test_packaged_nix_store_repo_root_defaults_to_checkout_local_root(monkeypatc
 
     assert cfg.local_root == Path("/realm/project/sinity-lynchpin/repo/.lynchpin")
     assert cfg.cache_dir == Path("/realm/project/sinity-lynchpin/repo/.lynchpin/cache/lynchpin")
-
-
-def test_polylogue_db_env_override_wins(monkeypatch, tmp_path: Path) -> None:
-    configured = tmp_path / "configured.db"
-    monkeypatch.setenv("LYNCHPIN_POLYLOGUE_DB", str(configured))
-    monkeypatch.setenv("POLYLOGUE_DB_PATH", str(tmp_path / "ignored.db"))
-
-    assert _default_polylogue_db(tmp_path / "xdg") == configured
-
-
-def test_polylogue_db_prefers_sinnix_archive_index(monkeypatch, tmp_path: Path) -> None:
-    sinnix_db = tmp_path / "realm-db" / "polylogue" / "index.db"
-    sinnix_db.parent.mkdir(parents=True)
-    sinnix_db.touch()
-    xdg_db = tmp_path / "xdg" / "polylogue" / "index.db"
-    xdg_db.parent.mkdir(parents=True)
-    xdg_db.touch()
-    monkeypatch.delenv("LYNCHPIN_POLYLOGUE_DB", raising=False)
-    monkeypatch.delenv("POLYLOGUE_DB_PATH", raising=False)
-
-    assert _default_polylogue_db(tmp_path / "xdg", sinnix_index_db=sinnix_db) == sinnix_db
-
-
-def test_polylogue_db_falls_back_to_xdg_index(monkeypatch, tmp_path: Path) -> None:
-    xdg_db = tmp_path / "xdg" / "polylogue" / "index.db"
-    xdg_db.parent.mkdir(parents=True)
-    xdg_db.touch()
-    monkeypatch.delenv("LYNCHPIN_POLYLOGUE_DB", raising=False)
-    monkeypatch.delenv("POLYLOGUE_DB_PATH", raising=False)
-
-    assert _default_polylogue_db(tmp_path / "xdg", sinnix_index_db=tmp_path / "missing.db") == xdg_db
 
 
 def test_resolve_latest_dated_dir_ignores_non_dated_directories(tmp_path: Path) -> None:

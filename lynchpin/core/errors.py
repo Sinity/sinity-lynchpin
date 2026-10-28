@@ -45,7 +45,7 @@ class SourceUnavailableError(LynchpinError):
     those callers to catch this type will eliminate that fragility.
 
     Attributes:
-        source: Logical source name, e.g. ``"polylogue"``, ``"activitywatch"``.
+        source: Logical source name, e.g. ``"activitywatch"``.
         path:   Filesystem path that was missing/unreadable, if applicable.
         reason: Human-readable explanation of why the source is unavailable.
     """
@@ -110,9 +110,7 @@ class MaterializationError(LynchpinError):
 
     Raised when a pipeline step, substrate promotion, or insight product cannot
     be produced. This is the taxonomy-level base for more specific materialization
-    failures; ``PolylogueMaterializationError`` (in ``sources/polylogue.py``)
-    is the pre-existing concrete variant and should be migrated to inherit from
-    this class in a future wave.
+    failures.
 
     Attributes:
         product: Name of the product or pipeline step that failed.

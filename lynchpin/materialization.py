@@ -124,7 +124,6 @@ from .sources.terminal import canonical_atuin_history_path
 from .sources.title_metadata import title_metadata_manifest_path, title_metadata_path
 from .sources.google_takeout import discover_takeout_archives
 from .sources.gmail_takeout import gmail_events_path, gmail_manifest_path
-from .sources.polylogue import archive_readiness, iter_session_profiles
 from .sources.exports_raindrop import raindrop_input_files
 from .sources.bookmarks import bookmarks_manifest_path, bookmarks_path
 from .sources.communications import communication_events_path, communication_manifest_path
@@ -457,10 +456,7 @@ def _dataset_builders() -> dict[str, Any]:
         "asciinema": _asciinema_dataset,
         "webhistory": _webhistory_dataset,
         "google_takeout": _google_takeout_dataset,
-        "polylogue": _polylogue_dataset,
-        "codex": _codex_dataset,
         "agentctl": _agentctl_dataset,
-        "polylogue_verification": _polylogue_verification_dataset,
         "activitywatch": _activitywatch_dataset,
         "activitywatch_event_index": _activitywatch_event_index_dataset,
         "activitywatch_derived": _activitywatch_derived_dataset,
@@ -536,7 +532,6 @@ _GRAPH_INPUT_DATASETS = (
     "google_takeout",
     "title_metadata",
     "atuin",
-    "polylogue",
     "raw_log",
     "clipboard",
     "irc",
@@ -1941,33 +1936,6 @@ def _google_takeout_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     )
 
 
-def _polylogue_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
-    readiness = archive_readiness()
-    status: Status
-    if readiness.status in {"unavailable", "missing"}:
-        status = "missing"
-    elif readiness.status in {"degraded", "partial"}:
-        status = "partial"
-    elif readiness.status in {"ready", "empty"}:
-        status = readiness.status
-    else:
-        status = "error"
-    first, last = _polylogue_date_bounds() if status == "ready" else (None, None)
-    return MaterializedDataset(
-        name="polylogue",
-        status=status,
-        authority="Polylogue archive database",
-        query_surface="lynchpin.sources.polylogue",
-        materialized_paths=(readiness.db_path,),
-        raw_roots=(cfg.polylogue_archive_root, cfg.polylogue_root),
-        row_count=readiness.session_profile_count if status in {"ready", "empty", "partial"} else None,
-        first_date=first,
-        last_date=last,
-        materialization_hint="Consult Polylogue source readiness and its declared convergence operation",
-        reason=readiness.reason,
-    )
-
-
 @lru_cache(maxsize=32)
 def _activitywatch_raw_dates(path: Path, signature: object) -> tuple[date | None, date | None]:
     del signature
@@ -2368,18 +2336,6 @@ def _asciinema_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         query_surface="lynchpin.sources.terminal.recordings",
         materialization_hint="asciinema recording capture writes under /realm/activity/terminal/asciinema",
         row_count=_count_files(cfg.asciinema_root, suffixes=(".cast",)),
-    )
-
-
-def _codex_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
-    return _raw_source_dataset(
-        cfg,
-        name="codex",
-        raw_roots=(cfg.codex_sessions_root,),
-        authority="Codex session JSONL archive",
-        query_surface="lynchpin.sources.polylogue once Polylogue has archived Codex sessions",
-        materialization_hint="polylogue-live.service tails Codex session logs into the Polylogue archive",
-        row_count=_count_files(cfg.codex_sessions_root, suffixes=(".jsonl",)),
     )
 
 
@@ -3605,54 +3561,6 @@ def _agentctl_dataset(_cfg: LynchpinConfig) -> MaterializedDataset:
     )
 
 
-def _polylogue_verification_dataset(_cfg: LynchpinConfig) -> MaterializedDataset:
-    """Report Polylogue's durable verification lane without materializing it.
-
-    Polylogue devtools own the lane and append to it live; Lynchpin reads it
-    during substrate promotion, so this is a status check, not a materializer.
-    """
-    from .sources.polylogue_verification import (
-        PolylogueVerificationContractError,
-        PolylogueVerificationUnavailable,
-        read_verification_snapshot,
-        verification_lane_path,
-    )
-
-    contract = source_contract("polylogue_verification")
-    lane = verification_lane_path()
-    try:
-        snapshot = read_verification_snapshot(lane)
-    except PolylogueVerificationUnavailable as error:
-        status: Status = "missing"
-        observations = ()
-        reason = f"Polylogue verification lane is unavailable: {error}"
-    except PolylogueVerificationContractError as error:
-        status = "degraded"
-        observations = ()
-        reason = f"Polylogue verification lane violates its receipt contract: {error}"
-    else:
-        observations = snapshot.observations
-        status = "ready" if observations else "empty"
-        reason = f"Polylogue verification lane holds {len(observations)} runs"
-        if snapshot.rejected:
-            status = "degraded"
-            reason = f"{reason}; {len(snapshot.rejected)} rows rejected ({snapshot.rejected[0][1]})"
-    observed_dates = tuple(row.started_at.date() for row in observations)
-    return MaterializedDataset(
-        name=contract.name,
-        status=status,
-        authority=contract.authority,
-        query_surface=contract.query_surface,
-        materialized_paths=(),
-        raw_roots=(lane.parent,),
-        row_count=len(observations) if status != "missing" else None,
-        first_date=min(observed_dates, default=None),
-        last_date=max(observed_dates, default=None),
-        materialization_hint=contract.materialization_hint,
-        reason=reason,
-    )
-
-
 def _personal_daily_signals_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     contract = source_contract("personal_daily_signals")
     path = personal_daily_signals_path()
@@ -3975,60 +3883,6 @@ def _csv_date_bounds_cached(
                 first = stamp if first is None or stamp < first else first
                 last = stamp if last is None or stamp > last else last
     return (count if seen else None), first, last
-
-
-def _polylogue_date_bounds() -> tuple[date | None, date | None]:
-    """Best-effort read of session-profile first/last dates.
-
-    Prefer direct product-table bounds so status reads do not hydrate thousands
-    of session profiles. Fall back to profile iteration for older Polylogue
-    products that do not expose the current SQLite table.
-    """
-    from .sources.polylogue import PolylogueMaterializationError
-    from .sources.polylogue_client import _default_polylogue_db_path
-
-    direct = _polylogue_date_bounds_from_sqlite(_default_polylogue_db_path())
-    if direct != (None, None):
-        return direct
-
-    first: date | None = None
-    last: date | None = None
-    try:
-        for profile in iter_session_profiles():
-            stamp = profile.canonical_session_date
-            if stamp is None and profile.first_message_at is not None:
-                stamp = profile.first_message_at.date()
-            if stamp is None:
-                continue
-            first = stamp if first is None or stamp < first else first
-            last = stamp if last is None or stamp > last else last
-    except PolylogueMaterializationError:
-        # Bounds unavailable — return what we've collected so far (possibly
-        # both None). Status surfaces the error via archive_readiness().
-        pass
-    return first, last
-
-
-def _polylogue_date_bounds_from_sqlite(path: Path) -> tuple[date | None, date | None]:
-    if not path.exists():
-        return None, None
-    try:
-        from .sources.polylogue_client import _readonly_polylogue_connection
-
-        with _readonly_polylogue_connection(path) as conn:
-            row = conn.execute(
-                """
-                SELECT MIN(canonical_session_date), MAX(canonical_session_date)
-                FROM session_profiles
-                WHERE canonical_session_date IS NOT NULL
-                  AND canonical_session_date != ''
-                """
-            ).fetchone()
-    except sqlite3.Error:
-        return None, None
-    if not row:
-        return None, None
-    return _date_from_iso(row[0]), _date_from_iso(row[1])
 
 
 def _date_from_iso(value: object) -> date | None:

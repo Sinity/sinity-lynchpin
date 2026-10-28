@@ -84,7 +84,6 @@ def analyze_machine_context_windows(
     path: Path | None = None,
     windows: Iterable[WorkloadWindow] | None = None,
     max_windows: int = 500,
-    include_polylogue: bool = False,
     include_ambient_sources: bool = False,
 ) -> MachineContextAnalysis:
     """Overlay typed machine episodes onto development/activity windows.
@@ -101,7 +100,6 @@ def analyze_machine_context_windows(
             start=bounded_start,
             end=bounded_end,
             path=path,
-            include_polylogue=include_polylogue,
             include_ambient_sources=include_ambient_sources,
         )
         caveats.extend(source_caveats)
@@ -133,7 +131,6 @@ def write_machine_context_analysis(
     end: date | None = None,
     path: Path | None = None,
     max_windows: int = 500,
-    include_polylogue: bool = False,
     include_ambient_sources: bool = False,
 ) -> MachineContextAnalysis:
     analysis = analyze_machine_context_windows(
@@ -141,7 +138,6 @@ def write_machine_context_analysis(
         end=end,
         path=path,
         max_windows=max_windows,
-        include_polylogue=include_polylogue,
         include_ambient_sources=include_ambient_sources,
     )
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -169,7 +165,6 @@ def _collect_workload_windows(
     start: date,
     end: date,
     path: Path | None = None,
-    include_polylogue: bool = False,
     include_ambient_sources: bool = False,
 ) -> tuple[list[WorkloadWindow], list[str]]:
     windows: list[WorkloadWindow] = []
@@ -184,11 +179,6 @@ def _collect_workload_windows(
         caveats.append(
             "ambient terminal/git/ActivityWatch windows skipped by default; pass include_ambient_sources=True to opt in"
         )
-    if include_polylogue:
-        collectors.insert(1, _polylogue_windows)
-    else:
-        caveats.append("polylogue session windows skipped by default; pass include_polylogue=True to opt in")
-
     for collector in collectors:
         try:
             windows.extend(collector(start=start, end=end, start_dt=start_dt, end_dt=end_dt, path=path))
@@ -250,35 +240,6 @@ def _work_observation_windows(
                 "git_dirty": row[13],
                 "live_stage": row[14],
                 "args": row[15],
-            },
-        ))
-    return result
-
-
-def _polylogue_windows(*, start: date, end: date, start_dt: datetime, end_dt: datetime, path: Path | None = None) -> list[WorkloadWindow]:
-    del path
-    del start_dt, end_dt
-    from lynchpin.sources.polylogue import session_profiles_for_date
-
-    result: list[WorkloadWindow] = []
-    for profile in session_profiles_for_date(start=start, end=end):
-        win_start = profile.first_message_at
-        win_end = profile.last_message_at
-        if win_start is None or win_end is None or win_end < win_start:
-            continue
-        result.append(WorkloadWindow(
-            source="polylogue_session",
-            window_id=profile.conversation_id,
-            started_at=win_start,
-            ended_at=win_end,
-            projects=profile.work_event_projects,
-            provider=profile.provider,
-            work_kind=profile.work_event_kind,
-            summary=profile.title,
-            payload={
-                "message_count": profile.message_count,
-                "tool_use_count": profile.tool_use_count,
-                "work_event_count": profile.work_event_count,
             },
         ))
     return result

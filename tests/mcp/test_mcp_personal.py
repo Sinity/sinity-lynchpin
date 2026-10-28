@@ -57,14 +57,6 @@ def test_operator_rhythm_returns_rendered_summary(monkeypatch: pytest.MonkeyPatc
         lambda *_args, **_kwargs: [ts],
     )
     monkeypatch.setattr(
-        "lynchpin.substrate.readers_signals.load_ai_work_event_timestamps_in_range",
-        lambda *_args, **_kwargs: [],
-    )
-    monkeypatch.setattr(
-        "lynchpin.substrate.readers_signals.load_ai_session_timestamps_in_range",
-        lambda *_args, **_kwargs: [],
-    )
-    monkeypatch.setattr(
         "lynchpin.substrate.readers_signals.load_pressure_timestamps_in_range",
         lambda *_args, **_kwargs: [],
     )

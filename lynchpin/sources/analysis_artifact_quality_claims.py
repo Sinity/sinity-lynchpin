@@ -327,58 +327,6 @@ def _active_symbol_index_claims(
     return tuple(claims)
 
 
-def _active_ai_attribution_claims(
-    artifact: AnalysisArtifact,
-    payload: dict[str, Any],
-    *,
-    selected: set[str],
-) -> tuple[AnalysisClaim, ...]:
-    window = dict_or_empty(payload.get("window"))
-    projects = list_or_empty(payload.get("projects"))
-    claims: list[AnalysisClaim] = []
-    for row in projects:
-        if not isinstance(row, dict):
-            continue
-        project = canonical_project_name(row.get("project"))
-        if project is None or (selected and project not in selected):
-            continue
-        commit_count = int(row.get("commit_count") or 0)
-        high = int(row.get("high") or 0)
-        medium = int(row.get("medium") or 0)
-        none = int(row.get("none") or 0)
-        ratio = float(row.get("ai_assisted_ratio") or 0.0)
-        providers = dict_or_empty(row.get("providers"))
-        provider_str = (
-            "; providers: "
-            + ", ".join(f"{k}={v}" for k, v in sorted(providers.items()))
-            if providers
-            else ""
-        )
-        summary = (
-            f"{project}: {high}/{medium}/{none} commits high/medium/none AI-attributed "
-            f"({ratio:.0%} of {commit_count}){provider_str}"
-        )
-        claims.append(
-            AnalysisClaim(
-                id=f"ai-attribution-summary:{project}",
-                artifact_name=artifact.name,
-                claim_type="ai_attribution_summary",
-                project=project,
-                summary=summary,
-                payload={
-                    "window": window,
-                    "commit_count": commit_count,
-                    "high": high,
-                    "medium": medium,
-                    "none": none,
-                    "ai_assisted_ratio": ratio,
-                    "providers": dict(providers),
-                },
-                confidence=0.65,
-                generated_at=artifact.generated_at,
-            )
-        )
-    return tuple(claims)
 
 
 def _active_ci_health_claims(

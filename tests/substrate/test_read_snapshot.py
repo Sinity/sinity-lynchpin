@@ -441,8 +441,6 @@ def test_logical_index_rebuild_seed_preserves_verified_rows(
             assert views == {
                 "issue_closure_chain_walk",
                 "project_day_correlation",
-                "work_event_file_overlap",
-                "work_event_symbol_overlap",
             }
             assert conn.execute("SELECT count(*) FROM duckdb_sequences()").fetchone() == (0,)
             assert conn.execute(

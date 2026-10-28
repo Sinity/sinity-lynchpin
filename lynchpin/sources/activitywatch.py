@@ -20,14 +20,10 @@ from collections import defaultdict
 from bisect import bisect_left
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
-from typing import TYPE_CHECKING, Iterable, Iterator, Sequence, TypeVar
+from typing import Iterator, Sequence, TypeVar
 
 from ..core.cache import file_signature
-from ..core.input_snapshot import current_input_snapshot
 
-if TYPE_CHECKING:
-    from .polylogue_session_attribution import SessionRepoInterval
-from ..core.config import get_config
 from ..core.classify import classify
 from ..core.coverage import CoverageBounds
 from ..core.title_features import extract_title_features
@@ -117,19 +113,6 @@ def _activitywatch_cache_revision(*, ensure: bool = True) -> tuple[object, objec
     from .activitywatch_repair import repair_input_revision
 
     return activitywatch_source_revision(include_native=ensure), repair_input_revision(ensure=ensure)
-
-
-def _polylogue_attribution_revision() -> tuple[object, ...]:
-    cfg = get_config()
-    db = getattr(cfg, "polylogue_db", None)
-    if db is None:
-        return ()
-    path = db
-    return (
-        file_signature(path),
-        file_signature(path.with_name(path.name + "-wal")),
-        file_signature(path.with_name(path.name + "-shm")),
-    )
 
 
 def _repaired_afk_events(
@@ -231,7 +214,6 @@ def focus_spans(
     start: datetime | date,
     end: datetime | date,
     min_duration_s: float = 0.0,
-    enrich_polylogue: bool = True,
     ensure: bool = True,
 ) -> list[FocusSpan]:
     """AFK-trimmed classified focus timeline.
@@ -241,11 +223,6 @@ def focus_spans(
     the inclusive day-range a caller naturally expects when passing
     ``start=date(d), end=date(d)``.
 
-    After classification, spans without a project are cross-referenced
-    against polylogue work_events to recover session→project attribution
-    for AI-coding terminal windows (kitty, foot, etc.) that the
-    window-title classifier cannot resolve. Pass ``enrich_polylogue=False`` for
-    numeric rollups that must not block on semantic chat products.
     """
     from ..core.parse import end_of_day_local
     lower = as_local(start)
@@ -255,151 +232,7 @@ def focus_spans(
             _instant(lower), _instant(upper), min_duration_s, ensure, _activitywatch_cache_revision(ensure=ensure)
         )
     )
-    if not enrich_polylogue:
-        return spans
-    return _enrich_with_polylogue(spans, lower, upper)
-
-
-def _enrich_with_polylogue(
-    spans: list[FocusSpan], start: datetime, end: datetime
-) -> list[FocusSpan]:
-    """Backfill project attribution via polylogue session overlap.
-
-    Two tiers, both time-overlap based:
-
-    1. Primary: cross-reference against polylogue work_events (per-turn
-       granularity) and resolve each event's conversation to a project via
-       session profiles. Requires materialized polylogue insight products.
-    2. Fallback: for spans the primary tier leaves unattributed, read typed
-       Polylogue archive summaries and attribute by dominant session-interval
-       overlap. This route needs no insight materialization.
-
-    Gracefully returns spans unchanged when polylogue is unavailable.
-    """
-    # Only relevant for spans that need attribution
-    needy = [
-        i for i, s in enumerate(spans)
-        if s.kind == "focused" and not s.project
-    ]
-    if not needy:
-        return spans
-
-    context = _polylogue_attribution_context(
-        start.date(), end.date(), _polylogue_attribution_revision()
-    )
-    if context is not None:
-        events, conv_projects = context
-
-        # FocusSpan structurally matches SpanWindow; WorkEvent matches WorkEventWindow.
-        from .window_session_attribution import SpanWindow, WorkEventWindow, attribute_spans
-        from typing import cast
-
-        needy_spans = [spans[i] for i in needy]
-        attributions = attribute_spans(
-            cast("Iterable[SpanWindow]", needy_spans),
-            cast("Sequence[WorkEventWindow]", events),
-        )
-
-        for idx, attr in zip(needy, attributions):
-            if attr is None or attr.confidence < 0.3:
-                continue
-            projects = conv_projects.get(attr.conversation_id, ())
-            if projects:
-                spans[idx] = replace(spans[idx], project=projects[0])
-
-    still_needy = [i for i in needy if not spans[i].project]
-    if still_needy:
-        spans = _enrich_with_session_overlap(spans, still_needy)
-
     return spans
-
-
-def _enrich_with_session_overlap(
-    spans: list[FocusSpan], idxs: list[int]
-) -> list[FocusSpan]:
-    """Fallback tier: attribute remaining spans via typed archive summaries.
-
-    Gracefully returns spans unchanged when the polylogue index DB is
-    missing or unreadable.
-    """
-    from ..core.config import get_config
-    from .polylogue_session_attribution import (
-        attribute_spans_by_session_overlap,
-    )
-
-    db_path = str(get_config().polylogue_db)
-    operation = current_input_snapshot()
-    intervals = (
-        _session_overlap_context(db_path, _polylogue_attribution_revision(), operation)
-        if operation is not None else _read_session_overlap(db_path)
-    )
-    if not intervals:
-        return spans
-
-    needy_spans = [spans[i] for i in idxs]
-    attributions = attribute_spans_by_session_overlap(needy_spans, intervals)
-    for i, attr in zip(idxs, attributions):
-        if attr is not None:
-            spans[i] = replace(spans[i], project=attr.project)
-    return spans
-
-
-def _read_session_overlap(db_path: str) -> tuple[SessionRepoInterval, ...] | None:
-    from .polylogue_session_attribution import session_repo_intervals
-
-    try:
-        return session_repo_intervals(db_path)
-    except Exception as exc:
-        logger.warning("polylogue session overlap unavailable: %s", exc)
-        return None
-
-
-@functools.lru_cache(maxsize=8)
-def _session_overlap_context(
-    db_path: str, revision: object, operation: object,
-) -> tuple[SessionRepoInterval, ...] | None:
-    # Exceptions are not retained by the underlying lru_cache. Keep its unavailable
-    # observation for this operation, while ordinary reads and new operations retry.
-    return _read_session_overlap(db_path)
-
-
-@functools.lru_cache(maxsize=32)
-def _polylogue_attribution_context(
-    start: date,
-    end: date,
-    revision: object,
-) -> tuple[tuple[object, ...], dict[str, tuple[str, ...]]] | None:
-    """Return cached Polylogue attribution inputs for an AW date window.
-
-    ``focus_spans`` is called by several daily ActivityWatch composites over the
-    same window. When Polylogue insight products are incomplete, repeatedly
-    probing ``work_events``/``session_profiles_for_date`` dominates the AW path
-    and emits the same warning several times. Cache both successful context and
-    graceful unavailability for the process; the Polylogue database revision is
-    part of the cache key so newly published insight rows are visible.
-    """
-    del revision
-    try:
-        from .polylogue import work_events, session_profiles_for_date
-    except ImportError:
-        return None
-
-    try:
-        events = tuple(work_events(start=start, end=end))
-    except Exception:
-        return None
-    if not events:
-        return None
-
-    conv_projects: dict[str, tuple[str, ...]] = {}
-    try:
-        for profile in session_profiles_for_date(start=start, end=end):
-            if profile.work_event_projects:
-                conv_projects[profile.conversation_id] = profile.work_event_projects
-    except Exception:
-        pass  # session profiles unavailable — can't resolve projects
-
-    return events, conv_projects
 
 
 def project_focus_days(*, start: datetime, end: datetime, ensure: bool = True) -> list[ProjectFocusDay]:
@@ -1414,9 +1247,9 @@ def daily_activity(*, start: date, end: date, ensure: bool = True) -> list[AWDay
                 raise
             active_map = active_seconds_by_date(start, end)
     spans = (
-        focus_spans(start=s, end=e, min_duration_s=10, enrich_polylogue=False, ensure=False)
+        focus_spans(start=s, end=e, min_duration_s=10, ensure=False)
         if not ensure
-        else focus_spans(start=s, end=e, min_duration_s=10, enrich_polylogue=False)
+        else focus_spans(start=s, end=e, min_duration_s=10)
     )
     sessions = _app_sessions_from_spans(
         [

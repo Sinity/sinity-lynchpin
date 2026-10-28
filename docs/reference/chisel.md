@@ -59,7 +59,7 @@ Candidate evidence can attach a native criterion receipt when the exported autho
 
 Sinex execution exports use one read-only owner-ledger transaction with bounded invocation, stage, and test selections. Resource fields retain their workload, environment, units, sampling and avg/max distinctions. Under `--refresh`, selected-revision GitHub checks and statuses include provider contexts such as CircleCI when GitHub exposes them. Provider detail APIs are not inferred from a status URL.
 
-Session context uses Polylogue's public facade with an indexed workspace filter. Defaults are 30 days, at most 200 excerpts, and 2,000,000 serialized bytes per project, configurable with `--context-days`, `--context-limit`, and `--context-bytes`. Excerpts retain session/message references, timestamps, selection reasons, origin, and truncation. Explicit selected-task session links take priority over workspace matches. The route samples the latest ten messages of selected sessions; project work notes come from the canonical Beads export, with field and line references. Task-update times are not presented as note-creation times.
+Project context reads work notes from the canonical Beads export, with field and line references. Task-update times are not presented as note-creation times. Defaults are 30 days, at most 200 excerpts, and 2,000,000 serialized bytes per project, configurable with `--context-days`, `--context-limit`, and `--context-bytes`.
 
 ## Attachments and offline browsing
 

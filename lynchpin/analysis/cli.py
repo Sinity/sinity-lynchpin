@@ -343,7 +343,6 @@ def _register_machine(app: typer.Typer) -> None:
         start: str = typer.Option(None, "--start"),
         end: str = typer.Option(None, "--end"),
         max_windows: int = typer.Option(500, "--max-windows"),
-        include_polylogue: bool = typer.Option(False, "--include-polylogue/", help="Include Polylogue session windows"),
         include_ambient_sources: bool = typer.Option(
             False,
             "--include-ambient-sources/",
@@ -357,7 +356,6 @@ def _register_machine(app: typer.Typer) -> None:
             start=_opt_date(start),
             end=_opt_date(end),
             max_windows=max_windows,
-            include_polylogue=include_polylogue,
             include_ambient_sources=include_ambient_sources,
         )
         print(f"machine-context: {analysis.windows_with_machine_episodes}/{analysis.window_count} windows with episodes -> {target}")

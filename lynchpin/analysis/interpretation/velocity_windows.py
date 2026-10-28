@@ -46,7 +46,6 @@ class _Support:
     sources: Counter[str] = field(default_factory=Counter)
     source_pairs: Counter[str] = field(default_factory=Counter)
     github_lifecycles: Counter[str] = field(default_factory=Counter)
-    ai_sessions: int = 0
     focus_minutes: float = 0.0
     shell_commands: int = 0
     raw_log_count: int = 0
@@ -114,7 +113,7 @@ def build_project_velocity_windows(
             "velocity_model": "micro code activity, meso landed work packages, macro artifact shape, and cross-source support kept separate",
             "commit_caveat": "commit counts are heartbeat signals only and vary by commit granularity",
             "scope_caveat": "scope proxies are comparative within project history, not absolute value or usefulness",
-            "cross_source_caveat": "ActivityWatch, terminal, Polylogue, raw-log, and GitHub are support dimensions, not velocity scores",
+            "cross_source_caveat": "ActivityWatch, terminal, raw-log, and GitHub are support dimensions, not velocity scores",
             "no_scalar_velocity": "no single velocity_score is emitted",
         },
         "inputs": {
@@ -275,7 +274,6 @@ def _support_by_project(rows: Sequence[CorrelatedWorkDay]) -> dict[str, _Support
             for right in row.sources[idx + 1:]:
                 bucket.source_pairs[f"{left}+{right}"] += 1
         bucket.github_lifecycles.update(row.github_lifecycles)
-        bucket.ai_sessions += row.ai_session_count
         bucket.focus_minutes += row.focus_minutes
         bucket.shell_commands += row.shell_command_count
         bucket.raw_log_count += row.raw_log_count
@@ -332,7 +330,6 @@ def _project_row(
             "source_counts": dict(support.sources.most_common()),
             "source_pair_counts": dict(support.source_pairs.most_common(12)),
             "github_lifecycles": dict(support.github_lifecycles.most_common()),
-            "ai_session_count": support.ai_sessions,
             "focus_hours": round(support.focus_minutes / 60.0, 2),
             "shell_command_count": support.shell_commands,
             "raw_log_count": support.raw_log_count,
@@ -386,7 +383,6 @@ def _package_support(
         for issue_num in refs.get("issues") or ():
             expected_refs.add(f"issue#{issue_num}")
 
-    package_top_surfaces = tuple(str(s) for s in (package.get("top_surfaces") or ()) if s)
 
     has_handles = bool(commit_shas or expected_refs or first_date)
     empty_result: dict[str, Any] = {
@@ -396,14 +392,11 @@ def _package_support(
         "source_counts": {},
         "source_pair_counts": {},
         "github_lifecycles": {},
-        "ai_session_count": 0,
         "focus_hours": 0.0,
         "shell_command_count": 0,
         "raw_log_count": 0,
         "github_ref_count": 0,
-        "match_reasons": {"commit_overlap": 0, "github_ref_overlap": 0, "date_overlap": 0, "kind_match": 0},
-        "kind_breakdown": {},
-        "kind_breakdown_weighted": {},
+        "match_reasons": {"commit_overlap": 0, "github_ref_overlap": 0, "date_overlap": 0},
         "support_level": "weak",
         "caveats": [],
     }
@@ -436,25 +429,18 @@ def _package_support(
     source_counter: Counter[str] = Counter()
     source_pair_counter: Counter[str] = Counter()
     lifecycle_counter: Counter[str] = Counter()
-    kind_breakdown_counter: Counter[str] = Counter()
-    kind_weighted_acc: dict[str, float] = {}
-    ai_session_count = 0
     focus_minutes = 0.0
     shell_command_count = 0
     raw_log_count = 0
     github_ref_count = 0
     reason_counter: Counter[str] = Counter()
 
+
     for row, reasons in matched_rows:
         day_str = row.date.isoformat()
         support_days.add(day_str)
         if "commit_overlap" in reasons or "github_ref_overlap" in reasons:
             strong_match_days.add(day_str)
-        # Arc B.3: kind_match reason fires when the row's dominant kind
-        # plausibly aligns with the package's surface mix (tests/ ↔ testing,
-        # docs/ ↔ research/conversation, manifests ↔ implementation).
-        if _kind_aligns_with_surfaces(row.ai_kind_breakdown, package_top_surfaces):
-            reasons.add("kind_match")
         for reason in reasons:
             reason_counter[reason] += 1
         source_counter.update(row.sources)
@@ -463,11 +449,6 @@ def _package_support(
                 pair = f"{left}+{right}" if left <= right else f"{right}+{left}"
                 source_pair_counter[pair] += 1
         lifecycle_counter.update(row.github_lifecycles)
-        for kind, count in row.ai_kind_breakdown:
-            kind_breakdown_counter[kind] += count
-        for kind, weight in row.ai_kind_weighted:
-            kind_weighted_acc[kind] = kind_weighted_acc.get(kind, 0.0) + weight
-        ai_session_count += row.ai_session_count
         focus_minutes += row.focus_minutes
         shell_command_count += row.shell_command_count
         raw_log_count += row.raw_log_count
@@ -493,7 +474,6 @@ def _package_support(
         "source_counts": dict(source_counter),
         "source_pair_counts": dict(source_pair_counter),
         "github_lifecycles": dict(lifecycle_counter),
-        "ai_session_count": ai_session_count,
         "focus_hours": round(focus_minutes / 60.0, 2),
         "shell_command_count": shell_command_count,
         "raw_log_count": raw_log_count,
@@ -502,52 +482,14 @@ def _package_support(
             "commit_overlap": reason_counter["commit_overlap"],
             "github_ref_overlap": reason_counter["github_ref_overlap"],
             "date_overlap": reason_counter["date_overlap"],
-            "kind_match": reason_counter["kind_match"],
         },
-        "kind_breakdown": dict(kind_breakdown_counter),
-        "kind_breakdown_weighted": {k: round(v, 2) for k, v in kind_weighted_acc.items()},
         "support_level": support_level,
         "caveats": caveats,
     }
 
 
-_KIND_TO_SURFACE_HINTS: dict[str, tuple[str, ...]] = {
-    "testing": ("tests", "test", "spec", "fixtures"),
-    "research": ("docs", "doc"),
-    "conversation": ("docs", "doc"),
-    "implementation": ("src", "lib", "lynchpin", "polylogue"),
-    "review": ("review", "rfc"),
-    "debugging": ("src", "lib"),
-    "dependency_management": ("Cargo.toml", "pyproject.toml", "package.json", "flake.nix"),
-}
-
-
-def _kind_aligns_with_surfaces(
-    kind_breakdown: tuple[tuple[str, int], ...],
-    top_surfaces: tuple[str, ...],
-) -> bool:
-    """True iff the dominant kind plausibly aligns with the package's surfaces.
-
-    Conservative: requires both that a kind has at least one observation in
-    this row AND that one of its surface hints appears in any package
-    surface path. Returns False on empty inputs so absence is never spun
-    into a kind_match.
-    """
-    if not kind_breakdown or not top_surfaces:
-        return False
-    surfaces_lower = tuple(s.lower() for s in top_surfaces)
-    for kind, count in kind_breakdown:
-        if count <= 0:
-            continue
-        for hint in _KIND_TO_SURFACE_HINTS.get(kind, ()):
-            hint_lower = hint.lower()
-            if any(hint_lower in surface for surface in surfaces_lower):
-                return True
-    return False
-
-
 def _support_level(*, micro: _Micro, meso: _Meso, support: _Support) -> str:
-    if meso.packages >= 3 and len(support.cross_source_days) >= 3 and support.ai_sessions:
+    if meso.packages >= 3 and len(support.cross_source_days) >= 3:
         return "strong"
     if micro.commits or meso.packages or len(support.active_days) >= 2:
         return "moderate"
@@ -567,8 +509,6 @@ def _primary_motion(micro: _Micro, meso: _Meso) -> list[str]:
 
 def _weaknesses(micro: _Micro, meso: _Meso, support: _Support) -> list[str]:
     weaknesses: list[str] = []
-    if micro.commits and not support.ai_sessions:
-        weaknesses.append("no correlated AI-session support")
     if micro.commits and not support.focus_minutes:
         weaknesses.append("no correlated ActivityWatch focus")
     if meso.heuristic_packages > meso.github_thread_packages:

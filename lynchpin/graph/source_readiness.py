@@ -14,19 +14,10 @@ from ..sources.source_observations import SourceObservation, source_observations
 from .coverage import coverage_report
 
 
-def archive_readiness(*args: Any, **kwargs: Any) -> Any:
-    from ..sources.polylogue import archive_readiness as impl
-
-    if "include_polylogue_product_counts" in kwargs:
-        kwargs["include_heavy_counts"] = kwargs.pop("include_polylogue_product_counts")
-    return impl(*args, **kwargs)
-
-
 def source_readiness(
     *,
     start: date,
     end: date,
-    include_polylogue_product_counts: bool = True,
     include_github_frontier: bool = False,
     include_analysis_inventory: bool = True,
     repair_materializations: bool = True,
@@ -71,7 +62,6 @@ def source_readiness(
             "local project git repositories are read live",
             "project checkout root is missing",
         ),
-        _polylogue_source(include_product_counts=include_polylogue_product_counts),
         _path_source(
             "raw_log",
             available["raw_log"],
@@ -393,32 +383,6 @@ def _int_or_none(value: object) -> int | None:
         return None
     except (TypeError, ValueError):
         return None
-
-
-def _polylogue_source(*, include_product_counts: bool) -> SourceReadiness:
-    readiness = archive_readiness(include_polylogue_product_counts=include_product_counts)
-    if readiness.status == "ready":
-        status: ReadinessStatus = "available"
-    elif readiness.status == "unavailable":
-        status = "missing"
-    else:
-        status = "partial"
-    caveats = []
-    if readiness.derives_profiles_from_base_tables:
-        caveats.append("session-profile products are stale or missing; repair Polylogue session insights")
-    if readiness.derives_day_summaries_from_profiles:
-        caveats.append("day-summary products are stale or missing; repair Polylogue session insights")
-    if readiness.work_event_count is None or readiness.work_event_count == 0:
-        caveats.append("work-event products are unavailable; chat semantics are limited")
-    return SourceReadiness(
-        source="polylogue",
-        status=status,
-        reason=readiness.reason,
-        cost="materialized",
-        path=str(readiness.db_path),
-        count=readiness.conversation_count,
-        caveats=tuple(caveats),
-    )
 
 
 def _analysis_source(*, include_inventory: bool) -> SourceReadiness:

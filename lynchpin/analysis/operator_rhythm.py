@@ -6,17 +6,13 @@ focus, ``temporal_rhythm`` returns commit-hour distribution from
 morning/afternoon/evening buckets. None of them join across sources.
 
 This module composes those signals into a single (hour-of-day,
-day-of-week) matrix combining focus minutes, commit count, AI session
-count, and machine-pressure episode count, so the question "what hours
-do I do deep work?" can be answered from one query rather than four.
+day-of-week) matrix combining focus minutes, commit count and machine-pressure
+episode count.
 
 Construct-validity boundary:
 - "focus minutes" comes from ActivityWatch; project attribution there is
   known to be partial (window-title→cwd mapping fails for many sessions).
   The hourly aggregate is more reliable than the per-project view.
-- "ai_session_count" is per-JSONL session (auto-compact and resume
-  inflate this); see polylogue #866 for the lineage primitive that will
-  give a logical-conversation count. Reported as-is until that lands.
 - "pressure_episode_count" counts distinct machine_episode rows whose
   start_ts falls in the hour; episodes spanning hours are credited to
   start hour only.
@@ -46,7 +42,6 @@ class HourBucket:
     hour: int
     focus_min: float
     commit_count: int
-    ai_session_count: int
     pressure_episode_count: int
 
 
@@ -76,7 +71,6 @@ def compute_operator_rhythm(
     project: str | None,
     focus_rows: list[tuple[date, int, float]],
     commit_timestamps: list[datetime],
-    ai_session_timestamps: list[datetime],
     pressure_timestamps: list[datetime],
     target_tz: tzinfo | None = None,
 ) -> OperatorRhythm:
@@ -90,11 +84,9 @@ def compute_operator_rhythm(
       Hour values are taken at face value — they're already in the
       operator's wall-clock from ActivityWatch.
     - ``commit_timestamps``: tz-aware datetimes; bucketed in ``target_tz``.
-    - ``ai_session_timestamps``: tz-aware datetimes of AI session
-      ``start_ts`` (or canonical_session_date 00:00 fallback).
     - ``pressure_timestamps``: tz-aware datetimes of machine_episode
       ``start_ts``.
-    - ``target_tz``: timezone to bucket commit/session/pressure
+    - ``target_tz``: timezone to bucket commit/pressure
       timestamps into. None ⇒ system local time (whatever
       ``astimezone()`` resolves to). Tests should pass UTC for
       determinism.
@@ -105,7 +97,7 @@ def compute_operator_rhythm(
     discriminate.)
     """
     buckets: dict[tuple[int, int], dict[str, float]] = defaultdict(
-        lambda: {"focus_min": 0.0, "commit": 0, "ai": 0, "pressure": 0}
+        lambda: {"focus_min": 0.0, "commit": 0, "pressure": 0}
     )
 
     def _local(ts: datetime) -> datetime:
@@ -126,9 +118,6 @@ def compute_operator_rhythm(
         local = _local(ts)
         buckets[(local.weekday(), local.hour)]["commit"] += 1
 
-    for ts in ai_session_timestamps:
-        local = _local(ts)
-        buckets[(local.weekday(), local.hour)]["ai"] += 1
 
     for ts in pressure_timestamps:
         local = _local(ts)
@@ -136,7 +125,7 @@ def compute_operator_rhythm(
 
     items: list[HourBucket] = []
     for (dow, hour), agg in sorted(buckets.items()):
-        if agg["focus_min"] == 0 and agg["commit"] == 0 and agg["ai"] == 0 and agg["pressure"] == 0:
+        if not any(agg.values()):
             continue
         items.append(
             HourBucket(
@@ -144,7 +133,6 @@ def compute_operator_rhythm(
                 hour=hour,
                 focus_min=round(agg["focus_min"], 1),
                 commit_count=int(agg["commit"]),
-                ai_session_count=int(agg["ai"]),
                 pressure_episode_count=int(agg["pressure"]),
             )
         )
@@ -154,8 +142,6 @@ def compute_operator_rhythm(
         partial.append("activitywatch")
     if not commit_timestamps:
         partial.append("commit_fact")
-    if not ai_session_timestamps:
-        partial.append("ai_session")
     if not pressure_timestamps:
         partial.append("machine_episode")
 
@@ -178,15 +164,14 @@ def compute_operator_rhythm(
 def _combined_score(bucket: HourBucket) -> float:
     """Normalized combined score for the 'best deep-work hour' summary.
 
-    Weights chosen so that one commit ≈ 5 minutes of focus and one AI
-    session ≈ 10 minutes of focus; pressure subtracts because high
+    Weights assign one commit the weight of five focus minutes. Pressure subtracts
+    because high
     pressure correlates with the agent fighting the machine rather than
     shipping work. These are tuning constants, not load-bearing.
     """
     return (
         bucket.focus_min
         + 5.0 * bucket.commit_count
-        + 10.0 * bucket.ai_session_count
         - 3.0 * bucket.pressure_episode_count
     )
 
@@ -214,7 +199,7 @@ def render_rhythm_summary(rhythm: OperatorRhythm) -> str:
         dow, hour = rhythm.peak_combined_hour
         lines.append(
             f"Peak deep-work hour: {WEEKDAY_NAMES[dow]} {hour:02d}:00 "
-            f"(combined focus+commits+ai-sessions, pressure-adjusted)."
+            f"(combined focus+commits, pressure-adjusted)."
         )
     if rhythm.peak_focus_hour is not None:
         dow, hour = rhythm.peak_focus_hour

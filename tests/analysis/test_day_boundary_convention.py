@@ -1,25 +1,9 @@
-"""Enforce the logical-day convention for day-bucketing in the analysis layer.
+"""Keep analysis day keys aligned with the 06:00-local logical day.
 
-The repo's daily products key by the 06:00-local *logical* day
-(``lynchpin.core.primitives.logical_date``). Calendar ``.date()`` bucketing
-in analysis code is how keystroke_attribution silently misattributed 31.7%
-of focus-span time (the 00:00-06:00 share) in a per-day join against
-logical-day activity seconds (fixed in 4e37102). For an operator whose
-activity is this nocturnal, calendar-vs-logical is a third of the signal
-on the wrong row, so the convention is enforced, not just documented.
-
-Mechanism: AST-count no-arg ``.date()`` calls per module and compare with
-the frozen allowlist below. A *new* call fails this test; the fix is either
-to bucket via ``logical_date`` (correct for anything joined with
-ActivityWatch/keylog/machine daily products) or, when calendar semantics
-are genuinely intended (pure timestamp arithmetic like
-evening_activity_sleep's late-evening cutoff, or provider-local exports
-that never join machine products), to bump the module's entry here in the
-same commit — making the choice reviewable instead of accidental.
-
-The frozen entries are under review in lynchpin-t3a; shrink them freely
-(reduced counts below the allowance also fail, so the allowlist tracks
-reality in both directions).
+Daily joins use ``lynchpin.core.primitives.logical_date``. Calendar dates
+are permitted for explicit timestamp arithmetic and provider-local exports
+that do not join daily machine products. The per-module counts below must
+match those exceptions exactly, including when a call is removed.
 """
 
 from __future__ import annotations
@@ -39,11 +23,8 @@ ALLOWED_CALENDAR_DATE_CALLS = {
     "operator_public_text.py": 8,  # provider-local post timestamps
     "sleep_coverage.py": 3,
     "sleep_stage_model.py": 1,
-    "quota_advisory.py": 1,  # provider/archive calendar query, not a daily join key
     "terminal_reconstruction.py": 2,  # calendar-named capture file selection, not a daily join key
 }
-# ai_session_efficiency.py, personal_interest_fusion.py, url_crossref.py:
-# migrated to logical_date, lynchpin-t3a — no longer need an entry here.
 
 
 def _count_date_calls(path: Path) -> int:

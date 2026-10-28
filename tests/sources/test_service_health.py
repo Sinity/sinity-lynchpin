@@ -141,7 +141,7 @@ def test_failed_state_opens_downtime_interval() -> None:
 def test_no_observations_yields_unobserved_interval() -> None:
     """A unit with no telemetry → single 'unobserved' interval covering
     the window. Caller decides how to treat it."""
-    unit = "polylogue-live.service"
+    unit = "activitywatch.service"
     intervals = list(downtime_intervals(
         [], window_start=W_START, window_end=W_END, units=(unit,),
     ))
@@ -168,7 +168,7 @@ def test_long_failure_without_samples_becomes_unobserved() -> None:
 
 def test_distinct_units_tracked_separately() -> None:
     """Failure of one unit must not affect another."""
-    aw, pl = "activitywatch.service", "polylogue-live.service"
+    aw, pl = "activitywatch.service", "activitywatch.service"
     states = [S(aw, t) for t in range(0, 1800, 30)] + [
         S(aw, 1800, active="failed", sub="failed"),
     ] + [S(pl, t) for t in range(0, 3601, 30)]
@@ -177,7 +177,7 @@ def test_distinct_units_tracked_separately() -> None:
     ))
     by_unit = {i.unit: i for i in intervals}
     assert aw in by_unit
-    assert pl not in by_unit  # polylogue-live.service was fine, no interval
+    assert pl not in by_unit  # activitywatch.service was fine, no interval
 
 
 def test_capture_service_units_includes_expected_set() -> None:
@@ -185,7 +185,7 @@ def test_capture_service_units_includes_expected_set() -> None:
     expected = {
         "activitywatch.service",
         "activitywatch-watcher-awatcher.service",
-        "polylogue-live.service",
+        "activitywatch.service",
     }
     assert expected.issubset(set(CAPTURE_SERVICE_UNITS))
 
@@ -196,9 +196,9 @@ def test_uptime_summary_counts_unobserved_as_downtime() -> None:
     they want a different policy."""
     summary = service_uptime_summary(
         [], window_start=W_START, window_end=W_END,
-        units=("polylogue-live.service",),
+        units=("activitywatch.service",),
     )
-    assert summary["polylogue-live.service"]["uptime_fraction"] == 0.0
+    assert summary["activitywatch.service"]["uptime_fraction"] == 0.0
 
 
 def test_same_unit_across_managers_requires_identity_selection():

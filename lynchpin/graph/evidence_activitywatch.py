@@ -48,7 +48,6 @@ def focus_timeline(*args: Any, **kwargs: Any) -> Any:
 
 def focus_spans(*args: Any, **kwargs: Any) -> Any:
     product_kwargs = dict(kwargs)
-    product_kwargs.pop("enrich_polylogue", None)
     from ..sources.activitywatch_derived import iter_derived_focus_spans
 
     return tuple(iter_derived_focus_spans(*args, **product_kwargs))
@@ -87,7 +86,6 @@ def add_focus(
             start=start_dt,
             end=end_dt,
             min_duration_s=60.0,
-            enrich_polylogue=False,
             ensure=False,
         )
     ):

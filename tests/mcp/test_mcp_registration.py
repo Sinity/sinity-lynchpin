@@ -25,10 +25,8 @@ def test_internal_mutating_helpers_are_not_exported_as_tools() -> None:
     from lynchpin.mcp.tools import health
     from lynchpin.mcp.tools import substrate
 
-    assert callable(substrate.ai_attribution_backfill)
     assert callable(substrate.substrate_prune)
     assert callable(health.promote_analysis_product)
-    assert "ai_attribution_backfill" not in app._tool_manager._tools
     assert "substrate_prune" not in app._tool_manager._tools
     assert "promote_analysis_product" not in app._tool_manager._tools
 

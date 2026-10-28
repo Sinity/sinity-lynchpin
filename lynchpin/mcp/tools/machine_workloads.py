@@ -12,7 +12,6 @@ from datetime import date
 from typing import Any
 
 
-
 def machine_workload_summary(
     start: str | None = None,
     end: str | None = None,
@@ -82,7 +81,7 @@ def machine_agent_sessions(
     are reported separately from the agent process itself.
 
     Useful for answering: which agent session caused 200 GB of IO? What did
-    it spawn? Does the session correspond to a known polylogue session?
+    it spawn?
 
     Args:
         start: ISO date string for window start.
@@ -130,47 +129,6 @@ def machine_co_presence(
         "count": len(windows),
         "total_overlap_minutes": round(total_minutes, 1),
         "min_kinds": min_kinds,
-    }
-
-
-def machine_session_profiles(
-    start: str | None = None,
-    end: str | None = None,
-) -> dict[str, Any]:
-    """Causal footprint of each agent session: what it triggered, total machine cost.
-
-    For each sinnix-agent-* scope, reports:
-    - agent_io_mb: IO by the agent process itself
-    - triggered_build_count / triggered_nix_builds / triggered_rust_builds
-    - triggered_build_io_mb: IO from build scopes caused by this agent
-    - total_machine_io_mb: agent + all triggered builds
-    - builds_by_comm: breakdown of triggered builds by primary process comm
-    - concurrent_agent_count: how many agents overlapped at peak
-    - polylogue_session_id / polylogue_project when matched
-    - is_high_impact: >10 GB total or >20 triggered builds
-
-    Also returns per-day summaries with contention windows — periods where
-    multiple heavy workloads overlapped and likely caused thrashing.
-
-    Use this to answer: which agent session caused the June 8 IO spike? How
-    many nix rebuilds did yesterday's work session trigger?
-
-    Args:
-        start: ISO date string for window start.
-        end: ISO date string for window end.
-    """
-    from lynchpin.analysis.machine.session_profile import machine_session_days
-
-    start_d = date.fromisoformat(start) if start else None
-    end_d = date.fromisoformat(end) if end else None
-    days = machine_session_days(start=start_d, end=end_d)
-    all_sessions = [s for d in days for s in d.sessions]
-    return {
-        "days": [d.to_dict() for d in days],
-        "day_count": len(days),
-        "total_sessions": len(all_sessions),
-        "high_impact_sessions": sum(1 for s in all_sessions if s.is_high_impact),
-        "total_machine_io_gb": round(sum(s.total_machine_io_mb for s in all_sessions) / 1024, 1),
     }
 
 

@@ -24,13 +24,9 @@ def application_health_report(*, cfg: Any = None) -> tuple[dict[str, Any], ...]:
     if cfg.sinex_health_ca_cert is not None:
         sinex += ["--ca-cert", str(cfg.sinex_health_ca_cert)]
     sinex += ["runtime", "health"]
-    observations = []
-    for name, argv in (("sinex", sinex), ("polylogue", ["polylogue", "status", "--json"])):
-        observation = _probe(name, argv, timeout)
-        observation["target"] = str(cfg.sinex_runtime_target) if name == "sinex" and cfg.sinex_runtime_target is not None else None
-        observations.append(observation)
-    return tuple(observations)
-
+    observation = _probe("sinex", sinex, timeout)
+    observation["target"] = str(cfg.sinex_runtime_target) if cfg.sinex_runtime_target is not None else None
+    return (observation,)
 
 
 def _probe(application: str, argv: list[str], timeout: float) -> dict[str, Any]:
@@ -51,35 +47,15 @@ def _probe(application: str, argv: list[str], timeout: float) -> dict[str, Any]:
         payload = json.loads(completed.stdout)
         if not isinstance(payload, dict):
             raise ValueError("health response is not an object")
-        if application == "sinex":
-            view = payload.get("payload", {})
-            if view.get("schema_version") != "sinex.runtime-health/v1":
-                raise ValueError("unsupported Sinex health schema")
-            health = view.get("health", {})
-            if not isinstance(health.get("healthy"), bool):
-                raise ValueError("Sinex healthy flag is missing or invalid")
-            state = "healthy" if health["healthy"] else "degraded"
-            details = {key: health.get(key) for key in ("healthy", "serving", "status")}
-            details.update({key: payload.get(key) for key in ("runtime_target", "source_surface", "generated_at")})
-        else:
-            mode = payload.get("mode")
-            store = payload.get("store")
-            pid = payload.get("pid")
-            if (not isinstance(payload.get("archive"), str)
-                    or not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0
-                    or not isinstance(payload.get("busy"), bool)
-                    or not isinstance(mode, dict)
-                    or mode.get("state") not in {"standalone", "primary", "blocked"}
-                    or (store is not None and not isinstance(store, dict))):
-                raise ValueError("Polylogue status fields are missing or invalid")
-            pending = store.get("pending_inputs") if store is not None else None
-            if store is not None and not isinstance(pending, list):
-                raise ValueError("Polylogue pending inputs are missing or invalid")
-            state = "degraded" if mode["state"] == "blocked" or store is None or pending else "healthy"
-            details = {key: payload[key] for key in ("archive", "pid", "busy", "mode")}
-            details["daemon_available"] = completed.returncode == 0
-            details["store_available"] = store is not None
-            details["pending_inputs"] = pending
+        view = payload.get("payload", {})
+        if view.get("schema_version") != "sinex.runtime-health/v1":
+            raise ValueError("unsupported Sinex health schema")
+        health = view.get("health", {})
+        if not isinstance(health.get("healthy"), bool):
+            raise ValueError("Sinex healthy flag is missing or invalid")
+        state = "healthy" if health["healthy"] else "degraded"
+        details = {key: health.get(key) for key in ("healthy", "serving", "status")}
+        details.update({key: payload.get(key) for key in ("runtime_target", "source_surface", "generated_at")})
         if completed.returncode != 0 and state == "healthy":
             raise ValueError("failed health command reported healthy")
     except (ValueError, AttributeError, TypeError) as exc:

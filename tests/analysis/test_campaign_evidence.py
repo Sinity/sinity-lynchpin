@@ -8,7 +8,6 @@ from lynchpin.analysis.projects.campaign import campaign_evidence, campaign_scop
 from lynchpin.sources.campaign import (
     read_batches,
     read_native_evidence,
-    read_session_evidence,
 )
 
 
@@ -563,38 +562,6 @@ def test_scope_accounting_keeps_status_separate_and_requires_declared_roles():
     assert result["counts"]["task_remaining"] == 1
     assert result["counts"]["evidence_remaining"] is None
     assert result["changes"][1]["creation"] == "existing_at_baseline"
-
-
-def test_session_source_consumes_declared_polylogue_facade_only():
-    calls = []
-
-    class Client:
-        def get_session_orchestration(self, session_id):
-            calls.append(session_id)
-            return {
-                "version": 1,
-                "session_id": session_id,
-                "usage": None,
-                "coverage": {
-                    "ingestion_watermark": {"scope": "session_primary_raw_revision"}
-                },
-                "gaps": ["archive_freshness_unverified"],
-            }
-
-    result = read_session_evidence(
-        ["session:demo-session", "session:demo-session"], client=Client()
-    )
-    assert calls == ["demo-session"]
-    assert result["coverage"] == "explicit_sessions"
-    assert result["sessions"][0]["evidence"]["usage"] is None
-    assert result["sessions"][0]["evidence"]["gaps"] == ["archive_freshness_unverified"]
-
-
-def test_old_polylogue_without_stable_product_is_unavailable():
-    result = read_session_evidence(["session:demo-session"], client=object())
-    assert result["coverage"] == "unavailable"
-    assert result["sessions"] == []
-    assert result["gaps"]
 
 
 def test_current_observations_do_not_claim_requested_substrate_generation():

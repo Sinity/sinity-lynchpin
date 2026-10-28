@@ -516,7 +516,6 @@ def _collect_all_workloads(
         start=window_start_date,
         end=window_end_date,
         path=path,
-        include_polylogue=False,
         include_ambient_sources=True,
     )
     return windows, caveats

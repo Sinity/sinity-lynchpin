@@ -22,14 +22,11 @@ class ProjectDayCorrelationRow:
     date: date
     refresh_id: str
     commit_count: int
-    ai_session_count: int
-    ai_work_event_count: int
     github_item_count: int
     focus_count: int
     terminal_count: int
     raw_log_count: int
     commit_shas: tuple[str, ...]
-    conversation_ids: tuple[str, ...]
     github_node_ids: tuple[str, ...]
     focus_minutes: float
     shell_minutes: float
@@ -82,14 +79,11 @@ def load_project_day_correlations(
                 "date",
                 "refresh_id",
                 "commit_count",
-                "ai_session_count",
-                "ai_work_event_count",
                 "github_item_count",
                 "focus_count",
                 "terminal_count",
                 "raw_log_count",
                 "commit_shas",
-                "conversation_ids",
                 "github_node_ids",
                 "focus_seconds",
                 "shell_seconds",
@@ -117,10 +111,10 @@ def load_project_day_correlations(
     sql = f"""
         SELECT
             project, date, refresh_id,
-            commit_count, ai_session_count, ai_work_event_count,
+            commit_count,
             github_item_count, focus_count, terminal_count,
             raw_log_count,
-            commit_shas, conversation_ids, github_node_ids,
+            commit_shas, github_node_ids,
             focus_seconds, shell_seconds, source_count
         FROM {relation}
         {where}
@@ -143,14 +137,11 @@ def load_project_day_correlations(
         row_date,
         rid,
         commit_count,
-        ai_session_count,
-        ai_work_event_count,
         github_item_count,
         focus_count,
         terminal_count,
         raw_log_count,
         commit_shas,
-        conversation_ids,
         github_node_ids,
         focus_seconds,
         shell_seconds,
@@ -162,16 +153,11 @@ def load_project_day_correlations(
                 date=row_date,
                 refresh_id=rid,
                 commit_count=commit_count or 0,
-                ai_session_count=ai_session_count or 0,
-                ai_work_event_count=ai_work_event_count or 0,
                 github_item_count=github_item_count or 0,
                 focus_count=focus_count or 0,
                 terminal_count=terminal_count or 0,
                 raw_log_count=raw_log_count or 0,
                 commit_shas=tuple(s for s in (commit_shas or []) if s is not None),
-                conversation_ids=tuple(
-                    s for s in (conversation_ids or []) if s is not None
-                ),
                 github_node_ids=tuple(
                     s for s in (github_node_ids or []) if s is not None
                 ),

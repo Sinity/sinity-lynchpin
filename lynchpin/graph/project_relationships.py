@@ -7,11 +7,6 @@ Relationship signals (each contributes to a weighted edge between A and B):
 
   - **shared_commits**: a commit message in project A references a commit
     SHA or PR/issue that belongs to project B (cross-repo references)
-  - **shared_ai_sessions**: a polylogue session whose
-    ``work_event_projects`` lists both A and B — an AI session that
-    spanned both projects in the same conversation
-  - **shared_ai_work_events**: an ai_work_event whose ``file_paths``
-    span paths from both projects (tighter than session-level)
   - **shared_raw_log**: a raw-log entry that mentions both projects'
     canonical names
 
@@ -50,8 +45,6 @@ class ProjectRelationshipGraph:
 # projects is durable cross-project work. Raw-log mentions are cheaper —
 # co-occurrence in a single line can be incidental.
 _SIGNAL_WEIGHT: dict[str, float] = {
-    "shared_ai_work_events": 1.5,
-    "shared_ai_sessions":    1.0,
     "shared_commits":        0.7,  # cross-repo PR/issue refs
     "shared_raw_log":        0.4,
 }
@@ -67,15 +60,11 @@ def build_project_relationships(graph: EvidenceGraph) -> ProjectRelationshipGrap
     # ONE project field after that fanout, but groups of nodes sharing a
     # conversation_id / event_id / source_path span multiple projects. Index
     # by these natural keys to find pairs.
-    by_session: dict[str, set[str]] = defaultdict(set)
-    by_event: dict[str, set[str]] = defaultdict(set)
     by_raw_log: dict[str, set[str]] = defaultdict(set)
     # Indexed by (natural_key, project) so the sample picker can keep only
     # the nodes belonging to the pair being accumulated. Previously samples
     # were keyed only by natural_key, which leaked node ids from off-pair
     # projects into every pair touching the shared session/event/raw_log.
-    session_node_ids: dict[tuple[str, str], list[str]] = defaultdict(list)
-    event_node_ids: dict[tuple[str, str], list[str]] = defaultdict(list)
     raw_log_node_ids: dict[tuple[str, str], list[str]] = defaultdict(list)
 
     commit_refs: dict[str, dict[str, list[str]]] = defaultdict(
@@ -87,15 +76,7 @@ def build_project_relationships(graph: EvidenceGraph) -> ProjectRelationshipGrap
         if not project:
             continue
         payload = node.payload or {}
-        if node.kind == "ai_session":
-            conv = payload.get("conversation_id") or node.id
-            by_session[conv].add(project)
-            session_node_ids[(conv, project)].append(node.id)
-        elif node.kind == "ai_work_event":
-            event_id = payload.get("event_id") or node.id
-            by_event[event_id].add(project)
-            event_node_ids[(event_id, project)].append(node.id)
-        elif node.kind == "raw_log":
+        if node.kind == "raw_log":
             line_key = f"{payload.get('source_path', '')}:{payload.get('line_no', '')}"
             if line_key.strip(":"):
                 by_raw_log[line_key].add(project)
@@ -126,8 +107,6 @@ def build_project_relationships(graph: EvidenceGraph) -> ProjectRelationshipGrap
                     slot.extend(ids.get((key, a), [])[:1])
                     slot.extend(ids.get((key, b), [])[:1])
 
-    _accumulate(by_session, "shared_ai_sessions", session_node_ids)
-    _accumulate(by_event, "shared_ai_work_events", event_node_ids)
     _accumulate(by_raw_log, "shared_raw_log", raw_log_node_ids)
 
     # Cross-repo commit refs: previously this counted any case where the

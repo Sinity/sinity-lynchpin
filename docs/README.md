@@ -22,9 +22,7 @@ and generated catalogs provide the detailed API reference.
   generated project packages.
 - [Observability model](reference/observability-model.md) explains the machine
   telemetry substrate and the limits of resource-attribution claims.
-- [Lynchpin–Polylogue boundary](lynchpin-polylogue-boundary.md) records which
-  project owns AI-session ingestion, archive-native inference, cross-source
-  promotion, and correlation.
+- [Lynchpin–Polylogue boundary](lynchpin-polylogue-boundary.md) records the AI-session boundary.
 
 ## Operate and extend
 

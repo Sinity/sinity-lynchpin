@@ -20,7 +20,6 @@ from lynchpin.materialization import (
 
 CORE_BEHAVIORAL_SOURCES = ("activitywatch", "atuin", "machine", "xtask_history")
 CONTEXT_SOURCES = ("webhistory", "irc", "substance")
-POLYLOGUE_SOURCE = "polylogue"
 
 
 @dataclass(frozen=True)
@@ -75,15 +74,11 @@ def operator_retrospective_readiness(
     *,
     start: date,
     end: date,
-    require_polylogue: bool = False,
     datasets: Iterable[MaterializedDataset] | None = None,
 ) -> OperatorRetrospectiveReadiness:
     """Classify whether a recent retrospective can make behavioral claims.
 
     `end` follows the repository coverage convention: exclusive upper bound.
-    Polylogue is a caveat by default because AI chat insight products are a
-    known independent repair lane; callers can opt into requiring it when AI
-    semantics are central to the question.
     """
     dataset_map = {row.name: row for row in (datasets or audit_materialization())}
     rows: list[RetrospectiveSourceReadiness] = []
@@ -93,18 +88,8 @@ def operator_retrospective_readiness(
     for source in CONTEXT_SOURCES:
         rows.append(_source_row(dataset_map, source, role="context", start=start, end=end, blocking=False))
 
-    polylogue = _source_row(
-        dataset_map,
-        POLYLOGUE_SOURCE,
-        role="ai_semantics",
-        start=start,
-        end=end,
-        blocking=require_polylogue,
-    )
-    rows.append(polylogue)
-
     blocking = tuple(row.source for row in rows if row.blocking and row.status != "ready")
-    caveats = _caveats(rows=rows, require_polylogue=require_polylogue)
+    caveats = _caveats(rows=rows)
     behavioral_allowed = not blocking
     mode = "behavioral" if behavioral_allowed else "structural_only"
     return OperatorRetrospectiveReadiness(
@@ -171,7 +156,6 @@ def _source_row(
 def _caveats(
     *,
     rows: Iterable[RetrospectiveSourceReadiness],
-    require_polylogue: bool,
 ) -> tuple[str, ...]:
     caveats: list[str] = []
     for row in rows:
@@ -180,8 +164,6 @@ def _caveats(
             caveats.append(
                 f"{row.source}: {row.status}/{row.relation} ({severity}); materialize: {row.materialization_hint}"
             )
-    if not require_polylogue:
-        caveats.append("Polylogue chat semantics are caveated by default and do not block non-AI behavioral retrospectives")
     return tuple(caveats)
 
 

@@ -301,7 +301,6 @@ def test_list_substrate_tables_returns_known_tables(tmp_path: Path, monkeypatch:
     expected = {
         "commit_fact",
         "file_change_fact",
-        "ai_work_event",
         "symbol_change",
         "pr_review_row",
         "evidence_graph_build",
@@ -411,86 +410,6 @@ def test_load_evidence_graph_summary_pinned_refresh_id_does_not_materialize(
     assert result["error"] == "no matching build"
     assert result["materialization"]["status"] == "pinned"
     assert result["materialization"]["caller"] == "load_evidence_graph_summary"
-
-
-def test_ai_attribution_backfill_defaults_to_joint_commit_ai_snapshot(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    setup_substrate(tmp_path, monkeypatch)
-
-    from lynchpin.mcp.tools.substrate import ai_attribution_backfill
-    from lynchpin.substrate.connection import connect, substrate_path
-
-    with connect(substrate_path()) as conn:
-        conn.execute(
-            """
-            INSERT INTO commit_fact (
-                sha, repo, project, authored_at, subject,
-                lines_added, lines_deleted, lines_changed, files_changed,
-                paths, path_roots, breaking_change, categories, change_types,
-                classified_files_changed, parent_count, refresh_id, materialized_at
-            ) VALUES (?, ?, ?, ?, ?, 1, 0, 1, 1, ?, ?, FALSE, '{}', '{}', 1, 1, ?, ?)
-            """,
-            [
-                "a" * 40,
-                "lynchpin",
-                "lynchpin",
-                datetime(2026, 5, 4, 12, tzinfo=UTC),
-                "feat: fixture",
-                ["src/a.py"],
-                ["src"],
-                "joint-rid",
-                datetime(2026, 5, 4, 12, tzinfo=UTC),
-            ],
-        )
-        conn.execute(
-            """
-            INSERT INTO ai_work_event (
-                event_id, conversation_id, provider, project, kind,
-                kind_confidence, file_paths, tools_used, start_ts,
-                duration_ms, refresh_id, materialized_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                "event-1",
-                "conversation-1",
-                "claude-code",
-                "lynchpin",
-                "implementation",
-                0.9,
-                ["/realm/project/sinity-lynchpin/src/a.py"],
-                ["Edit"],
-                datetime(2026, 5, 4, 11, tzinfo=UTC),
-                1000,
-                "joint-rid",
-                datetime(2026, 5, 4, 12, tzinfo=UTC),
-            ],
-        )
-        conn.execute(
-            """
-            INSERT INTO substrate_source_status (
-                refresh_id, source, status, reason, row_count,
-                window_start, window_end, recorded_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                "machine-analysis:latest",
-                "machine",
-                "ok",
-                None,
-                1,
-                date(2026, 6, 1),
-                date(2026, 6, 1),
-                datetime(2026, 6, 1, tzinfo=UTC),
-            ],
-        )
-
-    result = ai_attribution_backfill(dry_run=True)
-
-    assert result["matched_commits"] == 1
-    assert result["total_commits"] == 1
-    assert result["match_rate"] == 1.0
 
 
 def test_contract_coverage_inspects_requested_source_window(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -665,7 +584,6 @@ def test_analysis_claims_includes_end_date(tmp_path: Path, monkeypatch: pytest.M
         )
 
     assert [row["summary"] for row in rows] == ["on-end"]
-
 
 
 def _promote_claim_graphs(conn) -> None:

@@ -127,7 +127,6 @@ def test_current_state_refresh_dag_is_independent_of_external_repos():
         "active_symbol_changes",
         "active_ci_health",
         "active_commit_semantics",
-        "active_ai_attribution",
         "current_state_substrate_promote",
         "machine_analysis_substrate_promote",
         "machine_telemetry_analysis",

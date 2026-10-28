@@ -1381,14 +1381,14 @@ def operator_rhythm(
     """Cross-source (hour-of-day, day-of-week) rhythm matrix.
 
     Composes ActivityWatch focus minutes, commit_fact timestamps,
-    ai_work_event timestamps, and machine_episode pressure timestamps
+    machine_episode pressure timestamps
     into one matrix. Lets the operator see deep-work hours vs noise
     hours without four separate queries.
 
     Parameters:
         start, end: ISO dates (inclusive).
         project:    optional canonical project filter applied to commit_fact
-                    and ai_work_event; ActivityWatch focus stays whole-system.
+                    while ActivityWatch focus stays whole-system.
         refresh_id: substrate snapshot. Defaults to latest commit_fact build.
 
     Returns:
@@ -1398,7 +1398,7 @@ def operator_rhythm(
             "project": str | None,
             "buckets": [
                 {"dow": 0-6 (Mon=0), "hour": 0-23, "focus_min", "commit_count",
-                 "ai_session_count", "pressure_episode_count"},
+                 "pressure_episode_count"},
                 ...
             ],
             "partial_sources": [str, ...],
@@ -1412,8 +1412,6 @@ def operator_rhythm(
     from lynchpin.sources.activitywatch import circadian
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_signals import (
-        load_ai_session_timestamps_in_range,
-        load_ai_work_event_timestamps_in_range,
         load_commit_timestamps_in_range,
         load_pressure_timestamps_in_range,
     )
@@ -1441,7 +1439,6 @@ def operator_rhythm(
         pass
 
     commit_ts: list = []
-    ai_ts: list = []
     pressure_ts: list = []
 
     path = substrate_path()
@@ -1460,27 +1457,6 @@ def operator_rhythm(
             except Exception:
                 pass
 
-            # Prefer the typed ai_work_event table; fall back to the
-            # evidence graph's ai_session nodes when the typed table is
-            # empty (substrate-promote step may be partial — the graph
-            # build still has the rows). Without this fallback, rhythm
-            # silently reported zero AI activity on otherwise-busy
-            # graph builds.
-            try:
-                ai_ts = load_ai_work_event_timestamps_in_range(
-                    conn, refresh_id=refresh_id, start=start_date, end=end_date, project=project
-                )
-            except Exception:
-                pass
-
-            if not ai_ts and refresh_id:
-                try:
-                    ai_ts = load_ai_session_timestamps_in_range(
-                        conn, refresh_id=refresh_id, start=start_date, end=end_date, project=project
-                    )
-                except Exception:
-                    pass
-
             try:
                 pressure_ts = load_pressure_timestamps_in_range(
                     conn, refresh_id=refresh_id, start=start_date, end=end_date
@@ -1494,7 +1470,6 @@ def operator_rhythm(
         project=project,
         focus_rows=focus_rows,
         commit_timestamps=commit_ts,
-        ai_session_timestamps=ai_ts,
         pressure_timestamps=pressure_ts,
     )
 
@@ -1508,7 +1483,6 @@ def operator_rhythm(
                 "hour": b.hour,
                 "focus_min": b.focus_min,
                 "commit_count": b.commit_count,
-                "ai_session_count": b.ai_session_count,
                 "pressure_episode_count": b.pressure_episode_count,
             }
             for b in rhythm.buckets
@@ -1524,15 +1498,12 @@ def operator_rhythm(
 def operator_retrospective_readiness(
     start: str,
     end: str,
-    require_polylogue: bool = False,
 ) -> dict[str, Any]:
     """Gate whether a retrospective window supports behavioral explanation.
 
     Returns ``behavioral_explanation_allowed=false`` when core continuous
     sources such as ActivityWatch, terminal, machine telemetry, or xtask
     history do not fully cover the window. Structural/git-only analysis can
-    still proceed. Polylogue chat semantics are a caveat by default and only
-    block when ``require_polylogue`` is true.
     """
     from lynchpin.analysis.operator_retrospective_readiness import (
         operator_retrospective_readiness as _readiness,
@@ -1541,7 +1512,6 @@ def operator_retrospective_readiness(
     report = _readiness(
         start=_date.fromisoformat(start),
         end=_date.fromisoformat(end),
-        require_polylogue=require_polylogue,
     )
     return report.to_dict()
 
@@ -1791,7 +1761,6 @@ def operator(
     end: str = "",
     project: str | None = None,
     refresh_id: str | None = None,
-    require_polylogue: bool = False,
     sources: str = "irc,reddit,wykop,messenger,gmail",
     monthly: bool = False,
 ) -> Any:
@@ -1799,7 +1768,7 @@ def operator(
     if view == "rhythm":
         return operator_rhythm(start=start, end=end, project=project, refresh_id=refresh_id)
     if view == "readiness":
-        return operator_retrospective_readiness(start=start, end=end, require_polylogue=require_polylogue)
+        return operator_retrospective_readiness(start=start, end=end)
     if view == "public_text":
         return operator_public_text_daily(start=start, end=end, sources=sources, monthly=monthly)
     if view == "public_text_coverage":

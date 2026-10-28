@@ -41,10 +41,6 @@ class TestClassify:
         a = classify()
         assert a.mode == "unknown"
 
-    def test_polylogue_work_event(self):
-        a = classify(source="polylogue.session", evidence={"work_event_kind": "implementation"})
-        assert a.mode == "coding"
-
 
 class TestResolveProject:
     def test_path(self):

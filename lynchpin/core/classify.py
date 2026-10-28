@@ -54,12 +54,6 @@ PLANNING_TERMS = {"todo", "plan", "roadmap", "backlog", "agenda"}
 WRITING_TERMS = {"draft", "essay", "note", "journal", "narrative"}
 SHELL_TERMS = {"ls", "cd", "pwd", "mkdir", "cp", "mv", "git status"}
 
-POLYLOGUE_WORK_EVENT_MODE_MAP = {
-    "planning": "planning", "implementation": "coding", "debugging": "coding",
-    "review": "coding", "testing": "coding", "research": "research",
-    "configuration": "coding", "documentation": "writing",
-    "refactoring": "coding", "data_analysis": "research", "conversation": "chat",
-}
 
 TOPIC_KEYWORDS: dict[str, list[tuple[str, float]]] = {
     "nix": [("nix", 2.0), ("nixos", 2.5), ("flake", 2.5), ("devshell", 3.0), ("home-manager", 3.0), ("nixpkgs", 3.0), ("nix-shell", 3.0)],
@@ -140,13 +134,9 @@ def classify(
         mode = "recovery"
     elif source == "git.commit":
         mode = "coding"
-    elif source == "polylogue.session" and evidence.get("work_event_kind"):
-        # POLYLOGUE_WORK_EVENT_MODE_MAP values are all valid AttributionMode literals.
-        mapped = POLYLOGUE_WORK_EVENT_MODE_MAP.get(str(evidence["work_event_kind"]), "chat")
-        mode = mapped  # type: ignore[assignment]  # map values are AttributionMode strings
     elif mode_hint and mode_hint not in {"unknown", ""}:
         mode = mode_hint  # type: ignore[assignment]  # caller-supplied hint; may not be in Literal
-    elif _matches_domain_or_text(domain_l, text, AI_DOMAINS) or source in {"chatlog.transcript", "polylogue.session"}:
+    elif _matches_domain_or_text(domain_l, text, AI_DOMAINS) or source in {"chatlog.transcript"}:
         mode = "chat"
     elif _matches_domain_or_text(domain_l, text, MEDIA_DOMAINS) or app_l in MEDIA_APPS:
         mode = "media"
@@ -194,7 +184,6 @@ def resolve_project(*values: str | None) -> str | None:
         if result:
             return result
     return None
-
 
 
 # ── Topic extraction ──────────────────────────────────────────────────────────

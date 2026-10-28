@@ -7,13 +7,7 @@ string annotations for tool parameters.
 
 from typing import Any
 
-from lynchpin.mcp.tools._utils import (
-    best_materialized_refresh_id,
-    ensure_substrate_materialized_for_read,
-    half_open_date_window,
-    json_safe as _json_safe,
-    latest_materialized_refresh_id,
-)
+from lynchpin.mcp.tools._utils import best_materialized_refresh_id, ensure_substrate_materialized_for_read, json_safe as _json_safe, latest_materialized_refresh_id
 
 
 # ── E.3 Gap Draft ────────────────────────────────────────────────────────────
@@ -244,82 +238,6 @@ def substrate_confidence_matrix(
 # ── K.1 Kind Audit ───────────────────────────────────────────────────────────
 
 
-def kind_audit(
-    refresh_id: str | None = None,
-) -> dict[str, Any]:
-    """Source-label-vs-Lynchpin kind audit (Arc K.1).
-
-    Reads ai_work_event.kind_* columns to surface agreement rates,
-    disagreement cases, tier distributions, and per-kind confidence
-    breakdowns. This is the quantitative foundation for the boundary doc
-    (K.4) — how often does the Lynchpin overlay disagree with the upstream
-    work-event label?
-
-    Parameters:
-        refresh_id: promote snapshot (default: latest).
-
-    Returns:
-        {
-            "refresh_id": str,
-            "total": int,
-            "tier_distribution": {"high": N, "medium": N, "low": N},
-            "source_distribution": {"agreement": N, "disagreement": N,
-                                     "source": N, "lynchpin_overlay": N},
-            "disagreement_rate": float,
-            "top_disagreements": [{"kind": str, "source_kind": str,
-                                    "overlay_kind": str, "count": int}],
-            "per_kind_confidence": [{"kind": str, "count": int,
-                                      "avg_confidence": float}],
-        }
-    """
-    from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.readers_health import (
-        load_ai_work_event_count,
-        load_ai_work_event_disagreements,
-        load_ai_work_event_per_kind_confidence,
-        load_ai_work_event_source_distribution,
-        load_ai_work_event_tier_distribution,
-    )
-
-    if refresh_id is None:
-        ensure_substrate_materialized_for_read(caller="kind_audit")
-
-    with connect(substrate_path(), read_only=True) as conn:
-        if refresh_id is None:
-            refresh_id = best_materialized_refresh_id(conn, "ai_work_event", caller="kind_audit")
-            if refresh_id is None:
-                return {"error": "no promote runs"}
-
-        total = load_ai_work_event_count(conn, refresh_id=refresh_id)
-
-        tiers = {}
-        for r in load_ai_work_event_tier_distribution(conn, refresh_id=refresh_id):
-            tiers[r[0] or "null"] = r[1]
-
-        sources = {}
-        for r in load_ai_work_event_source_distribution(conn, refresh_id=refresh_id):
-            sources[r[0] or "null"] = r[1]
-
-        disagreements = load_ai_work_event_disagreements(conn, refresh_id=refresh_id)
-        per_kind = load_ai_work_event_per_kind_confidence(conn, refresh_id=refresh_id)
-
-    disagree_count = sources.get("disagreement", 0)
-    return {
-        "refresh_id": refresh_id,
-        "total": total,
-        "tier_distribution": tiers,
-        "source_distribution": sources,
-        "disagreement_rate": round(disagree_count / max(total, 1), 3),
-        "top_disagreements": [
-            {"kind": r[0], "source_kind": r[1], "overlay_kind": r[2], "count": r[3]}
-            for r in disagreements
-        ],
-        "per_kind_confidence": [
-            {"kind": r[0], "count": r[1], "avg_confidence": r[2]} for r in per_kind
-        ],
-    }
-
-
 # ── M.11 Project-Relationship Graph ──────────────────────────────────────────
 
 
@@ -335,7 +253,7 @@ def evidence_confidence(
     """Per-source evidence confidence tiers (Phase B.4).
 
     Computes confidence (high/medium/low) for each evidence source based on:
-    - Source inherent reliability: git > polylogue > activitywatch > raw-log
+    - Source inherent reliability: git > activitywatch > raw-log
     - Row count (more data = more confidence)
     - Caveat presence (nodes with caveats are downgraded)
 
@@ -351,7 +269,6 @@ def evidence_confidence(
 
     RELIABILITY = {
         "git": "high",
-        "polylogue": "medium",
         "terminal": "medium",
         "activitywatch": "medium",
         "github": "medium",
@@ -406,8 +323,6 @@ def source_anomalies(
 
     Flags project-days where one evidence dimension is anomalously
     high or low relative to others:
-    - commits without AI sessions (manual/unassisted work)
-    - AI sessions without commits (exploration that didn't ship)
     - focus without git activity (reading/debugging)
     - git activity without focus (automated/CI commits)
 
@@ -417,7 +332,7 @@ def source_anomalies(
 
     Returns:
         [{"project": str, "date": str, "anomaly_type": str,
-          "commit_count": int, "ai_count": int, "focus_min": float,
+          "commit_count": int, "focus_min": float,
           "source_count": int, "detail": str}]
     """
     from lynchpin.substrate.connection import connect, substrate_path
@@ -440,15 +355,11 @@ def source_anomalies(
     # Per-project normalization: compute means/std per project, per dimension.
     from collections import defaultdict
 
-    proj_commits: dict[str, list[int]] = defaultdict(list)
-    proj_ai: dict[str, list[int]] = defaultdict(list)
     proj_focus: dict[str, list[float]] = defaultdict(list)
     for r in rows:
         p = r[0]
-        proj_commits[p].append(r[2])
-        proj_ai[p].append(r[3])
-        if r[4] is not None:
-            proj_focus[p].append(r[4])
+        if r[3] is not None:
+            proj_focus[p].append(r[3])
 
     def _z(val: float, vals: list[float]) -> float:
         if len(vals) < 2:
@@ -459,47 +370,11 @@ def source_anomalies(
 
     anomalies = []
     for r in rows:
-        proj, d, commits, ai, focus_sec, src = r
-        c_vals = proj_commits.get(proj, [])
-        a_vals = proj_ai.get(proj, [])
+        proj, d, commits, focus_sec, src = r
         f_vals = proj_focus.get(proj, [])
 
-        commit_z = _z(commits, c_vals)
-        ai_z = _z(ai, a_vals)
         focus_z = _z(focus_sec or 0, f_vals)
 
-        if commits > 0 and ai == 0:
-            anomalies.append(
-                {
-                    "project": proj,
-                    "date": _json_safe(d),
-                    "anomaly_type": "commits_without_ai_event",
-                    "commit_count": commits,
-                    "ai_count": ai,
-                    "focus_min": round((focus_sec or 0) / 60, 1),
-                    "source_count": src,
-                    "severity_z": round(commit_z, 3),
-                    "detail": (
-                        f"{commits} commits with 0 project-attributed AI work events; "
-                        "interpret as an attribution gap until ai_work_event.project "
-                        "coverage is healthy"
-                    ),
-                }
-            )
-        if ai > 0 and commits == 0 and ai_z > threshold_sigma:
-            anomalies.append(
-                {
-                    "project": proj,
-                    "date": _json_safe(d),
-                    "anomaly_type": "ai_without_commits",
-                    "commit_count": commits,
-                    "ai_count": ai,
-                    "focus_min": round((focus_sec or 0) / 60, 1),
-                    "source_count": src,
-                    "severity_z": round(ai_z, 3),
-                    "detail": f"{ai} AI work events with 0 commits — exploration that didn't ship",
-                }
-            )
         if (focus_sec or 0) > 0 and commits == 0:
             anomalies.append(
                 {
@@ -507,7 +382,6 @@ def source_anomalies(
                     "date": _json_safe(d),
                     "anomaly_type": "focus_without_git",
                     "commit_count": commits,
-                    "ai_count": ai,
                     "focus_min": round((focus_sec or 0) / 60, 1),
                     "source_count": src,
                     "severity_z": round(focus_z, 3),
@@ -668,76 +542,6 @@ def health_trend(
         "gaps_current": gaps_curr,
         "gaps_prior": gaps_prior,
     }
-
-
-def cleanup_period_detect(
-    start: str,
-    end: str,
-    project: str | None = None,
-) -> list[dict[str, Any]]:
-    """Detect likely squash-cleanup periods via AI messages/commit ratio.
-
-    Identifies months where the messages-to-commits ratio is anomalously high
-    (>5000:1), indicating probable git history rewriting. These months should
-    not be compared with atomic-commit months for velocity analysis.
-
-    Args:
-        start: Start date (ISO format, e.g., "2026-05-01").
-        end: End date (ISO format, e.g., "2026-05-31").
-        project: Optional project filter (matched against commit project).
-
-    Returns:
-        List of dicts with keys:
-        - year_month: "YYYY-MM" format
-        - commit_count: commits in the month
-        - ai_messages: AI session messages in the month
-        - ratio: messages / max(1, commits)
-        - likely_cleanup: bool (True if ratio > 5000)
-    """
-    from datetime import date as _date_cls
-    from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.readers_health import (
-        load_commits_by_month,
-        load_ai_messages_by_month,
-    )
-
-    start_d = _date_cls.fromisoformat(start)
-    end_d = _date_cls.fromisoformat(end)
-
-    ensure_substrate_materialized_for_read(
-        caller="cleanup_period_detect",
-        window=half_open_date_window(start_d, end_d),
-    )
-
-    with connect(substrate_path(), read_only=True) as conn:
-        commits_by_month: dict[str, int] = {}
-        for row in load_commits_by_month(conn, start=start_d, end=end_d, project=project):
-            commits_by_month[row[0]] = row[1]
-
-        messages_by_month: dict[str, int] = {}
-        for row in load_ai_messages_by_month(conn, start=start_d, end=end_d, project=project):
-            if row[1]:
-                messages_by_month[row[0]] = int(row[1])
-
-    # Compute results
-    all_months = sorted(set(commits_by_month.keys()) | set(messages_by_month.keys()))
-    result: list[dict[str, Any]] = []
-
-    for month in all_months:
-        commit_count = commits_by_month.get(month, 0)
-        ai_msgs = messages_by_month.get(month, 0)
-        ratio = ai_msgs / max(1, commit_count)
-        likely_cleanup = ratio > 5000
-
-        result.append({
-            "year_month": month,
-            "commit_count": commit_count,
-            "ai_messages": ai_msgs,
-            "ratio": round(ratio, 1),
-            "likely_cleanup": likely_cleanup,
-        })
-
-    return result
 
 
 # ── Health wearables direct query tools ──────────────────────────────────────

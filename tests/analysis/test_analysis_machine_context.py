@@ -31,7 +31,7 @@ def test_machine_context_joins_partial_episode_overlap(tmp_path):
         path=db,
         windows=[
             WorkloadWindow(
-                source="polylogue_session",
+                source="agentctl_job",
                 window_id="conv1",
                 started_at=datetime(2026, 5, 1, 12, 0, 30, tzinfo=timezone.utc),
                 ended_at=datetime(2026, 5, 1, 12, 1, 30, tzinfo=timezone.utc),
@@ -45,7 +45,7 @@ def test_machine_context_joins_partial_episode_overlap(tmp_path):
 
     assert analysis.window_count == 1
     assert analysis.windows_with_machine_episodes == 1
-    assert analysis.source_counts == {"polylogue_session": 1}
+    assert analysis.source_counts == {"agentctl_job": 1}
     assert analysis.episode_kind_counts == {"load_pressure": 1}
     window = analysis.windows[0]
     assert window.duration_seconds == 60.0
@@ -164,7 +164,6 @@ def test_machine_context_collects_work_observation_windows(tmp_path, monkeypatch
             ],
         )
 
-    monkeypatch.setattr(context_mod, "_polylogue_windows", lambda **_: [])
     monkeypatch.setattr(context_mod, "_terminal_windows", lambda **_: [])
     monkeypatch.setattr(context_mod, "_git_windows", lambda **_: [])
     monkeypatch.setattr(context_mod, "_deep_work_windows", lambda **_: [])
@@ -179,33 +178,7 @@ def test_machine_context_collects_work_observation_windows(tmp_path, monkeypatch
     assert analysis.windows[0].projects == ("sinex",)
     assert analysis.windows[0].work_kind == "xtask_invocation"
     assert analysis.windows[0].summary == "check clippy"
-    assert any("polylogue session windows skipped by default" in caveat for caveat in analysis.caveats)
     assert any("ambient terminal/git/ActivityWatch windows skipped by default" in caveat for caveat in analysis.caveats)
-
-
-def test_machine_context_skips_polylogue_by_default(tmp_path, monkeypatch):
-    from lynchpin.analysis.machine import context as context_mod
-
-    db = tmp_path / "sub.duckdb"
-    with connect(db) as conn:
-        apply_schema(conn)
-
-    def fail_polylogue(**_):
-        raise AssertionError("polylogue collector should not run by default")
-
-    monkeypatch.setattr(context_mod, "_polylogue_windows", fail_polylogue)
-    monkeypatch.setattr(context_mod, "_terminal_windows", lambda **_: [])
-    monkeypatch.setattr(context_mod, "_git_windows", lambda **_: [])
-    monkeypatch.setattr(context_mod, "_deep_work_windows", lambda **_: [])
-
-    analysis = analyze_machine_context_windows(
-        start=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
-        end=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
-        path=db,
-    )
-
-    assert analysis.window_count == 0
-    assert any("polylogue session windows skipped by default" in caveat for caveat in analysis.caveats)
 
 
 def test_machine_context_skips_ambient_sources_by_default(tmp_path, monkeypatch):
@@ -259,29 +232,3 @@ def test_machine_context_can_opt_into_ambient_sources(tmp_path, monkeypatch):
     assert called["terminal"] is True
 
 
-def test_machine_context_can_opt_into_polylogue(tmp_path, monkeypatch):
-    from lynchpin.analysis.machine import context as context_mod
-
-    db = tmp_path / "sub.duckdb"
-    with connect(db) as conn:
-        apply_schema(conn)
-
-    called = {"polylogue": False}
-
-    def polylogue_window(**_):
-        called["polylogue"] = True
-        return []
-
-    monkeypatch.setattr(context_mod, "_polylogue_windows", polylogue_window)
-    monkeypatch.setattr(context_mod, "_terminal_windows", lambda **_: [])
-    monkeypatch.setattr(context_mod, "_git_windows", lambda **_: [])
-    monkeypatch.setattr(context_mod, "_deep_work_windows", lambda **_: [])
-
-    analyze_machine_context_windows(
-        start=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
-        end=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
-        path=db,
-        include_polylogue=True,
-    )
-
-    assert called["polylogue"] is True

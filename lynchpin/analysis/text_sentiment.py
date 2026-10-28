@@ -1,7 +1,7 @@
 """Per-day sentiment / emotion mood signal derived from the operator's own text.
 
 The operator has substantial written corpora (reddit comments, wykop posts,
-messenger messages, SMS, polylogue chat transcripts) but no measured mood
+messenger messages, SMS) but no measured mood
 signal. This module extracts a daily sentiment score and emotion distribution
 from that text, providing a ``MoodDay`` per day for downstream correlation
 against sleep, HRV, deep-work, substance, and focus data.

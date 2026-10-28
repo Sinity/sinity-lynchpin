@@ -11,13 +11,11 @@ Dimensions:
                        missing) mapped to high/medium/low tiers
   - **date_coverage** — whether observed source date bounds cover, overlap,
                        or miss the queried analysis window
-  - **kind_quality** — Arc K agreement rate over ai_work_event nodes;
-                       only meaningful for the polylogue layer, "—" elsewhere
   - **cross_source** — fraction of project/days where this source has
                        evidence AND at least one other source also has
                        evidence on the same project/day; surfaces isolated-
                        source patterns ("git lit up but nothing else
-                       co-occurred — the AI sessions claim is graph-orphan")
+                       co-occurred")
 
 Output is part of the pack header so a reader skimming the top of the
 artifact sees substrate quality immediately.
@@ -49,7 +47,6 @@ class LayerRow:
     layer: str
     coverage: ConfidenceCell
     date_coverage: ConfidenceCell
-    kind_quality: ConfidenceCell
     cross_source: ConfidenceCell
 
 
@@ -78,7 +75,6 @@ def build_substrate_confidence_matrix(
     layer_readiness = {item.source: item for item in readiness.sources}
 
     cross_source_index = _cross_source_index(correlation_rows)
-    kind_quality_polylogue = _kind_quality_for_polylogue(graph)
 
     rows: list[LayerRow] = []
     tier_counts: Counter[str] = Counter()
@@ -86,20 +82,15 @@ def build_substrate_confidence_matrix(
         ready = layer_readiness.get(layer)
         coverage = _coverage_cell(ready)
         date_coverage = _date_coverage_cell(ready, window_start=readiness.start, window_end=readiness.end)
-        kind_quality = (
-            kind_quality_polylogue if layer == "polylogue"
-            else ConfidenceCell(tier="n_a", detail="—")
-        )
         cross_source = _cross_source_cell(layer, cross_source_index, window_days=_window_days(readiness))
         row = LayerRow(
             layer=layer,
             coverage=coverage,
             date_coverage=date_coverage,
-            kind_quality=kind_quality,
             cross_source=cross_source,
         )
         rows.append(row)
-        for cell in (coverage, date_coverage, kind_quality, cross_source):
+        for cell in (coverage, date_coverage, cross_source):
             if cell.tier != "n_a":
                 tier_counts[cell.tier] += 1
 
@@ -116,13 +107,13 @@ def render_substrate_confidence_matrix(matrix: SubstrateConfidenceMatrix) -> str
     lines = [
         f"_Overall substrate confidence: **{matrix.overall_tier}** — {matrix.overall_summary}_",
         "",
-        "| Layer | Coverage | Date Coverage | Kind Quality | Cross-source |",
-        "|---|---|---|---|---|",
+        "| Layer | Coverage | Date Coverage | Cross-source |",
+        "|---|---|---|---|",
     ]
     for row in matrix.rows:
         lines.append(
             f"| {row.layer} | {_render_cell(row.coverage)} | "
-            f"{_render_cell(row.date_coverage)} | {_render_cell(row.kind_quality)} | "
+            f"{_render_cell(row.date_coverage)} | "
             f"{_render_cell(row.cross_source)} |"
         )
     return "\n".join(lines)
@@ -150,7 +141,6 @@ def _ordered_layers(readiness: SourceReadinessReport, graph: EvidenceGraph) -> l
     """Stable layer order that puts highest-leverage sources first."""
     canonical = [
         "git",
-        "polylogue",
         "activitywatch",
         "terminal",
         "github",
@@ -207,31 +197,6 @@ def _date_coverage_cell(ready, *, window_start: date, window_end: date) -> Confi
     if last >= window_end:
         return ConfidenceCell(tier="medium", detail=f"last date reaches window end ({last.isoformat()})")
     return ConfidenceCell(tier="medium", detail=f"last date inside window ({last.isoformat()})")
-
-
-def _kind_quality_for_polylogue(graph: EvidenceGraph) -> ConfidenceCell:
-    """Per Arc K: agreement rate across ai_work_event nodes."""
-    work_events = [n for n in graph.nodes if n.kind == "ai_work_event"]
-    if not work_events:
-        return ConfidenceCell(tier="absent", detail="no work events")
-    high = sum(
-        1 for n in work_events
-        if (n.payload or {}).get("kind_tier") == "high"
-    )
-    medium = sum(
-        1 for n in work_events
-        if (n.payload or {}).get("kind_tier") == "medium"
-    )
-    total = len(work_events)
-    high_pct = high / total
-    if high_pct >= 0.75:
-        return ConfidenceCell(tier="high", detail=f"{high_pct:.0%} high tier ({high}/{total})")
-    if (high + medium) / total >= 0.75:
-        return ConfidenceCell(
-            tier="medium",
-            detail=f"{high}/{total} high + {medium}/{total} medium",
-        )
-    return ConfidenceCell(tier="low", detail=f"only {high}/{total} high tier")
 
 
 def _cross_source_index(rows: Sequence[CorrelatedWorkDay]) -> dict[str, set[date]]:

@@ -93,8 +93,8 @@ Key ownership boundaries:
 - `analysis/` owns deterministic project, personal, machine, and ecosystem
   products.
 - `mcp/` owns the consolidated public tool registry and internal action routes.
-- Polylogue owns AI-session ingestion and archive-native inference; Lynchpin
-  owns promotion and cross-source analysis over its stable products.
+- AI-session ingestion and interpretation belong to Polylogue. Lynchpin reads
+  its other owner-native sources independently.
 
 ## Data and Analysis Invariants
 

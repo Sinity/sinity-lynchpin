@@ -11,7 +11,6 @@ from ..core.evidence import EvidenceCaveat
 from ..core.evidence_graph import EvidenceEdge, EvidenceNode
 from . import evidence_system_signals
 from . import evidence_git
-from . import evidence_polylogue
 from . import evidence_activitywatch
 from . import evidence_web_media
 from . import evidence_terminal
@@ -51,26 +50,6 @@ def add_base_source_nodes(
         lambda: evidence_git.add_git(
             nodes, edges, start=start, end=end, selected=selected, mode=mode
         ),
-        node_count=lambda: len(nodes),
-        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
-    )
-    _run_source(
-        "polylogue sessions",
-        caveats,
-        lambda: evidence_polylogue.add_polylogue(
-            nodes, start=start, end=end, selected=selected
-        ),
-        caveat_source="polylogue",
-        node_count=lambda: len(nodes),
-        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
-    )
-    _run_source(
-        "polylogue work events",
-        caveats,
-        lambda: evidence_polylogue.add_polylogue_work_events(
-            nodes, start=start, end=end, selected=selected
-        ),
-        caveat_source="polylogue",
         node_count=lambda: len(nodes),
         recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )

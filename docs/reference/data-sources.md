@@ -20,8 +20,7 @@ availability, coverage, provenance, iterators, and source-local summaries.
 | Family | Representative modules | Evidence exposed |
 | --- | --- | --- |
 | Workstation activity | `activitywatch`, `terminal`, `clipboard`, `keylog`, `arbtt` | Focus spans, commands, sessions, recordings, input/activity events. |
-| Code and delivery | `git`, `github`, `github_context`, `code_snapshots`, `xtask_history`, `polylogue_verification` | Commits, files, reviews, issues/PRs, snapshots, build/test history. |
-| AI work | `polylogue`, `polylogue_timeline` | Session profiles, work events, costs, provider activity, timelines. |
+| Code and delivery | `git`, `github`, `github_context`, `code_snapshots`, `xtask_history` | Commits, files, reviews, issues/PRs, snapshots, build/test history. |
 | Machine state | `machine`, `machine_experiments`, `service_health`, `sinnix_generations` | Metrics, pressure, services, experiments, backups, generations. |
 | Web and reading | `web`, `takeout_chrome`, `bookmarks`, `raindrop_live` | Visits, domains, bookmarks, content metadata, daily activity. |
 | Communications | `communications`, `gmail_takeout`, `irc`, `outlook`, `sms`, export adapters | Events, threads, daily counts, provenance. |
@@ -280,7 +279,7 @@ lynchpin-substack materialize
 
 ## AgentCTL job observations
 
-Verification runs from each repository's own verifier land in the same `work_observation` model, one source per producer: `xtask_history` reads Sinex's xtask ledger and `polylogue_verification` reads Polylogue's durable verification lane (the JSONL its devtools append one receipt to per run, resolved exactly as the writer resolves it). Both fill the same columns: `source_id` is the run, `project` the repository, `git_commit` the head, `operation` the tier (`check`, `focused-test`, `quick`, ...), `status` the shared outcome vocabulary (`success`, `failed`, `running`, `cancelled`, plus `interrupted`), `outcome_known` true only for settled runs, and the timings. Polylogue's selection and step summary sit in `args`; Sinex's stages and per-test results in their own tables. `git_branch` separates default-branch runs from change runs; xtask always records it and Polylogue receipts carry it when the producer records one. The Polylogue lane is read whole with the last row per run winning. Invalid non-null revisions and contradictory run times are excluded and mark coverage degraded. A null revision is retained as an explicitly unqualified run observation: its receipt content digest remains its evidence identity, `git_commit` stays null, and the producer's `git_dirty` flag is preserved. This records the run without claiming that a particular Git commit was tested. The Polylogue lane carries no host.
+Sinex verification history and AgentCTL job observations share the `work_observation` model. Each source preserves its own identity, revision, scope, status and timings. Sinex stages and per-test results remain separate tables. Missing observations stay unavailable rather than becoming successful runs.
 
 Historical work-observation windows keep their exclusive end; only a query ending on the current day includes its live tail. A missing configured Sinex ledger is unavailable coverage, distinct from an observed empty ledger.
 

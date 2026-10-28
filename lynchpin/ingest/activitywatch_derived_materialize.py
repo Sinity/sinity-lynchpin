@@ -232,7 +232,6 @@ def _materialize_window(
                 start=start_dt,
                 end=end_dt,
                 min_duration_s=60.0,
-                enrich_polylogue=True,
                 ensure=False,
             )
         ],

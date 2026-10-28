@@ -97,19 +97,6 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         substrate_daily_signal=True,
     ),
     SourceContract(
-        name="polylogue",
-        authority="Polylogue archive database",
-        query_surface="lynchpin.sources.polylogue",
-        materialization_hint="Consult Polylogue source readiness and its declared convergence operation",
-    ),
-    SourceContract(
-        name="codex",
-        authority="Codex session JSONL archive",
-        query_surface="lynchpin.sources.polylogue once Polylogue has archived Codex sessions",
-        materialization_hint="polylogue-live.service tails Codex session logs into the Polylogue archive",
-        required=False,
-    ),
-    SourceContract(
         name="agentctl",
         authority="AgentCTL native JSON job-list observation route",
         query_surface="lynchpin.sources.agentctl.read_observation_snapshot",
@@ -126,25 +113,6 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
             "read-only public lifecycle/resource observations; Lynchpin has no AgentCTL execution authority",
             "the declared operation name is carried from the job-list row; resource columns stay null on this route",
             "raw argv, prompts, private payloads, logs, and result content remain outside DuckDB",
-        ),
-    ),
-    SourceContract(
-        name="polylogue_verification",
-        authority="Polylogue devtools durable verification evidence lane (JSONL)",
-        query_surface="lynchpin.sources.polylogue_verification.read_verification_snapshot",
-        materialization_hint="Polylogue devtools append one receipt per verifier run; Lynchpin reads the lane only",
-        required=False,
-        empty="valid",
-        query_mode="substrate",
-        collection_model="continuous",
-        materialization_mode="live",
-        materialization_target="substrate:work_observation",
-        substrate_tables=("work_observation",),
-        mcp_tools=("lynchpin_machine",),
-        caveats=(
-            "one row per verifier run, last lane row per run_id wins; resource columns stay null on this route",
-            "the lane carries no host identity; logs, argv and test output stay in Polylogue",
-            "a selected green proves the recorded selection only, not the whole suite",
         ),
     ),
     SourceContract(
@@ -606,21 +574,6 @@ _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
             "YouTube subscription/export rows without timestamps are inventory, not activity",
         ),
     },
-    "polylogue": {
-        "collection_model": "continuous",
-        "graph_node_kinds": ("ai_session", "ai_work_event"),
-        "mcp_tools": ("lynchpin_personal", "lynchpin_evidence"),
-        "caveats": ("deep Polylogue analytics live on the Polylogue MCP server",),
-    },
-    "codex": {
-        "collection_model": "continuous",
-        "graph_node_kinds": ("ai_session", "ai_work_event"),
-        "mcp_tools": ("lynchpin_personal", "lynchpin_evidence"),
-        "caveats": (
-            "raw Codex JSONL is not a separate semantic source once Polylogue archives it",
-            "use Polylogue session products for project/work attribution rather than raw JSONL parsing",
-        ),
-    },
     "activitywatch": {
         "collection_model": "continuous",
         "substrate_tables": ("activity_content_day", "activity_content_bucket", "activity_title_usage"),
@@ -662,12 +615,12 @@ _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
     "evidence_graph_substrate": {
         "collection_model": "stage",
         "substrate_tables": (
-            "commit_fact", "file_change_fact", "symbol_change", "ai_work_event",
+            "commit_fact", "file_change_fact", "symbol_change",
             "pr_review_row", "evidence_graph_build", "evidence_node",
             "evidence_edge", "analysis_claim", "substrate_promotion_run",
             "substrate_source_status",
         ),
-        "graph_node_kinds": ("commit", "ai_work_event", "ai_session", "analysis_claim"),
+        "graph_node_kinds": ("commit", "analysis_claim"),
         "mcp_tools": (
             "lynchpin_query",
             "lynchpin_evidence",
@@ -819,16 +772,6 @@ _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
             "the route does not publish artifact refs or semantic joins; raw logs and result artifacts remain external",
         ),
     },
-    "polylogue_verification": {
-        "collection_model": "continuous",
-        "substrate_tables": ("work_observation",),
-        "mcp_tools": ("lynchpin_machine",),
-        "caveats": (
-            "one row per verifier run, last lane row per run_id wins; resource columns stay null on this route",
-            "the lane carries no host identity; logs, argv and test output stay in Polylogue",
-            "a selected green proves the recorded selection only, not the whole suite",
-        ),
-    },
     "spotify_daily": {
         "collection_model": "derived",
         "substrate_tables": ("spotify_daily",),
@@ -915,8 +858,6 @@ PROMOTION_STAGE_CONTRACTS: tuple[StageContract, ...] = (
     StageContract("commits", "commit_fact"),
     StageContract("file_changes", "file_change_fact"),
     StageContract("symbols", "symbol_change", required=False),
-    StageContract("ai_work_events", "ai_work_event"),
-    StageContract("polylogue_timeline", "polylogue_session_time_composition", required=False),
     StageContract("evidence_graph", "evidence_graph_build"),
     StageContract("pr_review", "pr_review_row", required=False),
     StageContract("spotify_daily", "spotify_daily", required=False),

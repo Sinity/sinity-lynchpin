@@ -28,11 +28,6 @@ def test_scope_geom_uses_all_three_axes() -> None:
     assert _scope_geom(2.5, 9, 4) > _scope_geom(2.5, 3, 4)
 
 
-def test_surface_for_path_uses_polylogue_second_level_area() -> None:
-    assert _surface_for_path("polylogue", "polylogue/storage/repair.py") == "storage"
-    assert _surface_for_path("polylogue", "tests/unit/test_repair.py") == "tests/unit"
-
-
 def test_surface_for_path_uses_sinex_crate_name() -> None:
     assert _surface_for_path("sinex", "crate/lib/sinex-node-sdk/src/lib.rs") == "sinex-node-sdk"
     assert _surface_for_path("sinex", "tests/integration/foo.rs") == "tests/integration"

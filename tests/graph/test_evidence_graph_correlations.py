@@ -15,7 +15,6 @@ from lynchpin.graph.work_correlation import (
 from tests.graph.evidence_graph_fixtures import (  # noqa: F401
     _mock_empty_sources,
     _no_analysis_claims,
-    _no_substrate_overlap,
 )
 
 UTC = timezone.utc
@@ -40,15 +39,15 @@ def test_work_day_correlations_projects_from_evidence_graph():
                 payload={"commit": "abc", "github_refs": {"prs": [3], "issues": []}},
             ),
             EvidenceNode(
-                id="polylogue:conv:sinity-lynchpin",
-                kind="ai_session",
-                source="polylogue",
+                id="terminal:session:sinity-lynchpin",
+                kind="terminal_session",
+                source="terminal",
                 date=when.date(),
                 project="sinity-lynchpin",
                 summary="graph work",
                 start=when,
                 end=when,
-                payload={"conversation_id": "conv"},
+                payload={"session_id": "session"},
             ),
             EvidenceNode(
                 id="aw:day",
@@ -63,9 +62,9 @@ def test_work_day_correlations_projects_from_evidence_graph():
         edges=(
             EvidenceEdge(
                 source_id="git:lynchpin:abc",
-                target_id="polylogue:conv:sinity-lynchpin",
+                target_id="terminal:session:sinity-lynchpin",
                 relation="temporal_proximity",
-                evidence="git within 0m of polylogue",
+                evidence="git within 0m of terminal",
                 weight=0.82,
             ),
         ),
@@ -79,17 +78,16 @@ def test_work_day_correlations_projects_from_evidence_graph():
     assert len(rows) == 1
     assert rows[0].project == "sinity-lynchpin"
     assert rows[0].commit_count == 1
-    assert rows[0].ai_session_count == 1
     assert rows[0].focus_minutes == 30
     assert rows[0].github_refs == ("pr#3",)
     assert claims[0].support_level == "strong"
     assert claims[0].relation_count == 1
-    assert "git within 0m of polylogue" in rendered_claims
+    assert "git within 0m of terminal" in rendered_claims
     # strongest_edge_ids must carry the actual edge composite key
     # (source_id->target_id:relation), not the dimension label. This lets
     # load_claim_evidence join back to evidence_edge rows.
     assert claims[0].strongest_edge_ids == (
-        "git:lynchpin:abc->polylogue:conv:sinity-lynchpin:temporal_proximity",
+        "git:lynchpin:abc->terminal:session:sinity-lynchpin:temporal_proximity",
     )
 
 
@@ -111,9 +109,9 @@ def test_dataset_correlations_summarize_cross_source_relation_support():
                 end=when,
             ),
             EvidenceNode(
-                id="polylogue:conv:sinity-lynchpin",
-                kind="ai_session",
-                source="polylogue",
+                id="terminal:session:sinity-lynchpin",
+                kind="terminal_session",
+                source="terminal",
                 date=when.date(),
                 project="sinity-lynchpin",
                 summary="graph work",
@@ -124,9 +122,9 @@ def test_dataset_correlations_summarize_cross_source_relation_support():
         edges=(
             EvidenceEdge(
                 source_id="git:lynchpin:abc",
-                target_id="polylogue:conv:sinity-lynchpin",
+                target_id="terminal:session:sinity-lynchpin",
                 relation="temporal_proximity",
-                evidence="git within 0m of polylogue",
+                evidence="git within 0m of terminal",
                 weight=0.82,
             ),
         ),
@@ -136,10 +134,10 @@ def test_dataset_correlations_summarize_cross_source_relation_support():
     rows = dataset_correlations(graph)
     rendered = render_dataset_correlations(rows)
 
-    assert rows[0].sources == ("git", "polylogue")
+    assert rows[0].sources == ("git", "terminal")
     assert rows[0].relation_counts == {"temporal_proximity": 1}
     assert rows[0].projects == ("sinity-lynchpin",)
-    assert "git + polylogue" in rendered
+    assert "git + terminal" in rendered
     assert "temporal_proximity=1" in rendered
 
 
@@ -162,13 +160,6 @@ def test_build_evidence_graph_links_temporal_proximity_across_sources(monkeypatc
                 paths=(),
             ),
         ),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: (),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events", lambda **kwargs: ()
     )
     monkeypatch.setattr(
         "lynchpin.graph.evidence_raw_log.entries_in_range", lambda **kwargs: ()

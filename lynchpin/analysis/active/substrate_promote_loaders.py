@@ -72,34 +72,6 @@ def _load_commit_facts(path: str) -> tuple[list[Any], dict[str, dict[str, Any]]]
     return facts, annotations
 
 
-def _merge_ai_attribution(
-    annotations: dict[str, dict[str, Any]],
-    path: str | None,
-) -> None:
-    """Merge active_ai_attribution.json high/medium rows into commit annotations."""
-    if not path:
-        return
-    p = Path(path)
-    if not p.exists():
-        return
-    with p.open() as f:
-        data = json.load(f)
-    for row in data.get("commits", []):
-        if not isinstance(row, dict):
-            continue
-        sha = row.get("sha")
-        attribution = row.get("ai_attribution")
-        if not sha or attribution not in {"high", "medium"}:
-            continue
-        annotations.setdefault(str(sha), {})["ai_attribution"] = {
-            "classification": attribution,
-            "supporting_session_ids": list(row.get("supporting_session_ids") or []),
-            "supporting_providers": list(row.get("supporting_providers") or []),
-            "supporting_session_count": int(row.get("supporting_session_count") or 0),
-            "matched_via": "polylogue_session_project_day",
-        }
-
-
 def _load_file_change_facts(
     path: str,
 ) -> tuple[list[Any], dict[tuple[str, str], dict[str, Any]]]:

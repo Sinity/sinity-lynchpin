@@ -13,7 +13,7 @@ exports, repositories, and project-native ledgers. Their owners determine
 write and retention policy:
 
 - Sinnix owns host capture and service deployment.
-- Polylogue owns AI-session ingestion and archive-native products.
+- AI-session archives stay with Polylogue and are outside Lynchpin inputs.
 - Git and GitHub own code/change records.
 - Provider exports remain immutable source artifacts.
 
@@ -144,7 +144,6 @@ generation remains available.
 The graph represents facts and qualified relationships such as:
 
 - project ↔ commit ↔ file/symbol;
-- AI work event ↔ commit overlap;
 - issue ↔ pull request ↔ commit closure;
 - activity/focus/terminal evidence ↔ logical day;
 - analysis claim ↔ supporting evidence;

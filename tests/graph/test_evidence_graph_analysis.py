@@ -6,7 +6,6 @@ from lynchpin.graph.machine_analysis import add_machine_analysis_nodes
 from tests.graph.evidence_graph_fixtures import (  # noqa: F401
     _mock_empty_sources,
     _no_analysis_claims,
-    _no_substrate_overlap,
 )
 
 UTC = timezone.utc
@@ -29,13 +28,6 @@ def test_build_evidence_graph_surfaces_analysis_artifacts(monkeypatch, tmp_path)
         references=(),
     )
     monkeypatch.setattr("lynchpin.graph.evidence_git.commit_facts", lambda **kwargs: ())
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: (),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events", lambda **kwargs: ()
-    )
     monkeypatch.setattr(
         "lynchpin.graph.evidence_raw_log.entries_in_range", lambda **kwargs: ()
     )
@@ -642,13 +634,6 @@ def test_build_evidence_graph_excludes_named_analysis_artifacts(monkeypatch, tmp
     )
     monkeypatch.setattr("lynchpin.graph.evidence_git.commit_facts", lambda **kwargs: ())
     monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: (),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events", lambda **kwargs: ()
-    )
-    monkeypatch.setattr(
         "lynchpin.graph.evidence_raw_log.entries_in_range", lambda **kwargs: ()
     )
     monkeypatch.setattr(
@@ -739,13 +724,6 @@ def test_build_evidence_graph_surfaces_analysis_claims(monkeypatch, tmp_path):
         generated_at=modified,
     )
     monkeypatch.setattr("lynchpin.graph.evidence_git.commit_facts", lambda **kwargs: ())
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: (),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events", lambda **kwargs: ()
-    )
     monkeypatch.setattr(
         "lynchpin.graph.evidence_raw_log.entries_in_range", lambda **kwargs: ()
     )
@@ -847,13 +825,6 @@ def test_build_evidence_graph_links_analysis_artifact_references(monkeypatch, tm
         ),
     )
     monkeypatch.setattr("lynchpin.graph.evidence_git.commit_facts", lambda **kwargs: ())
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: (),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events", lambda **kwargs: ()
-    )
     monkeypatch.setattr(
         "lynchpin.graph.evidence_raw_log.entries_in_range", lambda **kwargs: ()
     )

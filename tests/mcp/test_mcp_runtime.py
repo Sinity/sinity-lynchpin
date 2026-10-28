@@ -87,7 +87,6 @@ def test_lynchpin_catalog_exposes_actions_without_retired_routes(
     assert {action["name"] for action in tools["lynchpin_ops"]["actions"]} >= {
         "materialize",
         "chisel",
-        "ai_backfill",
         "prune",
     }
     assert tools["lynchpin_catalog"]["actions"][0]["name"] == "catalog"

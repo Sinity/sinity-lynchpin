@@ -201,7 +201,6 @@ def _configured_path(source: str) -> Path | None:
         "raindrop_live": cfg.repo_root / ".lynchpin/raindrop_last_cursor.json",
         "machine": cfg.machine_telemetry_db,
         "xtask_history": cfg.xtask_history_db,
-        "polylogue": cfg.polylogue_db,
         "agentctl": None,
         "raw_log": cfg.raw_log_file,
         "samsung_gdpr_cloud": cfg.samsung_gdpr_cloud_dir,

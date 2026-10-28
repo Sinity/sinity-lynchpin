@@ -40,7 +40,6 @@ def test_missing_xtask_is_not_measured_empty(tmp_path, monkeypatch):
     empty = SimpleNamespace(observations=(), rejected=())
     monkeypatch.setattr("lynchpin.sources.xtask_history.xtask_history_path", lambda: tmp_path / "missing.db")
     monkeypatch.setattr("lynchpin.sources.agentctl.read_observation_snapshot", lambda: empty)
-    monkeypatch.setattr("lynchpin.sources.polylogue_verification.read_verification_snapshot", lambda: empty)
     with duckdb.connect() as conn:
         apply_schema(conn)
         promote_work_sources(conn, refresh_id="fixture", window_start=date(2026, 1, 1), window_end=date(2026, 1, 2), counts={}, selection=SourceSelection.from_collection({"work_observations"}))

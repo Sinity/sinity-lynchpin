@@ -46,13 +46,7 @@ def test_correlate_work_days_joins_project_day_evidence() -> None:
             )
         ],
         github_items=[issue],
-        ai_sessions=[
-            SimpleNamespace(
-                conversation_id="conv-1",
-                canonical_session_date=when.date(),
-                work_event_projects=("lynchpin",),
-            )
-        ],
+
         raw_log_entries=[
             SimpleNamespace(
                 timestamp=when,
@@ -84,29 +78,23 @@ def test_correlate_work_days_joins_project_day_evidence() -> None:
     assert row.commit_count == 1
     assert row.github_refs == ("issue#17",)
     assert row.github_lifecycles["executed"] == 1
-    assert row.ai_session_count == 1
     assert row.raw_log_count == 1
     assert row.raw_log_refs == ("/realm/data/knowledgebase/logs.raw-log.md:42",)
     assert row.focus_minutes == 60
     assert row.shell_command_count == 4
-    assert row.sources == ("activitywatch", "git", "github", "polylogue", "raw_log", "terminal")
+    assert row.sources == ("activitywatch", "git", "github", "raw_log", "terminal")
     assert row.has_cross_source_support is True
 
 
 def test_render_work_day_correlations_keeps_source_columns() -> None:
     row = correlate_work_days(
-        ai_sessions=[
-            SimpleNamespace(
-                conversation_id="conv-1",
-                canonical_session_date=datetime(2026, 5, 5, tzinfo=UTC).date(),
-                work_event_projects=("polylogue",),
-            )
-        ]
+        git_facts=[SimpleNamespace(repo="polylogue", commit="a",
+                                   authored_at=datetime(2026, 5, 5, 12, tzinfo=UTC), subject="fix: example")]
     )[0]
 
     rendered = render_work_day_correlations([row])
 
-    assert "AI Sessions" in rendered
+    assert "Commits" in rendered
     assert "Raw Log" in rendered
     assert "polylogue" in rendered
 
@@ -231,13 +219,7 @@ def test_summarize_work_correlations_reports_join_strength_and_gaps() -> None:
                 subject="fix: git only",
             ),
         ],
-        ai_sessions=[
-            SimpleNamespace(
-                conversation_id="conv-1",
-                canonical_session_date=when.date(),
-                work_event_projects=("sinity-lynchpin",),
-            )
-        ],
+
         focus_spans=[
             SimpleNamespace(project="sinity-lynchpin", start=when, duration_s=60),
             SimpleNamespace(project="sinnix", start=when, duration_s=60),
@@ -250,13 +232,12 @@ def test_summarize_work_correlations_reports_join_strength_and_gaps() -> None:
     assert summary.cross_source_row_count == 1
     assert summary.projects == ("polylogue", "sinity-lynchpin", "sinnix")
     assert summary.source_pair_counts["activitywatch+git"] == 1
-    assert summary.source_pair_counts["activitywatch+polylogue"] == 1
-    assert summary.git_without_ai_or_focus == 1
+    assert summary.git_without_focus == 1
     assert summary.focus_without_git == 1
 
     rendered = render_work_correlation_summary(summary)
-    assert "Source counts: activitywatch=2, git=2, polylogue=1" in rendered
-    assert "Source pair counts: activitywatch+git=1, activitywatch+polylogue=1, git+polylogue=1" in rendered
+    assert "Source counts: activitywatch=2, git=2" in rendered
+    assert "Source pair counts: activitywatch+git=1" in rendered
 
 
 def test_strongest_work_correlations_orders_richest_rows() -> None:
@@ -266,20 +247,14 @@ def test_strongest_work_correlations_orders_richest_rows() -> None:
             SimpleNamespace(repo="polylogue", commit="abc", authored_at=when, subject="fix: one"),
             SimpleNamespace(repo="sinity-lynchpin", commit="def", authored_at=when, subject="fix: two"),
         ],
-        ai_sessions=[
-            SimpleNamespace(
-                conversation_id="conv-1",
-                canonical_session_date=when.date(),
-                work_event_projects=("sinity-lynchpin",),
-            )
-        ],
+
         focus_spans=[SimpleNamespace(project="sinity-lynchpin", start=when, duration_s=60)],
     )
 
     ordered = strongest_work_correlations(rows)
 
     assert ordered[0].project == "sinity-lynchpin"
-    assert ordered[0].source_count == 3
+    assert ordered[0].source_count == 2
 
 
 def test_correlate_work_days_accepts_github_context_dicts() -> None:
@@ -353,69 +328,3 @@ def test_work_day_correlations_distinguish_local_refs_from_fetched_github_items(
     assert rows[0].github_refs == ("pr#3",)
 
 
-def test_work_day_correlations_do_not_infer_kind_from_ai_session() -> None:
-    when = datetime(2026, 5, 5, 12, tzinfo=UTC)
-    from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
-
-    graph = EvidenceGraph(
-        start=when.date(),
-        end=when.date(),
-        generated_at=when,
-        nodes=(
-            EvidenceNode(
-                id="ai-session:1",
-                kind="ai_session",
-                source="polylogue",
-                date=when.date(),
-                project="sinity-lynchpin",
-                summary="session-level inferred implementation",
-                payload={
-                    "conversation_id": "conv-1",
-                    "work_event_kind": "implementation",
-                    "message_count": 12,
-                },
-            ),
-        ),
-        edges=(),
-        caveats=(),
-    )
-
-    rows = work_day_correlations(start=when.date(), end=when.date(), graph=graph)
-
-    assert rows[0].ai_session_count == 1
-    assert rows[0].ai_kind_breakdown == ()
-    assert rows[0].dominant_ai_kind is None
-
-
-def test_work_day_correlations_use_event_level_ai_kind() -> None:
-    when = datetime(2026, 5, 5, 12, tzinfo=UTC)
-    from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
-
-    graph = EvidenceGraph(
-        start=when.date(),
-        end=when.date(),
-        generated_at=when,
-        nodes=(
-            EvidenceNode(
-                id="ai-event:1",
-                kind="ai_work_event",
-                source="polylogue",
-                date=when.date(),
-                project="sinity-lynchpin",
-                summary="implemented substrate repair",
-                payload={
-                    "conversation_id": "conv-1",
-                    "kind": "implementation",
-                    "kind_tier": "high",
-                },
-            ),
-        ),
-        edges=(),
-        caveats=(),
-    )
-
-    rows = work_day_correlations(start=when.date(), end=when.date(), graph=graph)
-
-    assert rows[0].ai_kind_breakdown == (("implementation", 1),)
-    assert rows[0].ai_kind_weighted == (("implementation", 1.0),)
-    assert rows[0].dominant_ai_kind == "implementation"

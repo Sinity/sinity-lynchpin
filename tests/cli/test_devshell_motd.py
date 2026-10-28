@@ -20,13 +20,3 @@ def _sources_line(tmp_path: Path, archive: Path) -> str:
     return next(line for line in out.splitlines() if line.startswith("sources"))
 
 
-def test_polylogue_status_follows_the_split_archive(tmp_path: Path) -> None:
-    """Fails if the banner checks a single legacy database file instead of the
-    archive directory, or reports an absent archive without saying why."""
-    archive = tmp_path / "state" / "polylogue"
-    assert f"polylogue: no archive yet ({archive})" in _sources_line(tmp_path, archive)
-    archive.mkdir(parents=True)
-    (archive / "source.db").write_bytes(b"")
-    assert f"polylogue: not indexed yet ({archive})" in _sources_line(tmp_path, archive)
-    (archive / "index.db").write_bytes(b"")
-    assert "polylogue:ok" in _sources_line(tmp_path, archive)

@@ -161,7 +161,7 @@ def _work_observation_command_windows(
                 "machine_pressure_state": pressure_state,
                 "machine_work_state": "test_workload"
                 if row_tool == "xtask" and any(part in {"test", "ci", "nextest"} for part in (row[9] or ()))
-                else "devtools_workload" if row_tool == "polylogue" else "build_workload",
+                else "build_workload",
                 "machine_overlap_seconds": _round(row[5]),
                 "host_cpu_pressure_some_avg10_max": _round(row[12]),
                 "host_io_pressure_some_avg10_max": _round(row[13]),
@@ -257,7 +257,7 @@ def machine_command_performance(
     limit: int = 100,
 ) -> dict[str, Any]:
     """Read command-performance windows joined to machine work states."""
-    promoted_only_tool = tool in ("xtask", "polylogue")
+    promoted_only_tool = tool == "xtask"
     payload = None if promoted_only_tool else _analysis_artifact("command_performance_windows.json")
     rows = _artifact_rows(payload, "windows")
     if payload is not None:
@@ -304,13 +304,6 @@ def machine_command_performance(
                     "xtask pressure state is derived from host PSI maxima recorded by xtask",
                 ]
                 if any(row.get("tool") == "xtask" for row in work_rows)
-                else []
-            ),
-            *(
-                [
-                    "polylogue devtools rows come from promoted work_observation ledgers, not shell history",
-                ]
-                if any(row.get("tool") == "polylogue" for row in work_rows)
                 else []
             ),
         ])),

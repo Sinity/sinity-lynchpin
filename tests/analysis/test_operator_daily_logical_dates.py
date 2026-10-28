@@ -163,40 +163,6 @@ def test_fill_irc_converges_product_daily_rollup() -> None:
     assert ctx.rows[date(2026, 6, 4)].irc_conversations == 0
 
 
-def test_fill_polylogue_reads_current_archive_coverage_dto() -> None:
-    ctx = _ctx()
-    ctx.source = "polylogue"
-
-    class Client:
-        def list_archive_coverage_insights(self, query):
-            assert query.group_by == "day"
-            assert query.since == "2026-06-03"
-            assert query.until == "2026-06-05"
-            return [
-                SimpleNamespace(
-                    bucket="2026-06-03",
-                    session_count=3,
-                    total_cost_usd=0.0,
-                    message_count=30,
-                    total_words=300,
-                    repos_active=("sinity-lynchpin",),
-                    origin_breakdown={"codex-session": 3},
-                )
-            ]
-
-    with (
-        patch("lynchpin.sources.polylogue._polylogue_client", lambda: Client()),
-        patch("lynchpin.sources.polylogue._require_materialized_products", lambda: None),
-    ):
-        od._fill_polylogue(ctx)
-
-    row = ctx.rows[date(2026, 6, 3)]
-    assert row.polylogue_sessions == 3
-    assert row.polylogue_messages == 30
-    assert row.polylogue_projects == ("sinity-lynchpin",)
-    assert "polylogue" in ctx.present[date(2026, 6, 3)]
-
-
 def test_fill_samsung_binning_uses_logical_day_before_boundary() -> None:
     ctx = _ctx()
     stamp = datetime(2026, 6, 4, 3, 30, tzinfo=timezone.utc)
@@ -492,7 +458,6 @@ def test_operator_daily_skip_slow_still_runs_product_backed_daily_sources(monkey
     monkeypatch.setattr(od, "_load_coverage_bounds", lambda: {})
     monkeypatch.setattr(od, "_fill_web", lambda ctx: called.append("web"))
     monkeypatch.setattr(od, "_fill_terminal", lambda ctx: called.append("terminal"))
-    monkeypatch.setattr(od, "_fill_polylogue", lambda ctx: called.append("polylogue"))
     monkeypatch.setattr(od, "_fill_irc", lambda ctx: called.append("irc"))
     monkeypatch.setattr(od, "_fill_spotify", lambda ctx: called.append("spotify"))
     monkeypatch.setattr(od, "_fill_keylog_daily", lambda ctx: called.append("keylog_daily"))
@@ -512,7 +477,7 @@ def test_operator_daily_skip_slow_still_runs_product_backed_daily_sources(monkey
 
     od.operator_daily_matrix(date(2026, 6, 3), date(2026, 6, 4), skip_slow=True)
 
-    assert called == ["web", "terminal", "polylogue", "irc", "spotify", "keylog_daily"]
+    assert called == ["web", "terminal", "irc", "spotify", "keylog_daily"]
 
 
 def test_spotify_matrix_clips_demand_and_preserves_unknown_tail(monkeypatch) -> None:

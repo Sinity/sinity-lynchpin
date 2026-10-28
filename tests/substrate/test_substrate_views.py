@@ -156,9 +156,9 @@ class TestProjectDayCorrelation:
             _insert_node(
                 conn,
                 refresh_id="r1",
-                node_id="ai1",
-                kind="ai_work_event",
-                source="polylogue",
+                node_id="note1",
+                kind="raw_log",
+                source="raw_log",
                 date_val=day,
                 project="lynchpin",
             )
@@ -188,10 +188,9 @@ class TestProjectDayCorrelation:
         assert row.project == "lynchpin"
         assert row.date == day
         assert row.commit_count == 2
-        assert row.ai_work_event_count == 1
+        assert row.raw_log_count == 1
         assert row.github_item_count == 1
         assert row.terminal_count == 1
-        assert row.ai_session_count == 0
 
     def test_focus_rollup_does_not_add_to_its_spans(self, tmp_path: Path) -> None:
         from lynchpin.substrate.connection import apply_schema, connect
@@ -222,69 +221,6 @@ class TestProjectDayCorrelation:
         assert rows["lynchpin"].focus_count == 2
         assert rows["polylogue"].focus_minutes == 10.0
 
-    def test_includes_direct_commit_and_ai_work_event_facts(
-        self, tmp_path: Path
-    ) -> None:
-        """project_day_correlation includes fact tables, not only graph nodes."""
-        from lynchpin.sources.git import GitCommitFact
-        from lynchpin.sources.polylogue import WorkEvent
-        from lynchpin.substrate.connection import apply_schema, connect
-        from lynchpin.substrate.work_ai import promote_ai_work_events
-        from lynchpin.substrate.work_commits import promote_commits
-        from lynchpin.substrate.derived import load_project_day_correlations
-
-        db = tmp_path / "sub.duckdb"
-        with connect(db) as conn:
-            apply_schema(conn)
-            promote_commits(
-                conn,
-                refresh_id="r1",
-                facts=[
-                    GitCommitFact(
-                        repo="lynchpin",
-                        commit="a" * 40,
-                        authored_at=_dt(2026, 5, 3, 12),
-                        author="Sinity",
-                        subject="feat: test",
-                        lines_added=1,
-                        lines_deleted=0,
-                        lines_changed=1,
-                        files_changed=1,
-                        paths=("lynchpin/mcp/tools/views.py",),
-                        path_roots=("lynchpin",),
-                    )
-                ],
-                project_lookup=lambda repo: "lynchpin",
-            )
-            promote_ai_work_events(
-                conn,
-                refresh_id="r1",
-                events=[
-                    WorkEvent(
-                        event_id="we1",
-                        conversation_id="conv1",
-                        provider="claude-code",
-                        kind="implementation",
-                        confidence=0.8,
-                        start=_dt(2026, 5, 3, 10),
-                        end=_dt(2026, 5, 3, 11),
-                        duration_ms=3_600_000,
-                        file_paths=(
-                            "/realm/project/sinity-lynchpin/lynchpin/mcp/tools/views.py",
-                        ),
-                        tools_used=("Edit",),
-                        summary="test",
-                    )
-                ],
-                project_resolver=lambda _event: "lynchpin",
-            )
-
-            rows = load_project_day_correlations(conn, refresh_id="r1")
-
-        assert len(rows) == 1
-        assert rows[0].commit_count == 1
-        assert rows[0].ai_work_event_count == 1
-        assert rows[0].source_count == 2
 
     def test_aggregates_commit_shas(self, tmp_path: Path) -> None:
         """commit nodes' payload.commit values aggregate into commit_shas."""
@@ -383,7 +319,7 @@ class TestProjectDayCorrelation:
                 date_val=day,
                 project="lynchpin",
             )
-            # sinex: git + polylogue (source_count=2)
+            # sinex: git + raw log (source_count=2)
             _insert_node(
                 conn,
                 refresh_id="r1",
@@ -396,9 +332,9 @@ class TestProjectDayCorrelation:
             _insert_node(
                 conn,
                 refresh_id="r1",
-                node_id="ai1",
-                kind="ai_work_event",
-                source="polylogue",
+                node_id="note1",
+                kind="raw_log",
+                source="raw_log",
                 date_val=day,
                 project="sinex",
             )
@@ -756,95 +692,3 @@ class TestIssueClosureChainWalk:
         assert len(rows) == 1
         assert rows[0].root_id == "issue:linked"
         assert rows[0].chain_depth == 1
-
-
-# ---------------------------------------------------------------------------
-# file_overlap view — high-fanout path filtering (Task #57)
-# ---------------------------------------------------------------------------
-
-
-class TestFileOverlapFiltering:
-    """Verify work_event_file_overlap excludes high-fanout paths."""
-
-    def test_excludes_lockfiles_and_init_files(self, tmp_path: Path) -> None:
-        """Lockfiles (__init__.py, Cargo.lock, etc.) are excluded from overlap intersection."""
-        from datetime import datetime as dt
-        from lynchpin.sources.git import GitCommitFact
-        from lynchpin.sources.polylogue import WorkEvent
-        from lynchpin.substrate.connection import apply_schema, connect
-        from lynchpin.substrate.work_ai import promote_ai_work_events
-        from lynchpin.substrate.work_commits import promote_commits
-
-        db = tmp_path / "sub.duckdb"
-        base_dt = dt(2026, 5, 3, 10, tzinfo=UTC)
-
-        with connect(db) as conn:
-            apply_schema(conn)
-
-            # Commit with high-fanout paths + meaningful paths
-            promote_commits(
-                conn,
-                refresh_id="r1",
-                facts=[
-                    GitCommitFact(
-                        repo="test-proj",
-                        commit="abc123",
-                        authored_at=base_dt,
-                        author="test",
-                        subject="feat: implementation",
-                        lines_added=50,
-                        lines_deleted=0,
-                        lines_changed=50,
-                        files_changed=3,
-                        paths=(
-                            "src/__init__.py",  # high-fanout
-                            "Cargo.lock",  # high-fanout
-                            "src/main.rs",  # meaningful
-                        ),
-                        path_roots=("src",),
-                    )
-                ],
-            )
-
-            # AI work event with same paths + high-fanout
-            promote_ai_work_events(
-                conn,
-                refresh_id="r1",
-                events=[
-                    WorkEvent(
-                        event_id="we1",
-                        conversation_id="conv1",
-                        provider="claude-code",
-                        kind="implementation",
-                        confidence=0.8,
-                        start=base_dt,
-                        end=dt(2026, 5, 3, 11, tzinfo=UTC),
-                        duration_ms=3_600_000,
-                        file_paths=(
-                            "src/__init__.py",  # high-fanout (should be excluded)
-                            "src/main.rs",  # meaningful (should be included)
-                            "pyproject.toml",  # high-fanout (should be excluded)
-                        ),
-                        tools_used=("Edit",),
-                        summary="test",
-                    )
-                ],
-                project_resolver=lambda _: "test-proj",
-            )
-
-            # Compute edges via substrate view
-            from lynchpin.substrate.graph import compute_file_overlap_edges
-            edges = compute_file_overlap_edges(conn, we_refresh_id="r1", commit_refresh_id="r1")
-
-        # Should have one edge for file_overlap
-        assert len(edges) >= 1
-        file_overlap_edges = [e for e in edges if e.relation == "file_overlap"]
-        assert len(file_overlap_edges) == 1
-        edge = file_overlap_edges[0]
-
-        # The evidence should show only the meaningful overlap (src/main.rs),
-        # NOT the high-fanout files (src/__init__.py, Cargo.lock, pyproject.toml)
-        assert "src/main.rs" in edge.evidence, f"Expected src/main.rs in {edge.evidence}"
-        assert "__init__.py" not in edge.evidence, f"__init__.py should be excluded from {edge.evidence}"
-        assert "Cargo.lock" not in edge.evidence, f"Cargo.lock should be excluded from {edge.evidence}"
-        assert "pyproject.toml" not in edge.evidence, f"pyproject.toml should be excluded from {edge.evidence}"

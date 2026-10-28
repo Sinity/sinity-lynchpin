@@ -11,7 +11,7 @@ from typing import Any
 
 from ..core.canonical import load_analysis_spec
 from ..core.commit_stats import collect_commit_stats, parse_iso_datetime
-from lynchpin.core.io import load_json, resolve_analysis_path, resolve_artifact_path, save_json
+from lynchpin.core.io import resolve_analysis_path, save_json
 
 _CONVENTIONAL_RE = re.compile(r"^([a-z]+)(?:\(([^)]+)\))?!?:\s*(.*)$", re.IGNORECASE)
 _GENERIC_SUBJECT_RE = re.compile(r"^(merge|wip|update|test|commit|fix|refactor|docs|chore)\b", re.IGNORECASE)
@@ -136,7 +136,6 @@ def _build_package(
     commits: list[dict[str, Any]],
     repo_snapshot: str,
     label: str | None = None,
-    archive_support: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     path_set: set[str] = set()
     surface_counter: Counter[str] = Counter()
@@ -193,8 +192,6 @@ def _build_package(
         "commit_shas": [commit["sha"] for commit in commits[:40]],
         "best_subject": _best_subject(commits),
     }
-    if archive_support is not None:
-        row["archive_support"] = archive_support
     return row
 
 
@@ -257,7 +254,6 @@ def _ecosystem_summary(
     packages: list[dict[str, Any]],
     *,
     unit_definition: str,
-    archive_support: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     scopes = [row["scope_geom"] for row in packages]
     durability = [row["durability_adjusted_scope"] for row in packages]
@@ -274,8 +270,6 @@ def _ecosystem_summary(
         "median_commit_count": _median([row["commit_count"] for row in packages]),
         "top_work_packages": packages[:20],
     }
-    if archive_support is not None:
-        summary["archive_support"] = archive_support
     return summary
 
 
@@ -284,7 +278,6 @@ def _build_git_cluster_packages(
     ecosystem: str,
     repo: str,
     branch: str,
-    archive_support: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     commits = collect_commit_stats(repo_dir=repo, branch=branch, keep_files=True)
     records = [_commit_record(ecosystem, commit) for commit in commits]
@@ -300,7 +293,6 @@ def _build_git_cluster_packages(
                 commits=cluster,
                 repo_snapshot=repo,
                 label=label,
-                archive_support=archive_support if ecosystem == "polylogue" and index <= 20 else None,
             )
         )
     packages.sort(key=lambda row: row["scope_geom"], reverse=True)
@@ -309,21 +301,8 @@ def _build_git_cluster_packages(
             ecosystem,
             packages,
             unit_definition="contiguous change clusters split by time gaps and subsystem continuity",
-            archive_support=archive_support,
         ),
         "packages": packages,
-    }
-
-
-def _polylogue_archive_support(spec: dict[str, Any]) -> dict[str, Any]:
-    data = load_json(resolve_artifact_path(spec, "polylogue_metrics"))
-    recent = data.get("archive", {}).get("recent_90d", {})
-    return {
-        "recent_session_count": recent.get("session_count", 0),
-        "recent_total_messages": recent.get("total_messages", 0),
-        "recent_total_words": recent.get("total_words", 0),
-        "providers": recent.get("providers", {}),
-        "projects": recent.get("projects", {}),
     }
 
 
@@ -335,12 +314,11 @@ def build_work_package_scope(spec_path: str) -> dict[str, Any]:
         repo=spec["sinex"]["repo"],
         branch=spec["sinex"]["branch"],
     )
-    poly_archive_support = _polylogue_archive_support(spec)
     polylogue = _build_git_cluster_packages(
         ecosystem="polylogue",
         repo=spec["polylogue"]["repo"],
         branch=spec["polylogue"]["branch"],
-        archive_support=poly_archive_support,
+
     )
 
     ecosystems = {
@@ -383,7 +361,7 @@ def build_work_package_scope(spec_path: str) -> dict[str, Any]:
         "methodology": {
             "unit_definitions": {
                 "sinex": "contiguous git change clusters over the live repo",
-                "polylogue": "contiguous git change clusters over the live repo, augmented with archive activity context",
+                "polylogue": "contiguous git change clusters over the live repo, from source revisions",
             },
             "scope_proxy": {
                 "artifact_churn": "total changed lines scaled to KLOC",

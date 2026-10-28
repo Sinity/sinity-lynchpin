@@ -427,7 +427,6 @@ def _query_sql(
 _ENTITY_TABLES = {
     "commits": "commit_fact",
     "files": "file_change_fact",
-    "ai_work": "ai_work_event",
     "github_issues": "github_issue",
     "github_prs": "github_pr",
     "evidence_nodes": "evidence_node",
@@ -872,7 +871,7 @@ def lynchpin_project(
     if action == "hotspots":
         return _internal_call("lynchpin.mcp.tools.change", "code_hotspots", view=view or "files", project=target, top_n=limit)
     if action == "change_kinds":
-        return _internal_call("lynchpin.mcp.tools.change", "commit_analysis", view="attribution" if view == "ai" else view or "conventional", project=target)
+        return _internal_call("lynchpin.mcp.tools.change", "commit_analysis", view=view or "conventional", project=target)
     if action == "github":
         if number is not None and (limit != 100 or offset != 0 or expected_publication_id is not None):
             return _error("invalid_request", "limit, offset, and expected_publication_id apply to GitHub lists only")
@@ -997,12 +996,11 @@ def lynchpin_personal(
             "productivity": ("lynchpin.mcp.tools.personal_analysis", "productivity_predictors_report"),
             "substance": ("lynchpin.mcp.tools.personal_analysis", "substance_health_report"),
             "burnout": ("lynchpin.mcp.tools.personal_analysis", "burnout_warning_report"),
-            "ai_efficiency": ("lynchpin.mcp.tools.personal_analysis", "ai_session_efficiency_report"),
         }
         if report not in mapping:
             return _error("invalid_report", f"unknown report {report!r}", choices=sorted(mapping))
-        if project is not None and report != "ai_efficiency":
-            return _error("invalid_argument", "project applies only to the ai_efficiency report")
+        if project is not None:
+            return _error("invalid_argument", "project does not apply to personal reports")
         module, fn = mapping[report]
         return _internal_call(module, fn, project=project)
     return _invalid_action("lynchpin_personal", action)
@@ -1090,7 +1088,7 @@ def lynchpin_ops(
     title: str | None = None,
     path: str | None = None,
 ) -> dict[str, Any]:
-    """Operations router. action: materialize, github_refresh, chisel, ai_backfill, promote_artifact, prune, receipt."""
+    """Operations router. action: materialize, github_refresh, chisel, promote_artifact, prune, receipt."""
     if invalid := _mark_route("lynchpin_ops", action):
         return invalid
     started = datetime.now(timezone.utc)
@@ -1131,12 +1129,6 @@ def lynchpin_ops(
             result = build_chisel_bundles(project_names=project_names)
             rid = _record_operation_receipt(action=action, execute=True, reason="chisel snapshots generated")
             return _ok({"dry_run": False, "receipt_id": rid, "result": result}, **_current_meta(route="lynchpin.analysis.projects.chisel.build_chisel_bundles"))
-        if action == "ai_backfill":
-            from lynchpin.mcp.tools.substrate import ai_attribution_backfill
-
-            result = ai_attribution_backfill(refresh_id=refresh_id, dry_run=not execute)
-            rid = None if not execute else _record_operation_receipt(action=action, execute=True, reason="ai attribution backfilled", snapshot_refresh_id=refresh_id)
-            return _ok({"dry_run": not execute, "receipt_id": rid, "result": result}, **_current_meta(route="lynchpin.mcp.tools.substrate.ai_attribution_backfill"))
         if action == "promote_artifact":
             if not title or not path:
                 return _error("missing_argument", "title and path are required for promote_artifact")

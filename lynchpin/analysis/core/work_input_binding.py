@@ -32,14 +32,12 @@ def current_work_input_binding() -> dict[str, str] | None:
     Failure to inspect a configured input forbids a freshness skip.
     """
     from lynchpin.sources.agentctl import AgentctlObservationError, read_observation_snapshot
-    from lynchpin.sources.polylogue_verification import verification_lane_path
     from lynchpin.sources.xtask_history import xtask_history_path
 
     try:
         ledger = xtask_history_path()
         inputs = {
             "xtask": [_file_observation(path) for path in (ledger, Path(f"{ledger}-wal"))],
-            "polylogue_verification": _file_observation(verification_lane_path()),
             "agentctl": sorted(
                 (row.source_id, row.source_revision)
                 for row in read_observation_snapshot().observations

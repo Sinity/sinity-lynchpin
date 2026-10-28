@@ -15,8 +15,6 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
-from lynchpin.analysis.active.ai_assist_density import run_active_ai_assist_density
-from lynchpin.analysis.active.ai_attribution import run_active_ai_attribution
 from lynchpin.analysis.change.commit_capsules import (
     run_active_commit_hunks,
     run_active_commit_semantics,
@@ -26,9 +24,6 @@ from lynchpin.analysis.change.work_packages import (
     run_active_work_packages,
 )
 from lynchpin.analysis.cli import build_app
-from lynchpin.analysis.ecosystem.ai_attribution_history import (
-    run_active_ai_attribution_history,
-)
 from lynchpin.substrate.connection import (
     CandidateGenerationRejected,
     _substrate_path_override,
@@ -100,21 +95,6 @@ def serving_substrate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return target
 
 
-def _no_polylogue(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "lynchpin.analysis.active.ai_attribution.iter_session_profiles",
-        lambda **_: iter(()),
-    )
-    monkeypatch.setattr(
-        "lynchpin.analysis.ecosystem.ai_attribution_history.iter_session_profiles",
-        lambda **_: iter(()),
-    )
-    monkeypatch.setattr(
-        "lynchpin.analysis.active.ai_assist_density.work_events",
-        lambda **_: iter(()),
-    )
-
-
 def test_serving_substrate_rejects_writer_connections(serving_substrate: Path) -> None:
     with pytest.raises(CandidateGenerationRejected):
         with connect(substrate_path()):
@@ -146,24 +126,15 @@ def test_read_commit_facts_without_promotions_is_empty(
 def test_default_builders_read_serving_commit_facts(
     serving_substrate: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _no_polylogue(monkeypatch)
     window = {"start": START, "end": END, "projects": [PROJECT]}
 
     packages = run_active_work_packages(tmp_path / "packages.json", **window)
     hunks = run_active_commit_hunks(tmp_path / "hunks.json", **window)
     semantics = run_active_commit_semantics(tmp_path / "semantics.json", **window)
-    attribution = run_active_ai_attribution(tmp_path / "attribution.json", **window)
-    density = run_active_ai_assist_density(tmp_path / "density.json", **window)
-    history = run_active_ai_attribution_history(
-        tmp_path / "history.json", projects=[PROJECT]
-    )
 
     assert sum(row["commit_count"] for row in packages["projects"]) == 2
     assert hunks["commit_count"] == 2
     assert semantics["commit_count"] == 2
-    assert len(attribution["commits"]) == 2
-    assert len(density["commits"]) == 2
-    assert sum(row["total_commits"] for row in history["monthly"]) == 2
 
 
 def test_candidate_context_reads_its_staged_generation(
@@ -221,7 +192,7 @@ def _commit_shas(value: object) -> set[str]:
 
 @pytest.mark.parametrize(
     "command",
-    ["active-work-packages", "active-commit-semantics", "active-ai-attribution"],
+    ["active-work-packages", "active-commit-semantics"],
 )
 def test_commit_facts_option_selects_its_input(
     serving_substrate: Path,
@@ -229,7 +200,6 @@ def test_commit_facts_option_selects_its_input(
     tmp_path: Path,
     command: str,
 ) -> None:
-    _no_polylogue(monkeypatch)
     out = tmp_path / f"{command}.json"
     result = CliRunner().invoke(
         build_app(),

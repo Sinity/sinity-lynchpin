@@ -287,7 +287,6 @@ def run_promotion_node(
                 commit_facts_file=str(resolve_analysis_path("active_commit_facts.json")),
                 file_changes_file=str(resolve_analysis_path("active_file_change_facts.json")),
                 symbol_changes_file=str(resolve_analysis_path("active_symbol_changes.json")),
-                ai_attribution_file=str(resolve_analysis_path("active_ai_attribution.json")),
                 refresh_id=refresh_id,
                 window_start=start,
                 window_end=end,

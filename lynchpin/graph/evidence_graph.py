@@ -1,7 +1,7 @@
 """Range-scoped evidence graph for current-state and narrative analysis.
 
 Evidence-graph BUILDER: assembles a range-scoped ``EvidenceGraph`` from sources
-(git, polylogue, ActivityWatch, terminal, raw-log, clipboard, irc, GitHub,
+(git, ActivityWatch, terminal, raw-log, clipboard, irc, GitHub,
 analysis artifacts) and derives same-project/day, temporal-overlap,
 proximity, and substrate-backed file/symbol edges. The data model (node/edge
 dataclasses and kind literals) lives in ``lynchpin/core/evidence_graph.py``.
@@ -318,30 +318,6 @@ def _finalize_graph(
     )
     edges.extend(proximity_edges)
     log.info("evidence_graph: added %d temporal-proximity edges", len(proximity_edges))
-    log.info("evidence_graph: deriving file/symbol overlap edges")
-    overlap_refresh_id = f"overlap:{generated_at.isoformat()}"
-    sql_edges = measure(
-        "file_symbol_overlap",
-        lambda: evidence_edges.overlap_edges_via_substrate(
-            nodes, refresh_id=overlap_refresh_id
-        ),
-    )
-    edges.extend(
-        edge
-        for edge in sql_edges
-        if edge.source_id in node_ids and edge.target_id in node_ids
-    )
-    log.info("evidence_graph: added %d file/symbol overlap edges", len(sql_edges))
-    log.info("evidence_graph: deriving tool-overlap edges")
-    tool_overlap_edges = measure(
-        "tool_overlap",
-        lambda: (
-            edge
-            for edge in evidence_edges.polylogue_work_event_tool_overlap_edges(nodes)
-            if edge.source_id in node_ids and edge.target_id in node_ids
-        ),
-    )
-    edges.extend(tool_overlap_edges)
     log.info("evidence_graph: deriving mentions-project edges")
     mentions_edges = measure(
         "mentions_project",
@@ -360,7 +336,6 @@ def _finalize_graph(
         readiness = source_readiness(
             start=start,
             end=end,
-            include_polylogue_product_counts=True,
             include_github_frontier=mode == "network",
             include_analysis_inventory=True,
             repair_materializations=False,

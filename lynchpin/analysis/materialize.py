@@ -18,11 +18,9 @@ from typing import Any, Sequence
 from .core.dag import DAG, Step
 from lynchpin.core.io import resolve_analysis_path, save_json
 from .ecosystem.current_state import run_current_state_analysis
-from .active.ai_attribution import run_active_ai_attribution
 from .active.git_facts import run_active_git_facts
 from .active.snapshot import run_active_project_snapshot
 from .active.substrate_promote import (
-    SOURCE_AI_WORK_EVENTS,
     SOURCE_COMMITS,
     SOURCE_EVIDENCE_GRAPH,
     SOURCE_FILE_CHANGES,
@@ -99,7 +97,6 @@ from .life_phase import write_report as write_life_phase_report
 from .productivity_predictors import write_report as write_productivity_predictors_report
 from .substance_health import write_report as write_substance_health_report
 from .burnout_warning import write_report as write_burnout_warning_report
-from .ai_session_efficiency import write_report as write_ai_session_efficiency_report
 from .quota_advisory import write_quota_advisory
 from .ambient_intelligence import write_ambient_intelligence
 from .operator_daily import operator_daily_matrix
@@ -213,7 +210,6 @@ CURRENT_STATE_SUBSTRATE_SOURCES = (
     SOURCE_COMMITS,
     SOURCE_FILE_CHANGES,
     SOURCE_SYMBOLS,
-    SOURCE_AI_WORK_EVENTS,
     SOURCE_EVIDENCE_GRAPH,
     SOURCE_WORK_OBSERVATIONS,
 )
@@ -335,7 +331,6 @@ def _add_personal_analysis_steps(
     dag.add(_step(dag, 'personal_productivity_predictors', 'write_productivity_predictors_report', args=(_out('productivity_predictors.json'),), kwargs={'start': personal_start, 'end': personal_end}, depends_on=[]))
     dag.add(_step(dag, 'personal_substance_health', 'write_substance_health_report', args=(_out('substance_health_report.json'),), kwargs={'start': personal_start, 'end': personal_end}, depends_on=[]))
     dag.add(_step(dag, 'personal_burnout_warning', 'write_burnout_warning_report', args=(_out('burnout_warning.json'),), kwargs={'start': personal_start, 'end': personal_end}, depends_on=[]))
-    dag.add(_step(dag, 'personal_ai_session_efficiency', 'write_ai_session_efficiency_report', args=(_out('ai_session_efficiency.json'),), kwargs={'start': personal_start, 'end': personal_end}, depends_on=[]))
     dag.add(_step(dag, 'personal_quota_advisory', 'write_quota_advisory', args=(_out('quota_advisory.json'),), kwargs={}, depends_on=[]))
     dag.add(_step(dag, 'personal_operator_day', '_promote_operator_day', args=(), kwargs={'start': start, 'end': end}, depends_on=[]))
     dag.add(_step(dag, 'personal_ambient_intelligence', 'write_ambient_intelligence', args=(_out('ambient_intelligence.json'),), kwargs={}, depends_on=[]))
@@ -345,7 +340,6 @@ def _add_personal_analysis_steps(
         "personal_productivity_predictors",
         "personal_substance_health",
         "personal_burnout_warning",
-        "personal_ai_session_efficiency",
         "personal_quota_advisory",
         "personal_operator_day",
         "personal_ambient_intelligence",
@@ -396,8 +390,7 @@ def current_state_dag(
     dag.add(_step(dag, 'active_symbol_changes', 'run_active_symbol_diffs', args=(_out('active_symbol_changes.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'symbol_index_file': _out('active_symbol_index.json'), 'commit_facts_file': _out('active_commit_facts.json'), 'snapshot_file': _out('active_project_snapshot.json')}, depends_on=['active_symbol_index', 'active_git_facts', 'active_project_snapshot']))
     dag.add(_step(dag, 'active_ci_health', 'run_active_ci_health', args=(_out('active_ci_health.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json'), 'include_runs': include_github_frontier}, depends_on=['active_project_snapshot']))
     dag.add(_step(dag, 'active_commit_semantics', 'run_active_commit_semantics', args=(_out('active_commit_semantics.json'),), kwargs={'start': start, 'end': end, 'projects': projects}, depends_on=['active_git_facts']))
-    dag.add(_step(dag, 'active_ai_attribution', 'run_active_ai_attribution', args=(_out('active_ai_attribution.json'),), kwargs={'start': start, 'end': end, 'projects': projects}, depends_on=['active_git_facts']))
-    dag.add(_step(dag, 'current_state_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'ai_attribution_file': _out('active_ai_attribution.json'), 'refresh_id': _current_state_refresh_id(start=start, end=end, projects=projects), 'window_start': start, 'window_end': end, 'sources': CURRENT_STATE_SUBSTRATE_SOURCES, 'write_evidence_graph': True}, depends_on=['active_git_facts', 'active_symbol_changes', 'code_history_claims']))
+    dag.add(_step(dag, 'current_state_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'refresh_id': _current_state_refresh_id(start=start, end=end, projects=projects), 'window_start': start, 'window_end': end, 'sources': CURRENT_STATE_SUBSTRATE_SOURCES, 'write_evidence_graph': True}, depends_on=['active_git_facts', 'active_symbol_changes', 'code_history_claims']))
     dag.add(_step(dag, 'machine_analysis_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'refresh_id': _machine_analysis_refresh_id(start=start, end=end), 'window_start': start, 'window_end': end, 'sources': MACHINE_ANALYSIS_SUBSTRATE_SOURCES, 'write_evidence_graph': False}, depends_on=[]))
     machine_steps = _add_machine_analysis_steps(
         dag,
@@ -426,7 +419,6 @@ def current_state_dag(
         "active_symbol_changes",
         "active_ci_health",
         "active_commit_semantics",
-        "active_ai_attribution",
         *machine_steps,
         "current_state_operator_day",
     ]
