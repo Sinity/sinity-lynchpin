@@ -485,14 +485,17 @@ def load_machine_process_memory_samples(
         params.append(refresh_id)
 
     where = build_where(clauses, params)
+    relation = machine_relation(conn, "machine_process_memory_sample", refresh_id)
+    present = {column[0] for column in conn.execute(f"SELECT * FROM {relation} LIMIT 0").description}
+    allocator_column = "allocator_json" if "allocator_json" in present else "NULL AS allocator_json"
     sql = f"""
         SELECT
             observed_at, host, boot_id, source_schema_version,
             pid, process_start_time_ticks, comm, exe, cgroup, unit, scope,
             command_line, rss_kb, pss_kb, pss_anon_kb, pss_file_kb,
             pss_shmem_kb, private_clean_kb, private_dirty_kb,
-            shared_clean_kb, shared_dirty_kb, swap_kb
-        FROM {machine_relation(conn, 'machine_process_memory_sample', refresh_id)}
+            shared_clean_kb, shared_dirty_kb, swap_kb, {allocator_column}
+        FROM {relation}
         {where}
         ORDER BY observed_at, pss_kb DESC
     """
@@ -524,6 +527,7 @@ def load_machine_process_memory_samples(
             shared_clean_kb=int(row[19]),
             shared_dirty_kb=int(row[20]),
             swap_kb=int(row[21]),
+            allocator_json=row[22],
         )
         for row in rows
     ]
@@ -716,7 +720,7 @@ _PROCESS_MEMORY_COLUMNS = (
     "pid", "process_start_time_ticks", "comm", "exe", "cgroup", "unit",
     "scope", "command_line", "rss_kb", "pss_kb", "pss_anon_kb",
     "pss_file_kb", "pss_shmem_kb", "private_clean_kb",
-    "private_dirty_kb", "shared_clean_kb", "shared_dirty_kb", "swap_kb",
+    "private_dirty_kb", "shared_clean_kb", "shared_dirty_kb", "swap_kb", "allocator_json",
 )
 
 _CGROUP_MEMORY_COLUMNS = (
@@ -761,7 +765,7 @@ def promote_machine_process_memory_samples(
             s.unit, s.scope, s.command_line, s.rss_kb, s.pss_kb,
             s.pss_anon_kb, s.pss_file_kb, s.pss_shmem_kb,
             s.private_clean_kb, s.private_dirty_kb,
-            s.shared_clean_kb, s.shared_dirty_kb, s.swap_kb,
+            s.shared_clean_kb, s.shared_dirty_kb, s.swap_kb, getattr(s, "allocator_json", None),
         ),
         batch_size=10_000,
     )

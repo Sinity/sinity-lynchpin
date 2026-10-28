@@ -800,6 +800,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
         shared_clean_kb             BIGINT NOT NULL,
         shared_dirty_kb             BIGINT NOT NULL,
         swap_kb                     BIGINT NOT NULL,
+        allocator_json              JSON,
         refresh_id                  VARCHAR NOT NULL,
         materialized_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )

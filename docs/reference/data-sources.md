@@ -328,3 +328,11 @@ The header-only terminal index is refreshed with `agentctl job start lynchpin as
 ## Coverage audit
 
 `python -m lynchpin.cli.coverage_audit` uses the same window calculation as the materialization audit. First and last event dates alone establish overlap; intervening coverage remains unknown. Precise covered dates expose internal gaps. Reports retain measured zero row counts and distinguish them from unavailable counts. JSON includes covered and requested day counts and nullable full-window coverage.
+
+Machine process-memory rows optionally retain `allocator_json` through SQLite,
+NDJSON materialization and the DuckDB substrate. The nullable JSON contains the
+producer's versioned Noctalia allocator observation and probe outcome. Older
+rows and schemas read as NULL; explicit unavailable status remains distinct from
+available counters equal to zero. This field is additive and does not require
+rewriting historical captures or rebuilding the substrate. Counter timestamps
+are UTC epoch milliseconds and counter units are bytes.

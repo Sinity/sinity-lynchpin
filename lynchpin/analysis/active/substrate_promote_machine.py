@@ -531,7 +531,11 @@ def _promote_machine_fast(
         for src_table, dst_table, source, enabled in tables:
             if not enabled:
                 continue
-            def promote_table() -> None:
+            def promote_table(
+                src_table: str = src_table,
+                dst_table: str = dst_table,
+                source: str = source,
+            ) -> None:
                 t0 = time.monotonic()
                 # Validate the selected source's presence without scanning unrelated
                 # historical tables. A successful zero-row read means this lane is
@@ -540,6 +544,8 @@ def _promote_machine_fast(
                 if src_table in {"gpu_sample", "cgroup_memory_sample"}:
                     if "id" not in source_columns:
                         projections[src_table][1]["source_row_id"] = "NULL"
+                if src_table == "process_memory_sample" and "allocator_json" not in source_columns:
+                    projections[src_table][1]["allocator_json"] = "NULL"
                 watermark = None
                 predecessor = None
                 if not full_repromote or dst_table in recovered_tables:

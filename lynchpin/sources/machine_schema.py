@@ -418,8 +418,9 @@ def validate_process_memory_schema(conn: sqlite3.Connection) -> None:
 
 
 def process_memory_columns(conn: sqlite3.Connection) -> tuple[str, ...]:
-    _table_columns(conn, "process_memory_sample")
-    return EXPECTED_PROCESS_MEMORY_COLUMNS
+    columns = _table_columns(conn, "process_memory_sample")
+    optional = ("allocator_json",) if "allocator_json" in columns else ()
+    return EXPECTED_PROCESS_MEMORY_COLUMNS + optional
 
 
 def validate_cgroup_memory_schema(conn: sqlite3.Connection) -> None:

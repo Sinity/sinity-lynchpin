@@ -383,6 +383,7 @@ def test_promote_machine_process_memory_samples_round_trip(tmp_path):
         shared_clean_kb=40960,
         shared_dirty_kb=61440,
         swap_kb=0,
+        allocator_json='{"schema_version":1,"status":"available","allocator":{"allocated_bytes":0}}',
     )
     with connect(db) as conn:
         apply_schema(conn)
@@ -400,6 +401,7 @@ def test_promote_machine_process_memory_samples_round_trip(tmp_path):
     assert loaded[0].pss_kb == 307200
     assert loaded[0].pss_anon_kb == 204800
     assert loaded[0].private_dirty_kb == 194560
+    assert loaded[0].allocator_json == sample.allocator_json
 
 
 def test_promote_machine_cgroup_memory_samples_round_trip(tmp_path):
@@ -1798,3 +1800,119 @@ def test_machine_predecessor_searches_past_ineligible_newer_candidates(tmp_path)
             record_source_status(conn, refresh_id=refresh, source="machine", status="ok", reason=None, row_count=3, window_start=date(2026,5,1), window_end=date(2026,5,4))
         selected = machine_predecessor(conn, table="machine_metric_sample", source="machine", refresh_id="child", window_start=date(2026,5,1), window_end=date(2026,5,5), input_fingerprint="source-a")
         assert selected == "eligible"
+
+
+def test_allocator_nullable_extension_preserves_old_substrate_rows(tmp_path):
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_process_memory_samples
+
+    with connect(tmp_path / "history.duckdb") as conn:
+        apply_schema(conn)
+        conn.execute(
+            "ALTER TABLE machine_process_memory_sample DROP COLUMN allocator_json"
+        )
+        conn.execute(
+            "INSERT INTO machine_process_memory_sample (observed_at,host,source_schema_version,pid,rss_kb,pss_kb,private_clean_kb,private_dirty_kb,shared_clean_kb,shared_dirty_kb,swap_kb,refresh_id) VALUES ('2026-05-12','fixture',6,7,1,1,0,0,0,0,0,'retained')"
+        )
+        before = conn.execute("SELECT * FROM machine_process_memory_sample").fetchall()
+        assert (
+            load_machine_process_memory_samples(conn, refresh_id="retained")[
+                0
+            ].allocator_json
+            is None
+        )
+        apply_schema(conn)
+        apply_schema(conn)
+        names = [
+            column[0]
+            for column in conn.execute(
+                "SELECT * FROM machine_process_memory_sample LIMIT 0"
+            ).description
+        ]
+        assert names[-1] == "allocator_json"
+        after = conn.execute(
+            "SELECT * EXCLUDE (allocator_json) FROM machine_process_memory_sample"
+        ).fetchall()
+        assert after == before
+        assert conn.execute(
+            "SELECT allocator_json FROM machine_process_memory_sample"
+        ).fetchone() == (None,)
+
+
+@pytest.mark.parametrize("with_allocator", [False, True])
+def test_fast_process_memory_preserves_optional_allocator(tmp_path, with_allocator):
+    import json
+    import sqlite3
+
+    from lynchpin.analysis.active.substrate_promote_machine import _promote_machine_fast
+    from lynchpin.sources.machine_schema import EXPECTED_PROCESS_MEMORY_COLUMNS
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_process_memory_samples
+    from lynchpin.substrate.source_status import SourceSelection
+
+    names = list(EXPECTED_PROCESS_MEMORY_COLUMNS)
+    numeric = {
+        "schema_version",
+        "pid",
+        "process_start_time_ticks",
+        "rss_kb",
+        "pss_kb",
+        "pss_anon_kb",
+        "pss_file_kb",
+        "pss_shmem_kb",
+        "private_clean_kb",
+        "private_dirty_kb",
+        "shared_clean_kb",
+        "shared_dirty_kb",
+        "swap_kb",
+    }
+    values = {name: 0 if name in numeric else None for name in names}
+    values.update(
+        observed_at="2026-05-12T12:00:00+00:00",
+        host="fixture",
+        schema_version=6,
+        pid=7,
+        process_start_time_ticks=8,
+    )
+    observation = json.dumps(
+        {
+            "schema_version": 1,
+            "status": "available",
+            "allocator": {"allocated_bytes": 0},
+        }
+    )
+    if with_allocator:
+        names.append("allocator_json")
+        values["allocator_json"] = observation
+    source = tmp_path / "telemetry.sqlite"
+    with sqlite3.connect(source) as sqlite:
+        sqlite.execute(
+            "CREATE TABLE process_memory_sample ("
+            + ",".join(
+                f"{name} {'INTEGER' if name in numeric else 'TEXT'}" for name in names
+            )
+            + ")"
+        )
+        sqlite.execute(
+            "INSERT INTO process_memory_sample VALUES ("
+            + ",".join("?" for _ in names)
+            + ")",
+            [values[name] for name in names],
+        )
+    with connect(tmp_path / "substrate.duckdb") as conn:
+        apply_schema(conn)
+        counts = {}
+        _promote_machine_fast(
+            conn,
+            refresh_id="allocator",
+            sqlite_path=source,
+            window_start=date(2026, 5, 12),
+            window_end=date(2026, 5, 12),
+            counts=counts,
+            selection=SourceSelection.from_collection(
+                {"machine_process_memory_sample"}
+            ),
+        )
+        assert counts["machine_process_memory_sample"] == 1
+        loaded = load_machine_process_memory_samples(conn, refresh_id="allocator")
+        assert loaded[0].allocator_json == (observation if with_allocator else None)

@@ -273,6 +273,7 @@ class MachineProcessMemorySample:
     shared_clean_kb: int
     shared_dirty_kb: int
     swap_kb: int
+    allocator_json: str | None = None
 
 
 @dataclass(frozen=True)

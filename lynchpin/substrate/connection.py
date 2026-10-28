@@ -1947,6 +1947,11 @@ def _apply_schema_in_transaction(conn: "duckdb.DuckDBPyConnection") -> None:
             "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
             [str(SUBSTRATE_VERSION)],
         )
+    # Nullable observation payload: preserve historical rows and their lineage.
+    conn.execute(
+        "ALTER TABLE machine_process_memory_sample "
+        "ADD COLUMN IF NOT EXISTS allocator_json JSON"
+    )
     ensure_views(conn)
 
 

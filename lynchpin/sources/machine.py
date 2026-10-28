@@ -860,6 +860,7 @@ def process_memory_samples(
                     shared_clean_kb=int(row["shared_clean_kb"]),
                     shared_dirty_kb=int(row["shared_dirty_kb"]),
                     swap_kb=int(row["swap_kb"]),
+                    allocator_json=row["allocator_json"] if "allocator_json" in columns else None,
                 )
 
 

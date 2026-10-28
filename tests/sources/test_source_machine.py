@@ -307,6 +307,7 @@ def test_machine_source_reads_live_sqlite(monkeypatch, tmp_path):
         )
     )
     assert len(process_memory) == 1
+    assert process_memory[0].allocator_json is None
     assert process_memory[0].comm == "rustc"
     assert process_memory[0].unit == "session.scope"
     assert process_memory[0].pss_kb == 307200
@@ -431,3 +432,64 @@ def test_service_ndjson_datetime_bounds_preserve_exact_window(monkeypatch,tmp_pa
     monkeypatch.setattr(machine,"_load_machine_rows",rows)
     result=list(machine._service_states_from_ndjson(tmp_path/"fixture.ndjson",start=start,end=end))
     assert [row.observed_at for row in result]==[start,end]
+
+
+def test_optional_allocator_sqlite_and_ndjson_round_trip(tmp_path):
+    from dataclasses import asdict
+
+    from lynchpin.sources.machine_schema import EXPECTED_PROCESS_MEMORY_COLUMNS
+
+    db = tmp_path / "telemetry.sqlite"
+    names = EXPECTED_PROCESS_MEMORY_COLUMNS
+    numeric = {
+        "schema_version",
+        "pid",
+        "process_start_time_ticks",
+        "rss_kb",
+        "pss_kb",
+        "pss_anon_kb",
+        "pss_file_kb",
+        "pss_shmem_kb",
+        "private_clean_kb",
+        "private_dirty_kb",
+        "shared_clean_kb",
+        "shared_dirty_kb",
+        "swap_kb",
+    }
+    values = {name: 0 if name in numeric else None for name in names}
+    values.update(
+        observed_at="2026-05-12T12:00:00+00:00", host="fixture", schema_version=6, pid=7
+    )
+    observation = json.dumps(
+        {
+            "schema_version": 1,
+            "status": "available",
+            "allocator": {"allocated_bytes": 0},
+        }
+    )
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE process_memory_sample ("
+            + ",".join(
+                f"{name} {'INTEGER' if name in numeric else 'TEXT'}" for name in names
+            )
+            + ",allocator_json TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO process_memory_sample VALUES ("
+            + ",".join("?" for _ in range(len(names) + 1))
+            + ")",
+            [values[name] for name in names] + [observation],
+        )
+    sample = next(machine.process_memory_samples(path=db))
+    assert sample.allocator_json == observation
+    path = tmp_path / "process_memory_sample.ndjson"
+    encoded = machine.sample_to_json(sample)
+    legacy = dict(encoded)
+    legacy.pop("allocator_json")
+    path.write_text(json.dumps(encoded) + "\n" + json.dumps(legacy) + "\n")
+    restored = list(
+        machine._process_memory_samples_from_ndjson(path, start=None, end=None)
+    )
+    assert asdict(restored[0]) == asdict(sample)
+    assert restored[1].allocator_json is None
