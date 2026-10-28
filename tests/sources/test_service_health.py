@@ -141,7 +141,7 @@ def test_failed_state_opens_downtime_interval() -> None:
 def test_no_observations_yields_unobserved_interval() -> None:
     """A unit with no telemetry → single 'unobserved' interval covering
     the window. Caller decides how to treat it."""
-    unit = "polylogued.service"
+    unit = "activitywatch.service"
     intervals = list(downtime_intervals(
         [], window_start=W_START, window_end=W_END, units=(unit,),
     ))
@@ -168,16 +168,16 @@ def test_long_failure_without_samples_becomes_unobserved() -> None:
 
 def test_distinct_units_tracked_separately() -> None:
     """Failure of one unit must not affect another."""
-    aw, pl = "activitywatch.service", "polylogued.service"
+    aw, watcher = "activitywatch.service", "activitywatch-watcher-awatcher.service"
     states = [S(aw, t) for t in range(0, 1800, 30)] + [
         S(aw, 1800, active="failed", sub="failed"),
-    ] + [S(pl, t) for t in range(0, 3601, 30)]
+    ] + [S(watcher, t) for t in range(0, 3601, 30)]
     intervals = list(downtime_intervals(
-        states, window_start=W_START, window_end=W_END, units=(aw, pl),
+        states, window_start=W_START, window_end=W_END, units=(aw, watcher),
     ))
     by_unit = {i.unit: i for i in intervals}
     assert aw in by_unit
-    assert pl not in by_unit  # polylogued was fine, no interval
+    assert watcher not in by_unit  # the independent watcher remained running
 
 
 def test_capture_service_units_includes_expected_set() -> None:
@@ -185,7 +185,6 @@ def test_capture_service_units_includes_expected_set() -> None:
     expected = {
         "activitywatch.service",
         "activitywatch-watcher-awatcher.service",
-        "polylogued.service",
     }
     assert expected.issubset(set(CAPTURE_SERVICE_UNITS))
 
@@ -196,9 +195,9 @@ def test_uptime_summary_counts_unobserved_as_downtime() -> None:
     they want a different policy."""
     summary = service_uptime_summary(
         [], window_start=W_START, window_end=W_END,
-        units=("polylogued.service",),
+        units=("activitywatch.service",),
     )
-    assert summary["polylogued.service"]["uptime_fraction"] == 0.0
+    assert summary["activitywatch.service"]["uptime_fraction"] == 0.0
 
 
 def test_same_unit_across_managers_requires_identity_selection():

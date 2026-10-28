@@ -352,7 +352,6 @@ def main(argv: list[str] | None = None) -> int:
                             commit_facts_file=resolve_analysis_path("active_commit_facts.json"),
                             file_changes_file=resolve_analysis_path("active_file_change_facts.json"),
                             symbol_changes_file=resolve_analysis_path("active_symbol_changes.json"),
-                            ai_attribution_file=resolve_analysis_path("active_ai_attribution.json"),
                             refresh_id=publication_refresh_id,
                             window_start=date.fromisoformat(args.start),
                             # Only partitioned personal products inherit facts
@@ -497,8 +496,6 @@ def _record_incremental_phase(
         )
     generation.phase_evidence.append(payload)
     log_phase_evidence(measurement, metrics=metrics, evidence=evidence)
-
-
 
 
 def _incremental_source_tail(plan: Any, *, full_start: date, end: date) -> date:

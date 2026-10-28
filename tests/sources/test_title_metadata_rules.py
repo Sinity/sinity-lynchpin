@@ -26,12 +26,6 @@ def test_kitty_project_slug_alias():
     assert c.subject == "sinity-lynchpin"
 
 
-def test_kitty_polylogue_prefix_subproject_resolves():
-    c = classify_title_via_rules("kitty", "polylogue-845-daemon", "polylogue-845-daemon")
-    assert c is not None
-    assert c.subject == "polylogue"
-
-
 def test_kitty_unknown_single_token_is_none():
     # Single token that isn't a project slug → no match
     assert classify_title_via_rules("kitty", "totallyrandomstring", "totallyrandomstring") is None

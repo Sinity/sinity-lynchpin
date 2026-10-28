@@ -53,79 +53,6 @@ def load_source_co_occurrence(
 # ── cross_source_lag ──────────────────────────────────────────────────────────
 
 
-def load_attributed_commit_count(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-    project: str | None = None,
-) -> int:
-    """Return count of commits with non-NULL ai_attribution."""
-    proj_filter = "AND c.project = ?" if project else ""
-    params: list[Any] = [refresh_id]
-    if project:
-        params.append(project)
-    row = conn.execute(
-        f"""
-        SELECT COUNT(*)
-        FROM commit_fact c
-        WHERE c.refresh_id = ?
-          AND c.ai_attribution IS NOT NULL {proj_filter}
-        """,
-        params,
-    ).fetchone()
-    return row[0] if row else 0
-
-
-def load_ai_commit_lag_stats(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-    time_window_hours: int = 24,
-    project: str | None = None,
-) -> tuple[Any, ...] | None:
-    """Return (count, min_h, median_h, mean_h, max_h) lag stats between AI events and commits."""
-    proj_filter = "AND c.project = ?" if project else ""
-    params: list[Any] = [refresh_id, int(time_window_hours) * 3600]
-    if project:
-        params.append(project)
-
-    return conn.execute(
-        f"""
-        WITH candidate_paths AS (
-            SELECT
-                c.sha,
-                ABS(EXTRACT(EPOCH FROM c.authored_at - we.start_ts)) AS lag_seconds,
-                cp.commit_path,
-                ep.event_path
-            FROM commit_fact c
-            JOIN ai_work_event we
-              ON c.refresh_id = we.refresh_id
-             AND c.project = we.project
-            , UNNEST(c.paths) AS cp(commit_path)
-            , UNNEST(we.file_paths) AS ep(event_path)
-            WHERE c.refresh_id = ?
-              AND c.ai_attribution IS NOT NULL
-              AND we.start_ts IS NOT NULL
-              AND ABS(EXTRACT(EPOCH FROM c.authored_at - we.start_ts)) <= ?
-              AND len(c.paths) > 0
-              AND len(we.file_paths) > 0 {proj_filter}
-        ),
-        path_matches AS (
-            SELECT DISTINCT sha, lag_seconds
-            FROM candidate_paths
-            WHERE
-                ends_with(ltrim(event_path, '/'), ltrim(commit_path, '/'))
-                OR ends_with(ltrim(commit_path, '/'), ltrim(event_path, '/'))
-        )
-        SELECT COUNT(*),
-               ROUND(MIN(lag_seconds)/3600.0,1),
-               ROUND(QUANTILE_CONT(lag_seconds,0.5)/3600.0,1),
-               ROUND(AVG(lag_seconds)/3600.0,1),
-               ROUND(MAX(lag_seconds)/3600.0,1)
-        FROM path_matches
-        """,
-        params,
-    ).fetchone()
 
 
 # ── project_health ────────────────────────────────────────────────────────────
@@ -293,65 +220,6 @@ def load_commit_timestamps_in_range(
     ]
 
 
-def load_ai_work_event_timestamps_in_range(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-    start: date,
-    end: date,
-    project: str | None = None,
-) -> list[Any]:
-    """Return start_ts timestamps for ai_work_event rows in date range."""
-    proj_filter = " AND project = ?" if project else ""
-    params: list[Any] = [refresh_id, start, end]
-    if project:
-        params.append(project)
-    return [
-        r[0]
-        for r in conn.execute(
-            f"SELECT start_ts FROM ai_work_event "
-            f"WHERE refresh_id = ? AND start_ts::DATE BETWEEN ? AND ? "
-            f"AND start_ts IS NOT NULL{proj_filter}",
-            params,
-        ).fetchall()
-    ]
-
-
-def load_ai_session_timestamps_in_range(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-    start: date,
-    end: date,
-    project: str | None = None,
-) -> list[Any]:
-    """Return start_ts timestamps for evidence_node ai_session rows in date range."""
-    from lynchpin.substrate.graph import _logical_graph_relation
-
-    relation, params = _logical_graph_relation(
-        conn,
-        refresh_id=refresh_id,
-        table="evidence_node",
-        columns=("id", "kind", "start_ts", "project", "date"),
-        key_columns=("id",),
-    )
-    node_filter = ""
-    params.extend([start, end])
-    if project:
-        node_filter = " AND project = ?"
-        params.append(project)
-    return [
-        r[0]
-        for r in conn.execute(
-            f"SELECT start_ts FROM {relation} "
-            "WHERE kind = 'ai_session' "
-            "AND start_ts IS NOT NULL "
-            "AND start_ts::DATE BETWEEN ? AND ?" + node_filter,
-            params,
-        ).fetchall()
-    ]
-
-
 def load_pressure_timestamps_in_range(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -437,15 +305,11 @@ def load_activity_title_usage_by_dimension(
 __all__ = [
     "ACTIVITY_TITLE_DIMENSIONS",
     "load_source_co_occurrence",
-    "load_attributed_commit_count",
-    "load_ai_commit_lag_stats",
     "load_project_health_rows",
     "load_commit_rhythm_fingerprint",
     "load_operator_day_window",
     "load_operator_day_lag_correlation",
     "load_commit_timestamps_in_range",
-    "load_ai_work_event_timestamps_in_range",
-    "load_ai_session_timestamps_in_range",
     "load_pressure_timestamps_in_range",
     "load_activity_title_usage_by_dimension",
 ]

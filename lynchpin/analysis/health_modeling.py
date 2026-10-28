@@ -700,7 +700,7 @@ def residual_hrv_correlation(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Hourly aggregation (for joining with AW / polylogue / substance sources)
+# Hourly aggregation (for joining with AW / substance sources)
 # ══════════════════════════════════════════════════════════════════════════════
 
 

@@ -11,7 +11,6 @@ READERS = (
     reports.productivity_predictors_report,
     reports.substance_health_report,
     reports.burnout_warning_report,
-    reports.ai_session_efficiency_report,
 )
 
 

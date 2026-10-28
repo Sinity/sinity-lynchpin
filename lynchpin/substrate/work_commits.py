@@ -99,7 +99,7 @@ def read_commit_facts(
 
     Queries ``commit_fact`` and wraps results in
     ``{"commits": [...], "projects": [...], "window": {...}, "refresh_id": ...}``
-    so downstream consumers (ai_attribution, work_packages) see the same
+    so downstream consumers (work_packages) see the same
     structure they get from the JSON file.
 
     Each promotion stores a window-scoped copy of its commits under its own
@@ -248,7 +248,7 @@ _COMMIT_COLUMNS = (
     "lines_added", "lines_deleted", "lines_changed", "files_changed",
     "paths", "path_roots",
     "conventional_kind", "conventional_scope", "conventional_signature",
-    "breaking_change", "github_refs", "ai_attribution",
+    "breaking_change", "github_refs",
     "categories", "change_types", "classified_files_changed",
     "parent_count", "default_branch", "head",
 )
@@ -267,7 +267,7 @@ def promote_commits(
     ``project_lookup`` is called with the repo name; when omitted the repo name
     is used directly as project.  ``annotations`` is a mapping of commit sha →
     annotation dict (keys: conventional_kind, conventional_scope,
-    conventional_signature, breaking_change, github_refs, ai_attribution,
+    conventional_signature, breaking_change, github_refs,
     categories, change_types, classified_files_changed, parent_count,
     default_branch, head).
     """
@@ -281,8 +281,6 @@ def promote_commits(
         # DuckDB accepts a Python dict for STRUCT columns; ignore non-dicts.
         github_refs = github_refs_raw if isinstance(github_refs_raw, dict) else None
 
-        ai_attribution = a.get("ai_attribution")
-        ai_attribution_json = json.dumps(ai_attribution) if ai_attribution is not None else None
 
         categories_raw = a.get("categories")
         categories_json = json.dumps(categories_raw) if isinstance(categories_raw, dict) else "{}"
@@ -301,7 +299,6 @@ def promote_commits(
             a.get("conventional_signature"),
             bool(a.get("breaking_change", False)),
             github_refs,
-            ai_attribution_json,
             categories_json,
             change_types_json,
             int(classified_files) if classified_files is not None else 0,

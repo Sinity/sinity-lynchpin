@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, timedelta
 from typing import Iterator, Optional
 
 
@@ -352,108 +352,3 @@ def keystrokes_daily(
         })
         cur += timedelta(days=1)
     return out
-
-
-@dataclass(frozen=True)
-class AIToolAttributionComparison:
-    """Comparison of two AI-tool attribution methods for a window.
-
-    ``keystroke_buckets`` is what the AW-title classifier reports
-    (operator-direction keystrokes per tool).
-    ``polylogue_sessions`` is what polylogue's session archive reports
-    (sessions actually run, regardless of operator title-rewrite).
-    ``discrepancies`` lists tools where the two disagree by more than
-    a heuristic threshold — typically because the operator's window
-    title doesn't carry the tool name even though the tool was active.
-    """
-    start: date
-    end: date
-    keystroke_buckets: dict[str, int]   # tool -> total keystrokes
-    polylogue_sessions: dict[str, int]  # tool -> session count
-    discrepancies: list[dict]
-
-
-def compare_ai_tool_attribution(*, start: date, end: date) -> AIToolAttributionComparison:
-    """Compare AW-title vs polylogue session-archive AI-tool attribution.
-
-    Title-based classification undercounts codex by ~99% because codex sessions
-    typically don't rewrite the kitty title.
-
-    Flags a discrepancy when polylogue reports ≥10 sessions for a tool
-    in the window but the keystroke classifier shows 0 keystrokes for
-    the same tool name. Mismatch direction matters; the classifier
-    can also over-count if a window title incidentally matches a tool
-    keyword.
-    """
-    import sqlite3
-
-    from ..core.config import get_config
-
-    # Keystroke side
-    rollup = keystrokes_by(dimension="ai_tool", start=start, end=end)
-
-    # Polylogue side — direct read of the configured index DB. (The previous
-    # hardcoded ``captures/polylogue/polylogue.db`` path and ``conversations``
-    # table no longer exist; the function silently returned zero sessions and
-    # therefore never flagged a discrepancy.)
-    poly_db = get_config().polylogue_db
-    polylogue_counts: dict[str, int] = {}
-    if poly_db.exists():
-        conn = sqlite3.connect(f"file:{poly_db}?mode=ro", uri=True)
-        try:
-            start_ms = int(datetime.combine(start, time.min).timestamp() * 1000)
-            end_ms = int(datetime.combine(end, time.min).timestamp() * 1000)
-            rows = conn.execute(
-                """
-                SELECT origin, COUNT(*)
-                FROM sessions
-                WHERE created_at_ms >= ? AND created_at_ms < ?
-                GROUP BY origin
-                """,
-                [start_ms, end_ms],
-            ).fetchall()
-            polylogue_counts = dict(rows)
-        finally:
-            conn.close()
-
-    # The two vocabularies don't share names. Map polylogue session ``origin``
-    # → classifier ai_tool name where they correspond, then look for gaps.
-    poly_to_keystroke = {
-        "claude-code-session": "claude-code",
-        "codex-session": "codex",
-        "hermes-session": "hermes",
-        "antigravity-session": "antigravity",
-        "gemini-cli-session": "gemini-cli",
-    }
-
-    discrepancies = []
-    for poly_name, sess_count in polylogue_counts.items():
-        keystroke_name = poly_to_keystroke.get(poly_name)
-        if keystroke_name is None:
-            continue
-        keystrokes = rollup.buckets.get(keystroke_name, 0)
-        # Heuristic: each polylogue session is roughly comparable to ~1,000
-        # operator keystrokes (operator typing prompts/responses for ~minutes).
-        # If keystrokes/session is < ~10, the classifier is almost certainly
-        # missing this tool.
-        if sess_count >= 10 and (keystrokes / max(sess_count, 1)) < 10:
-            discrepancies.append({
-                "tool": poly_name,
-                "polylogue_sessions": sess_count,
-                "keystroke_classifier": keystrokes,
-                "keys_per_session": round(keystrokes / max(sess_count, 1), 1),
-                "reason": (
-                    f"polylogue saw {sess_count} sessions but the AW-title "
-                    f"classifier found only {keystrokes} operator keystrokes "
-                    f"(<10 keys/session). Likely cause: operator's sessions "
-                    f"don't rewrite the kitty title."
-                ),
-            })
-
-    return AIToolAttributionComparison(
-        start=start,
-        end=end,
-        keystroke_buckets=rollup.buckets,
-        polylogue_sessions=polylogue_counts,
-        discrepancies=discrepancies,
-    )

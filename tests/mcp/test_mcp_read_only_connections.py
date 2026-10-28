@@ -29,15 +29,11 @@ def test_nominal_mcp_read_routes_open_read_only_connections(
     from lynchpin.mcp.tools.public import _project_day_timeline_meta
     from lynchpin.mcp.tools.views import (
         closure_chain_walks,
-        file_overlap_edges,
         project_day_correlations,
-        symbol_overlap_edges,
     )
 
     assert project_day_correlations(refresh_id="missing") == []
     assert closure_chain_walks(refresh_id="missing") == []
-    assert file_overlap_edges(we_refresh_id="missing", commit_refresh_id="missing") == []
-    assert symbol_overlap_edges(we_refresh_id="missing", commit_refresh_id="missing") == []
     _project_day_timeline_meta(refresh_id="missing", start=None, end=None, project=None)
 
     assert calls and all(calls)

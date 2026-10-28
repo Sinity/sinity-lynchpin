@@ -11,7 +11,6 @@ from .substrate_promote_loaders import (
     _load_commit_facts,
     _load_file_change_facts,
     _load_symbol_change_rows,
-    _merge_ai_attribution,
 )
 from lynchpin.substrate.source_status import (
     SOURCE_COMMITS,
@@ -31,7 +30,6 @@ def promote_artifact_sources(
     commit_facts_file: str,
     file_changes_file: str,
     symbol_changes_file: str,
-    ai_attribution_file: str | None,
     counts: dict[str, int],
     selection: SourceSelection,
 ) -> None:
@@ -47,7 +45,6 @@ def promote_artifact_sources(
         hydration_failed = False
         try:
             commit_facts, commit_annotations = _load_commit_facts(commit_facts_file)
-            _merge_ai_attribution(commit_annotations, ai_attribution_file)
         except Exception as exc:
             hydration_failed = True
             log.warning("substrate_promote: commit facts hydration failed: %s", exc)

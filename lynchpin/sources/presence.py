@@ -2,9 +2,8 @@
 
 A single source of truth for "was the operator present and active during
 hour H" — combining AW AFK status (which we know is broken for 2026),
-keylog presses, AW window events, and (optionally) polylogue session
-activity. This abstracts AW as one input rather than treating its
-``not-afk`` status as ground truth.
+keylog presses and AW window events. AW is one input; its ``not-afk`` status
+does not establish presence on its own.
 
 Why this exists:
     AW AFK data is unreliable in 2026. Specifically:
@@ -37,7 +36,6 @@ The ``derived_state`` is one of:
                           keylog<10. Reading / watching / agentic work.
     "afk_confirmed"     — aw_afk_sec dominant AND keylog<5
     "data_gap"          — neither AW nor keylog present
-    "ai_session_driven" — caller may compute this with polylogue context
 
 Confidence:
     high   — multiple sources agree

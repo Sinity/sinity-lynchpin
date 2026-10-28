@@ -338,8 +338,6 @@ def default_signal_specs(*, ensure_inputs: bool = True) -> tuple[SignalSpec, ...
             "Shell command volume per day",
             lambda start, end: _load_command_count(start, end, ensure=ensure_inputs),
         ),
-        SignalSpec("ai_session_count", "Polylogue AI sessions per day", _load_ai_sessions),
-        SignalSpec("ai_engaged_minutes", "Polylogue engaged minutes per day", _load_ai_engaged),
         SignalSpec(
             "web_visit_count",
             "Canonical browser history visits per day",
@@ -428,20 +426,6 @@ def _load_command_count(start: date, end: date, *, ensure: bool = True) -> dict[
         row.date: float(row.command_count)
         for row in _terminal_daily_rows(start, end, ensure=ensure)
     }
-
-
-def _load_ai_sessions(start: date, end: date) -> dict[date, float]:
-    by_day: dict[date, float] = defaultdict(float)
-    for row in _polylogue_daily_rows(start, end):
-        by_day[row.date] += row.session_count
-    return dict(by_day)
-
-
-def _load_ai_engaged(start: date, end: date) -> dict[date, float]:
-    by_day: dict[date, float] = defaultdict(float)
-    for row in _polylogue_daily_rows(start, end):
-        by_day[row.date] += row.engaged_minutes
-    return dict(by_day)
 
 
 def _load_web_visits(start: date, end: date, *, ensure: bool = True) -> dict[date, float]:
@@ -537,12 +521,6 @@ def _terminal_daily_rows(start: date, end: date, ensure: bool = True) -> tuple[A
     from .terminal import daily_terminal_activity
 
     return _observed_rows(("terminal", start, end, ensure), lambda: daily_terminal_activity(start=start, end=end, ensure=ensure))
-
-
-def _polylogue_daily_rows(start: date, end: date) -> tuple[Any, ...]:
-    from .polylogue import daily_activity
-
-    return _observed_rows(("polylogue", start, end), lambda: daily_activity(start=start, end=end))
 
 
 def _health_daily_rows(start: date, end: date) -> tuple[Any, ...]:

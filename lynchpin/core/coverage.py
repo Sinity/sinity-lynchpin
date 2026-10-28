@@ -71,8 +71,6 @@ CAPTURE_SOURCES: frozenset[str] = frozenset(
         "asciinema",
         # Raw log file from sinex/operator — continuous capture
         "raw_log",
-        # Polylogue archive — daemon tails ~/.claude/projects/ continuously
-        "polylogue",
         # Codex session archive — grows with each session
         "codex",
         # Clipboard live file — continuous capture

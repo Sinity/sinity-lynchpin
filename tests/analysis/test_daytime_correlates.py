@@ -43,7 +43,6 @@ def _patch_loaders(
     spotify: dict[date, float] | None = None,
     typing: dict[str, dict[date, float]] | None = None,
     ytmusic: dict[date, float] | None = None,
-    ai_load: dict[str, dict[date, float]] | None = None,
 ) -> None:
     empty_aw = {"deep_work_min": {}, "active_hours": {}, "fragmentation": {}}
     monkeypatch.setattr(dc, "_aw_loader", lambda: aw if aw is not None else empty_aw)
@@ -56,7 +55,6 @@ def _patch_loaders(
     monkeypatch.setattr(dc, "_spotify_loader", lambda: spotify or {})
     monkeypatch.setattr(dc, "_typing_loader", lambda s, e: typing or {})
     monkeypatch.setattr(dc, "_ytmusic_loader", lambda s, e: ytmusic or {})
-    monkeypatch.setattr(dc, "_ai_load_loader", lambda: ai_load or {})
 
 
 def test_planted_substance_focus_signal_survives_fdr(
@@ -213,37 +211,23 @@ def test_min_detectable_r_monotone() -> None:
     assert dc.min_detectable_r(3) == 1.0
 
 
-def test_ytmusic_and_ai_load_families(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The revived music family and the AI-load family run through the same
-    production route (pair construction, corrected p, one FDR family)."""
+def test_ytmusic_focus_family(monkeypatch: pytest.MonkeyPatch) -> None:
     rng = random.Random(77)
     days = _days()
-    deep = {d: rng.uniform(0, 240) for d in days}
-    plays = {}
-    ai_sessions = {}
-    for i, d in enumerate(days):
-        plays[d] = float(rng.randint(0, 120))
-        # planted: heavy AI-delegation days have low fragmentation
-        ai_sessions[d] = float(rng.randint(0, 90))
-    frag = {d: max(0.0, 1.0 - ai_sessions[d] / 100.0 + rng.uniform(-0.05, 0.05)) for d in days}
+    plays = {d: float(rng.randint(0, 120)) for d in days}
+    deep = {d: 2 * plays[d] + rng.uniform(-5, 5) for d in days}
     _patch_loaders(
         monkeypatch,
-        aw={"deep_work_min": deep, "fragmentation": frag, "active_hours": {}},
+        aw={"deep_work_min": deep, "fragmentation": {}, "active_hours": {}},
         ytmusic=plays,
-        ai_load={"ai_sessions": ai_sessions, "ai_user_words": {}},
     )
 
     report = analyze(days[0], days[-1])
 
-    fams = {f.name: f for f in report.families}
-    assert fams["ytmusic_focus"].status == "computed"
-    assert fams["ai_load"].status == "computed"
-    planted = [
-        c for c in report.correlations
-        if c.family == "ai_load" and c.predictor == "ai_sessions"
-        and c.outcome == "fragmentation" and c.significant
-    ]
-    assert planted and planted[0].r < -0.5
+    families = {family.name: family for family in report.families}
+    assert families["ytmusic_focus"].status == "computed"
+    correlations = [row for row in report.correlations if row.family == "ytmusic_focus" and row.significant]
+    assert correlations and any(row.r > 0.8 for row in correlations)
 
 
 def test_typing_dynamics_family_pairs(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -54,7 +54,7 @@ def test_snapshot_promotion_counts_keep_unknown_for_partial_sources(
             ).fetchone()
             typed_statuses = conn.execute(
                 "SELECT source, status FROM substrate_source_status WHERE refresh_id = ? "
-                "AND source IN ('commits', 'file_changes', 'symbols', 'ai_work_events', "
+                "AND source IN ('commits', 'file_changes', 'symbols', "
                 "'work_observations') ORDER BY source",
                 [refresh_id],
             ).fetchall()
@@ -62,7 +62,6 @@ def test_snapshot_promotion_counts_keep_unknown_for_partial_sources(
         connection._substrate_path_override.reset(token)
     assert status == "degraded"
     assert typed_statuses == [
-        ("ai_work_events", "unavailable"),
         ("commits", "unavailable"),
         ("file_changes", "unavailable"),
         ("symbols", "unavailable"),
@@ -656,9 +655,9 @@ def test_selected_plan_rejects_unknown_products(monkeypatch):
 
 @pytest.mark.parametrize(
     ("source", "expected"),
-    (("polylogue_verification", "degraded"), ("polylogue", "error"), ("evidence_graph", "error"), ("unknown_source", "error")),
+    (("evidence_graph", "error"), ("unknown_source", "error")),
 )
-def test_snapshot_promotion_preserves_optional_errors_without_vetoing_graph(monkeypatch, tmp_path, source, expected):
+def test_snapshot_promotion_preserves_source_errors_without_vetoing_graph(monkeypatch, tmp_path, source, expected):
     from lynchpin.cli import substrate_snapshot
     import lynchpin.substrate.connection as connection
 

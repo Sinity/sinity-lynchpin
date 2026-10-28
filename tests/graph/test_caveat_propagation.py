@@ -21,19 +21,19 @@ def _caveat(source: str, status: str, message: str) -> EvidenceCaveat:
 
 
 def test_propagate_caveats_dedups_across_sources():
-    a = (_caveat("polylogue", "partial", "stub"),)
-    b = (_caveat("polylogue", "partial", "stub"), _caveat("git", "blocked", "60d"))
+    a = (_caveat("activitywatch", "partial", "stub"),)
+    b = (_caveat("activitywatch", "partial", "stub"), _caveat("git", "blocked", "60d"))
     out = propagate_caveats(a, b)
     assert len(out) == 2
-    assert {(c.source, c.status) for c in out} == {("polylogue", "partial"), ("git", "blocked")}
+    assert {(c.source, c.status) for c in out} == {("activitywatch", "partial"), ("git", "blocked")}
 
 
 def test_propagate_caveats_preserves_order_first_seen():
     a = (_caveat("git", "blocked", "old"),)
-    b = (_caveat("polylogue", "partial", "x"),)
+    b = (_caveat("activitywatch", "partial", "x"),)
     out = propagate_caveats(a, b)
     assert out[0].source == "git"
-    assert out[1].source == "polylogue"
+    assert out[1].source == "activitywatch"
 
 
 def test_degrade_confidence_no_caveats_returns_base():
@@ -42,13 +42,13 @@ def test_degrade_confidence_no_caveats_returns_base():
 
 def test_degrade_confidence_partial_caveat_dampens():
     # 0.85 × 0.90 = 0.765
-    out = degrade_confidence(0.85, (_caveat("polylogue", "partial", "x"),))
+    out = degrade_confidence(0.85, (_caveat("activitywatch", "partial", "x"),))
     assert abs(out - 0.765) < 1e-6
 
 
 def test_degrade_confidence_compounds_across_layers():
     caveats = (
-        _caveat("polylogue", "partial", "x"),
+        _caveat("terminal", "partial", "x"),
         _caveat("git", "partial", "y"),
         _caveat("activitywatch", "partial", "z"),
     )
@@ -65,9 +65,9 @@ def test_degrade_confidence_clamps_at_floor():
 
 def test_caveat_summary_counts_distinct_statuses():
     caveats = (
-        _caveat("polylogue", "partial", "a"),
+        _caveat("activitywatch", "partial", "a"),
         _caveat("git", "partial", "b"),
-        _caveat("polylogue", "blocked", "c"),
+        _caveat("activitywatch", "blocked", "c"),
     )
     summary = caveat_summary(caveats)
     assert summary == {"partial": 2, "blocked": 1}
@@ -84,53 +84,50 @@ def _node(*, node_id: str, kind: str, start: datetime, project: str = "demo",
 
 def test_chain_carries_caveats_from_all_nodes():
     base = datetime(2026, 5, 7, 12, tzinfo=UTC)
-    we = _node(
-        node_id="we1", kind="ai_work_event", start=base,
-        payload={"kind": "implementation", "kind_tier": "high",
-                 "file_paths": ["src/foo.py"]},
-        caveats=(_caveat("polylogue", "partial", "Work-event labels heuristic"),),
+    focus = _node(
+        node_id="focus1", kind="deep_work_block", start=base,
+        payload={"duration_s": 600},
+        caveats=(_caveat("activitywatch", "partial", "Focus classification is heuristic"),),
     )
     commit = _node(
         node_id="c1", kind="commit", start=base + timedelta(hours=1),
         payload={"paths": ("src/foo.py",), "conventional_kind": "feat"},
         caveats=(_caveat("git", "partial", "co-authored-by trailer is incomplete"),),
     )
-    chains = detect_chains([we, commit])
-    we_to_commit = [c for c in chains if c.chain_type == "ai_work_event_to_commit"]
-    assert len(we_to_commit) == 1
-    chain = we_to_commit[0]
+    chains = detect_chains([focus, commit])
+    focus_to_commit = [c for c in chains if c.chain_type == "deep_work_delivery"]
+    assert len(focus_to_commit) == 1
+    chain = focus_to_commit[0]
     sources = {c.source for c in chain.caveats}
-    assert "polylogue" in sources
+    assert "activitywatch" in sources
     assert "git" in sources
 
 
 def test_chain_confidence_degrades_when_nodes_have_caveats():
     base = datetime(2026, 5, 7, 12, tzinfo=UTC)
     # Two chains: one with caveats on both nodes, one without.
-    we_clean = _node(
-        node_id="we_clean", kind="ai_work_event", start=base,
-        payload={"kind": "implementation", "kind_tier": "high",
-                 "file_paths": ["src/clean.py"]},
+    focus_clean = _node(
+        node_id="focus_clean", kind="deep_work_block", start=base,
+        payload={"duration_s": 600},
     )
     commit_clean = _node(
         node_id="c_clean", kind="commit", start=base + timedelta(hours=1),
         payload={"paths": ("src/clean.py",), "conventional_kind": "feat"},
     )
-    we_dirty = _node(
-        node_id="we_dirty", kind="ai_work_event", start=base + timedelta(hours=2),
-        payload={"kind": "implementation", "kind_tier": "high",
-                 "file_paths": ["src/dirty.py"]},
-        caveats=(_caveat("polylogue", "partial", "x"),),
+    focus_dirty = _node(
+        node_id="focus_dirty", kind="deep_work_block", start=base + timedelta(hours=2),
+        payload={"duration_s": 600},
+        caveats=(_caveat("activitywatch", "partial", "x"),),
     )
     commit_dirty = _node(
         node_id="c_dirty", kind="commit", start=base + timedelta(hours=3),
         payload={"paths": ("src/dirty.py",), "conventional_kind": "feat"},
         caveats=(_caveat("git", "blocked", "old"),),
     )
-    chains = detect_chains([we_clean, commit_clean, we_dirty, commit_dirty])
-    by_id = {c.id: c for c in chains if c.chain_type == "ai_work_event_to_commit"}
-    clean_chain = next(c for c in by_id.values() if "we_clean" in c.node_ids)
-    dirty_chain = next(c for c in by_id.values() if "we_dirty" in c.node_ids)
+    chains = detect_chains([focus_clean, commit_clean, focus_dirty, commit_dirty])
+    by_id = {c.id: c for c in chains if c.chain_type == "deep_work_delivery"}
+    clean_chain = next(c for c in by_id.values() if "focus_clean" in c.node_ids)
+    dirty_chain = next(c for c in by_id.values() if "focus_dirty" in c.node_ids)
     # Clean chain: no caveats → confidence == base
     assert clean_chain.payload["caveat_count"] == 0
     assert clean_chain.confidence == clean_chain.payload["base_confidence"]

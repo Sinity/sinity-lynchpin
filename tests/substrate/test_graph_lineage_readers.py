@@ -91,7 +91,7 @@ def test_graph_readers_use_complete_overlay_and_shadow_replacements(tmp_path) ->
         # Historical rows survive the tail, while the shared key is replaced.
         for day in (date(2026, 5, 1), date(2026, 5, 2), date(2026, 5, 3)):
             _node(conn, "r0", f"a-{day}", "commit", day, source="git")
-            _node(conn, "r0", f"b-{day}", "ai_work_event", day, source="polylogue")
+            _node(conn, "r0", f"b-{day}", "raw_log", day, source="raw_log")
         _node(conn, "r0", "shared", "commit", date(2026, 5, 3), source="old")
         _node(conn, "r1", "shared", "github_issue", TAIL, source="new")
         _node(conn, "r1", "tail", "commit", date(2026, 5, 6), source="git")
@@ -113,7 +113,7 @@ def test_graph_readers_use_complete_overlay_and_shadow_replacements(tmp_path) ->
 
         cooccurrence = load_source_co_occurrence(conn, refresh_id="r1")
         assert any(
-            row[0:2] == ("git", "polylogue") and row[2] == 3 for row in cooccurrence
+            row[0:2] == ("git", "raw_log") and row[2] == 3 for row in cooccurrence
         )
 
         boundary = load_evidence_graph_boundary_nodes(

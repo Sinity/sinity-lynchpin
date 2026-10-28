@@ -10,7 +10,6 @@ from typing import Any
 from lynchpin.sources.campaign import (
     read_batches,
     read_native_evidence,
-    read_session_evidence,
     revision,
 )
 
@@ -648,7 +647,6 @@ def campaign_evidence(
     runtime_snapshot: dict[str, Any] | None = None,
     native_evidence_snapshot: dict[str, Any] | None = None,
     refresh_id: str | None = None,
-    session_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Join explicit Beads obligations to owner-published runtime evidence."""
     prefix = f"sinnix://projects/{project}/beads/"
@@ -884,34 +882,6 @@ def campaign_evidence(
                 "gaps": gaps,
             }
         )
-    session_refs = [
-        ref
-        for item in items
-        for attempt in item["attempts"]
-        for ref in (attempt["parent_session_ref"], attempt["child_session_ref"])
-        if isinstance(ref, str)
-    ]
-    sessions = (
-        session_snapshot
-        if session_snapshot is not None
-        else read_session_evidence(session_refs)
-    )
-    sources["polylogue"] = _source(sessions, "polylogue")
-    session_map = {
-        row.get("ref"): row.get("evidence") for row in _rows(sessions.get("sessions"))
-    }
-    for item in items:
-        for attempt in item["attempts"]:
-            attempt["archive_observations"] = [
-                {
-                    "session_ref": ref,
-                    "correlation_authority": "worker_claim",
-                    "evidence_owner": "polylogue",
-                    "evidence": session_map[ref],
-                }
-                for ref in (attempt["parent_session_ref"], attempt["child_session_ref"])
-                if ref in session_map
-            ]
     complete_scope = snapshot.get("complete") is True and all(
         ref in tasks for ref in bead_refs
     )
@@ -938,7 +908,6 @@ def campaign_evidence(
             "evidence_cutoff": cutoff.isoformat() if cutoff else None,
         },
         "sources": sources,
-        "session_evidence": sessions.get("sessions", []),
         "counts": {
             "observed": len(items),
             "task_closed": sum(i["task_status"] == "closed" for i in items),

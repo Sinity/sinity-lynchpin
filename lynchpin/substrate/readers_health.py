@@ -147,85 +147,6 @@ def load_evidence_source_confidence_rows(
     return rows
 
 
-# ── kind_audit ────────────────────────────────────────────────────────────────
-
-
-def load_ai_work_event_count(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-) -> int:
-    """Return total row count for ai_work_event at refresh_id."""
-    row = conn.execute(
-        "SELECT COUNT(*) FROM ai_work_event WHERE refresh_id = ?",
-        [refresh_id],
-    ).fetchone()
-    return row[0] if row else 0
-
-
-def load_ai_work_event_tier_distribution(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-) -> list[tuple[Any, ...]]:
-    """Return (kind_tier, count) pairs."""
-    return conn.execute(
-        "SELECT kind_tier, COUNT(*) FROM ai_work_event "
-        "WHERE refresh_id = ? GROUP BY kind_tier",
-        [refresh_id],
-    ).fetchall()
-
-
-def load_ai_work_event_source_distribution(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-) -> list[tuple[Any, ...]]:
-    """Return (kind_source, count) pairs."""
-    return conn.execute(
-        "SELECT kind_source, COUNT(*) FROM ai_work_event "
-        "WHERE refresh_id = ? GROUP BY kind_source",
-        [refresh_id],
-    ).fetchall()
-
-
-def load_ai_work_event_disagreements(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-) -> list[tuple[Any, ...]]:
-    """Return top-10 (kind, source_kind, overlay_kind, count) disagreement rows."""
-    return conn.execute(
-        """
-        SELECT kind, source_kind, overlay_kind, COUNT(*) AS cnt
-        FROM ai_work_event
-        WHERE refresh_id = ?
-          AND source_kind IS NOT NULL
-          AND overlay_kind IS NOT NULL
-          AND source_kind != overlay_kind
-        GROUP BY kind, source_kind, overlay_kind
-        ORDER BY cnt DESC LIMIT 10
-        """,
-        [refresh_id],
-    ).fetchall()
-
-
-def load_ai_work_event_per_kind_confidence(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-) -> list[tuple[Any, ...]]:
-    """Return top-20 (kind, count, avg_confidence) rows."""
-    return conn.execute(
-        """
-        SELECT kind, COUNT(*) AS cnt,
-               ROUND(AVG(kind_confidence), 2) AS avg_conf
-        FROM ai_work_event
-        WHERE refresh_id = ? AND kind IS NOT NULL
-        GROUP BY kind ORDER BY cnt DESC LIMIT 20
-        """,
-        [refresh_id],
-    ).fetchall()
 
 
 # ── evidence_confidence ───────────────────────────────────────────────────────
@@ -268,7 +189,7 @@ def load_project_day_anomaly_rows(
     *,
     refresh_id: str,
 ) -> list[tuple[Any, ...]]:
-    """Return (project, date, commit_count, ai_work_event_count, focus_seconds, source_count)."""
+    """Return (project, date, commit_count, focus_seconds, source_count)."""
     from lynchpin.substrate.graph import _logical_graph_relation
 
     relation, params = _logical_graph_relation(
@@ -279,7 +200,6 @@ def load_project_day_anomaly_rows(
             "project",
             "date",
             "commit_count",
-            "ai_work_event_count",
             "focus_seconds",
             "source_count",
         ),
@@ -287,7 +207,7 @@ def load_project_day_anomaly_rows(
     )
     return conn.execute(
         f"""
-        SELECT project, date, commit_count, ai_work_event_count,
+        SELECT project, date, commit_count,
                focus_seconds, source_count
         FROM {relation}
         WHERE source_count >= 1
@@ -321,7 +241,6 @@ def load_source_status_by_refresh(
     ).fetchall()
 
 
-# ── cleanup_period_detect ─────────────────────────────────────────────────────
 
 
 def load_commits_by_month(
@@ -347,42 +266,13 @@ def load_commits_by_month(
     return conn.execute(sql, params).fetchall()
 
 
-def load_ai_messages_by_month(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    start: date,
-    end: date,
-    project: str | None = None,
-) -> list[tuple[Any, ...]]:
-    """Return (year_month, ai_messages) from project_day_correlation."""
-    sql = """
-        SELECT
-            strftime('%Y-%m', date) as year_month,
-            SUM(ai_work_event_count) as ai_messages
-        FROM project_day_correlation
-        WHERE date >= ? AND date <= ?
-    """
-    params: list[Any] = [start, end]
-    if project:
-        sql += " AND project = ?"
-        params.append(project)
-    sql += " GROUP BY year_month ORDER BY year_month"
-    return conn.execute(sql, params).fetchall()
-
-
 __all__ = [
     "load_source_gap_rows",
     "load_evidence_node_by_source",
     "load_source_status_map",
-    "load_ai_work_event_count",
-    "load_ai_work_event_tier_distribution",
-    "load_ai_work_event_source_distribution",
-    "load_ai_work_event_disagreements",
-    "load_ai_work_event_per_kind_confidence",
     "load_evidence_node_source_caveats",
     "load_project_day_anomaly_rows",
     "load_ordered_refresh_ids",
     "load_source_status_by_refresh",
     "load_commits_by_month",
-    "load_ai_messages_by_month",
 ]

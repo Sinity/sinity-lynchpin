@@ -21,10 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-_SINNIX_POLYLOGUE_INDEX_DB = Path("/realm/state/polylogue/index.db")
 # Placeholder for capture roots whose placement registry is unavailable.
 _UNRESOLVED_CAPTURE_ROOT = Path("/nonexistent/lynchpin-unresolved-capture-root")
-
 
 
 def _capture_path(data_root: Path, registry: Path, lane: str) -> Path:
@@ -72,13 +70,8 @@ class LynchpinConfig:
     webhistory_dir: Path
     webhistory_ndjson: Optional[Path]
     sleep_jsonl: Path
-    codex_sessions_root: Path
     reddit_export_dir: Optional[Path]
     spotify_root: Path
-    polylogue_root: Path
-    polylogue_archive_root: Path
-    polylogue_db: Path
-    polylogue_project_root: Path
     fbmessenger_gdpr_root: Path
     fbmessenger_db: Path
     asciinema_root: Path
@@ -151,14 +144,8 @@ class LynchpinConfig:
             "git_baseline": (self.baseline_dir / "git_numstat.jsonl").exists() if self.baseline_dir.exists() else False,
             "webhistory": self.webhistory_ndjson is not None and self.webhistory_ndjson.exists(),
             "sleep": self.sleep_jsonl.exists(),
-            "codex": self.codex_sessions_root.exists(),
             "reddit": self.reddit_export_dir is not None and self.reddit_export_dir.exists(),
             "spotify": self.spotify_root.exists(),
-            "polylogue": (
-                self.polylogue_db.exists()
-                or self.polylogue_root.exists()
-                or self.polylogue_archive_root.exists()
-            ),
             "fbmessenger": self.fbmessenger_gdpr_root.exists() or Path(self.fbmessenger_db).exists(),
             "asciinema": self.asciinema_root.exists(),
             "keylog": (self.keylog_root / "logs").exists(),
@@ -288,7 +275,6 @@ class LynchpinConfig:
         webhistory_ndjson = webhistory_ndjson_path
 
         sleep_jsonl = Path(os.environ.get("LYNCHPIN_SLEEP_JSONL", health_root / "processed/sleep_merged.jsonl"))
-        codex_sessions_root = Path(os.environ.get("LYNCHPIN_CODEX_ROOT", "~/.codex/sessions")).expanduser()
 
         reddit_export_dir = _resolve_reddit_export(
             os.environ.get("LYNCHPIN_REDDIT_EXPORT_DIR"), data_root / "account/reddit/processed"
@@ -296,14 +282,6 @@ class LynchpinConfig:
         spotify_root = _resolve_spotify_export(Path(os.environ.get(
             "LYNCHPIN_SPOTIFY_ROOT", data_root / "account/spotify/processed"
         )))
-        polylogue_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ROOT", data_root / "state/polylogue/markdown"))
-        polylogue_archive_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ARCHIVE_ROOT", data_root / "state/polylogue"))
-        xdg_data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")).expanduser()
-        polylogue_db = _default_polylogue_db(xdg_data_home)
-        polylogue_project_root = Path(os.environ.get(
-            "LYNCHPIN_POLYLOGUE_PROJECT_ROOT",
-            os.environ.get("POLYLOGUE_ROOT", "/realm/project/polylogue/repo"),
-        )).expanduser()
         fbmessenger_gdpr_root = Path(os.environ.get(
             "LYNCHPIN_FBMESSENGER_GDPR", accounts_root / "facebook-messenger/processed/gdpr"
         ))
@@ -450,11 +428,8 @@ class LynchpinConfig:
             atuin_db=atuin_db, baseline_dir=baseline_dir,
             webhistory_raw_dir=webhistory_raw_dir, webhistory_dir=webhistory_dir,
             webhistory_ndjson=webhistory_ndjson, sleep_jsonl=sleep_jsonl,
-            codex_sessions_root=codex_sessions_root, reddit_export_dir=reddit_export_dir,
-            spotify_root=spotify_root, polylogue_root=polylogue_root,
-            polylogue_archive_root=polylogue_archive_root,
-            polylogue_db=polylogue_db,
-            polylogue_project_root=polylogue_project_root,
+            reddit_export_dir=reddit_export_dir,
+            spotify_root=spotify_root,
             fbmessenger_gdpr_root=fbmessenger_gdpr_root, fbmessenger_db=fbmessenger_db,
             asciinema_root=asciinema_root, audio_root=audio_root,
             screenshot_root=screenshot_root, keylog_root=keylog_root,
@@ -524,27 +499,6 @@ def _non_legacy_generated_path(env_value: str | None, default: Path) -> Path:
     if "__lynchpin_exported" in candidate.parts:
         return Path(default)
     return candidate
-
-
-def _default_polylogue_db(
-    xdg_data_home: Path,
-    *,
-    sinnix_index_db: Path = _SINNIX_POLYLOGUE_INDEX_DB,
-) -> Path:
-    for env_name in ("LYNCHPIN_POLYLOGUE_DB", "POLYLOGUE_DB_PATH"):
-        env_value = os.environ.get(env_name)
-        if env_value:
-            return Path(env_value).expanduser()
-
-    candidates = (
-        sinnix_index_db,
-        xdg_data_home / "polylogue" / "index.db",
-        xdg_data_home / "polylogue" / "polylogue.db",
-    )
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate.expanduser()
-    return candidates[-1].expanduser()
 
 
 def resolve_latest_dated_dir(root: Path, ignore: Optional[set[str]] = None) -> Optional[Path]:

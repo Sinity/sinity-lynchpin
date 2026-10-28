@@ -24,13 +24,9 @@ def application_health_report(*, cfg: Any = None) -> tuple[dict[str, Any], ...]:
     if cfg.sinex_health_ca_cert is not None:
         sinex += ["--ca-cert", str(cfg.sinex_health_ca_cert)]
     sinex += ["runtime", "health"]
-    observations = []
-    for name, argv in (("sinex", sinex), ("polylogue", ["polylogue", "status", "--json"])):
-        observation = _probe(name, argv, timeout)
-        observation["target"] = str(cfg.sinex_runtime_target) if name == "sinex" and cfg.sinex_runtime_target is not None else None
-        observations.append(observation)
-    return tuple(observations)
-
+    observation = _probe("sinex", sinex, timeout)
+    observation["target"] = str(cfg.sinex_runtime_target) if cfg.sinex_runtime_target is not None else None
+    return (observation,)
 
 
 def _probe(application: str, argv: list[str], timeout: float) -> dict[str, Any]:
@@ -51,25 +47,19 @@ def _probe(application: str, argv: list[str], timeout: float) -> dict[str, Any]:
         payload = json.loads(completed.stdout)
         if not isinstance(payload, dict):
             raise ValueError("health response is not an object")
-        if application == "sinex":
-            view = payload.get("payload", {})
-            if view.get("schema_version") != "sinex.runtime-health/v1":
-                raise ValueError("unsupported Sinex health schema")
-            health = view.get("health", {})
-            if not isinstance(health.get("healthy"), bool):
-                raise ValueError("Sinex healthy flag is missing or invalid")
-            state = "healthy" if health["healthy"] else "degraded"
-            details = {key: health.get(key) for key in ("healthy", "serving", "status")}
-            details.update({key: payload.get(key) for key in ("runtime_target", "source_surface", "generated_at")})
-        else:
-            if not isinstance(payload.get("ok"), bool) or not isinstance(payload.get("source"), str) or not isinstance(payload.get("daemon_liveness"), bool):
-                raise ValueError("Polylogue health fields are missing or invalid")
-            state = "unavailable" if payload["daemon_liveness"] is False else "healthy" if payload["ok"] else "degraded"
-            details = {key: payload.get(key) for key in ("ok", "source", "daemon_liveness")}
+        view = payload.get("payload", {})
+        if view.get("schema_version") != "sinex.runtime-health/v1":
+            raise ValueError("unsupported Sinex health schema")
+        health = view.get("health", {})
+        if not isinstance(health.get("healthy"), bool):
+            raise ValueError("Sinex healthy flag is missing or invalid")
+        state = "healthy" if health["healthy"] else "degraded"
+        details = {key: health.get(key) for key in ("healthy", "serving", "status")}
+        details.update({key: payload.get(key) for key in ("runtime_target", "source_surface", "generated_at")})
         if completed.returncode != 0 and state == "healthy":
             raise ValueError("failed health command reported healthy")
     except (ValueError, AttributeError, TypeError) as exc:
         error = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", completed.stderr).strip()[:400]
         return {**result, "reason": f"invalid or unavailable health response: {exc}" + (f"; {error}" if error else "")}
     return {**result, "probe_status": "available", "health": state,
-            "reason": "application reports " + state, "details": details}
+            "reason": "status probe indicates " + state, "details": details}

@@ -1,6 +1,5 @@
 {
   "artifacts": {
-    "active_ai_attribution": "active_ai_attribution.json",
     "active_ci_health": "active_ci_health.json",
     "active_code_hotspots": "active_code_hotspots.json",
     "active_code_inventory": "active_code_inventory.json",
@@ -72,15 +71,12 @@
     "machine_work_observations": "machine_work_observations.json",
     "machine_work_state_windows": "machine_work_state_windows.json",
     "module_map": "module_map.json",
-    "ai_session_efficiency": "ai_session_efficiency.json",
     "anomaly_crossref": "anomaly_crossref.json",
     "burnout_warning": "burnout_warning.json",
     "life_phase_report": "life_phase_report.json",
     "personal_interest_trace": "personal_interest_trace.json",
     "productivity_predictors": "productivity_predictors.json",
     "substance_health_report": "substance_health_report.json",
-    "polylogue_archive_shape": "polylogue_archive_shape.json",
-    "polylogue_time_composition": "polylogue_time_composition.json",
     "polylogue_metrics": "polylogue_metrics.json",
     "project_velocity_windows": "project_velocity_windows.json",
     "sinex_structure_metrics": "sinex_structure_metrics.json",

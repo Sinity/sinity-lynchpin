@@ -2,13 +2,11 @@
 
 Lynchpin treats absence of data as "operator was inactive" by default. That's
 wrong when the absence is caused by a stopped/failed service. Knowing
-``activitywatch.service``, ``activitywatch-watcher-awatcher.service``, and
-``polylogued.service`` were genuinely down in a window lets downstream
+``activitywatch.service`` and ``activitywatch-watcher-awatcher.service`` were genuinely down in a window lets downstream
 analytics distinguish:
 
     "no AW window events because operator AFK"
     "no AW window events because watcher unit was inactive"
-    "no AI session because polylogued was down at that moment"
 
 Inputs: ``MachineServiceState`` rows from
 ``lynchpin.sources.machine.service_states``.
@@ -45,7 +43,6 @@ __all__ = [
 CAPTURE_SERVICE_UNITS: tuple[str, ...] = (
     "activitywatch.service",
     "activitywatch-watcher-awatcher.service",
-    "polylogued.service",
 )
 
 # Sinnix's service-state collector normally samples every 10 seconds. Allow

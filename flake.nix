@@ -8,11 +8,6 @@
     # General workstation tools continue to use the stable package set.
     nixpkgsRepomix.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    # The package below still imports the predecessor Python API and Nix helpers.
-    polylogueSrc = {
-      url = "github:Sinity/polylogue/153ed55bae8028d44fe8542ecde9a48c021759bd";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
@@ -21,7 +16,6 @@
       nixpkgs,
       nixpkgsRepomix,
       flake-utils,
-      polylogueSrc,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -33,10 +27,6 @@
         repomixPkgs = import nixpkgsRepomix { inherit system; };
         # Package Python deps not in nixpkgs
         pythonPackagesBaseOverlay = final: prev: {
-          aiosqlite = import "${polylogueSrc}/nix/aiosqlite.nix" {
-            inherit pkgs;
-            pythonPackages = prev;
-          };
           cachew = prev.buildPythonPackage rec {
             pname = "cachew";
             version = "0.22.20251013";
@@ -78,80 +68,6 @@
               python-multipart
             ];
             doCheck = false;
-          };
-
-          sqlite-vec = prev.buildPythonPackage rec {
-            pname = "sqlite_vec";
-            version = "0.1.9";
-            format = "wheel";
-            src = pkgs.fetchurl {
-              url = "https://files.pythonhosted.org/packages/6f/ad/6afd073b0f817b3e03f9e37ad626ae341805891f23c74b5292818f49ac63/sqlite_vec-0.1.9-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.manylinux1_x86_64.whl";
-              sha256 = "11kpis9wiwai28ii6l4hcs5iyikxzhpyxzbmmyy7k7mlj1wp458m";
-            };
-            doCheck = false;
-            dontCheckRuntimeDeps = true;
-          };
-
-          polylogue = prev.buildPythonPackage {
-            pname = "polylogue";
-            version = (builtins.fromTOML (builtins.readFile "${polylogueSrc}/pyproject.toml")).project.version;
-            pyproject = true;
-            src = polylogueSrc;
-
-            postPatch = ''
-              cat > polylogue/_build_info.py << 'BUILDEOF'
-              from __future__ import annotations
-              BUILD_COMMIT = "${polylogueSrc.rev or polylogueSrc.shortRev or "unknown"}"
-              BUILD_DIRTY = False
-              BUILDEOF
-            '';
-
-            build-system = with prev; [
-              hatchling
-            ];
-
-            dependencies = with final; [
-              google-auth-oauthlib
-              google-api-python-client
-              google-auth-httplib2
-              httpx
-              h2
-              starlette
-              uvicorn
-              rich
-              jinja2
-              markdown-it-py
-              pygments
-              ijson
-              lark
-              sqlite-vec
-              questionary
-              click
-              tenacity
-              dateparser
-              msgspec
-              structlog
-              pydantic
-              aiosqlite
-              mcp
-              pyyaml
-              watchfiles
-              nh3
-              cryptography
-              python-multipart
-              typing-extensions
-            ];
-
-            doCheck = false;
-            pythonImportsCheck = [
-              "polylogue"
-              "polylogue.api.sync"
-              "polylogue.analysis.archive"
-              "polylogue.analysis.readiness"
-            ];
-            # Match the owner package: Nix runtime builds use its declared
-            # dependency closure; facade imports verify this consumer.
-            dontCheckRuntimeDeps = true;
           };
 
           claude-agent-sdk = prev.buildPythonPackage rec {
@@ -262,8 +178,7 @@
               ;
           };
 
-        # Polylogue's pinned public facade requires Python 3.14. Development
-        # and deployment share its runtime and existing dependency corrections.
+        # Development and deployment share Python and dependency corrections.
         python = repomixPkgs.python314.override {
           packageOverrides = pythonPackagesPatchedOverlay;
         };
@@ -290,7 +205,7 @@
             mcp
             polars
             pandas
-            polylogue
+            pyyaml
             tree-sitter
             tree-sitter-python
             tree-sitter-rust
@@ -372,7 +287,6 @@
             numpy
             polars
             pandas
-            polylogue
             pyyaml
             rich
             scipy

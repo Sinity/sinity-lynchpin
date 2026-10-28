@@ -28,7 +28,6 @@ controlled treatment or a design that explicitly justifies it.
 | Runtime inventory | Sinnix | Read service/resource metadata as deployment context. |
 | `sinnix-observe` | Sinnix | Treat as an operator report, not a fact database. |
 | Sinex runtime ledgers | Sinex | Read stable project-native rollups; do not copy internal state ownership into Sinnix. |
-| Polylogue work/session ledgers | Polylogue | Join AI workload evidence to machine and service windows. |
 | Experiment manifests | Capture/benchmark runner | Promote immutable run design, treatment, environment, and outcome metadata. |
 | Cross-source attribution | Lynchpin | Build workload windows, matched evidence, diagnostics, and calibrated claims. |
 
@@ -86,7 +85,7 @@ cardinality, not equal payloads.
 Producer-service evidence (coverage CLI, context packs, MCP readiness) reads
 service state for the units declared in the runtime inventory, within a
 three-second budget. Inactive and unobserved time are reported separately.
-Live application health (`sinexctl runtime health`, `polylogue status`) is
+Live application health (`sinexctl runtime health`) is
 reported only by the MCP readiness tool, never by graph or dataset readiness.
 `LYNCHPIN_APPLICATION_HEALTH=0` disables those probes;
 `LYNCHPIN_APPLICATION_HEALTH_TIMEOUT`, `SINEX_RUNTIME_TARGET_CONFIG` and

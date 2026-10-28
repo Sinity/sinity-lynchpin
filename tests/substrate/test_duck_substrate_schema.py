@@ -23,7 +23,6 @@ def test_apply_schema_creates_all_tables(tmp_path: Path) -> None:
         "substrate_meta",
         "commit_fact",
         "file_change_fact",
-        "ai_work_event",
         "symbol_change",
         "pr_review_row",
         "evidence_graph_build",
@@ -46,8 +45,6 @@ def test_apply_schema_creates_all_tables(tmp_path: Path) -> None:
     assert {
         "project_day_correlation",
         "issue_closure_chain_walk",
-        "work_event_file_overlap",
-        "work_event_symbol_overlap",
     } <= table_names
 
 

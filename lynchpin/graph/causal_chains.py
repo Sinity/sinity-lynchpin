@@ -43,12 +43,6 @@ _CHAIN_TEMPLATES = (
         "label": "build/fix loop → fix commit → test addition",
     },
     {
-        "type": "ai_assisted_implementation",
-        "sequence": ("ai_session", "commit"),
-        "max_gap_minutes": 30,
-        "label": "AI session → code commit",
-    },
-    {
         "type": "deep_work_delivery",
         "sequence": ("deep_work_block", "commit"),
         "max_gap_minutes": 120,
@@ -68,40 +62,8 @@ _CHAIN_TEMPLATES = (
         "max_gap_minutes": 60,
         "label": "high-error session → lower-error session → commit",
     },
-    # Arc C.1: chains over the new ai_work_event substrate (Arc A) with
-    # file-path overlap and per-event kind filtering. These are tighter than
-    # the session-level `ai_assisted_implementation` chain — they require
-    # both a Polylogue work-event (not just a session) AND that the
-    # event's file_paths intersect the commit's paths.
-    {
-        "type": "ai_work_event_to_commit",
-        "sequence": ("ai_work_event", "commit"),
-        "max_gap_minutes": 240,
-        "require_file_overlap": True,
-        "label": "AI work event → file-overlapping commit",
-    },
-    {
-        "type": "ai_research_to_impl_to_commit",
-        "sequence": ("ai_work_event", "ai_work_event", "commit"),
-        "max_gap_minutes": 480,
-        "require_event_kinds": ("research", "implementation", None),
-        "require_kind_tier_min": "medium",
-        "label": "research session → impl session → commit",
-    },
-    {
-        "type": "ai_debug_to_build_fix_to_fix",
-        "sequence": ("ai_work_event", "terminal_pattern", "commit"),
-        "max_gap_minutes": 90,
-        "require_event_kinds": ("debugging", None, None),
-        "require_pattern_kinds": (None, "build_fix_loop", None),
-        "require_conventional_kinds": (None, None, "fix"),
-        "label": "AI debug → build/fix loop → fix commit",
-    },
+
 )
-
-
-# Arc K tier ordering used by `require_kind_tier_min` constraint below.
-_TIER_ORDER: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
 
 
 def detect_chains(
@@ -238,78 +200,7 @@ def _check_template_constraints(
             if payload.get("conventional_kind") != expected:
                 return False
 
-    # Arc C.1 — per-event kind filter. Each entry corresponds to a node in
-    # the sequence; None is wildcard. Only meaningful when the matched node
-    # is an ai_work_event whose payload carries a kind (Arc A).
-    event_kinds = template.get("require_event_kinds")
-    if event_kinds:
-        for node, expected in zip(nodes, event_kinds):
-            if expected is None:
-                continue
-            if node.kind != "ai_work_event":
-                return False
-            payload = getattr(node, "payload", None) or {}
-            if payload.get("kind") != expected:
-                return False
-
-    # Arc C.1 — minimum kind tier (Arc K.3) over any ai_work_event nodes
-    # in the window. Filters out chains where every event is "low" tier.
-    tier_floor = template.get("require_kind_tier_min")
-    if tier_floor:
-        floor = _TIER_ORDER.get(str(tier_floor), 0)
-        for node in nodes:
-            if node.kind != "ai_work_event":
-                continue
-            payload = getattr(node, "payload", None) or {}
-            tier = str(payload.get("kind_tier") or "")
-            if _TIER_ORDER.get(tier, -1) < floor:
-                return False
-
-    # Arc C.1 — file-path overlap between consecutive ai_work_event ↔ commit
-    # pairs. Walks the sequence and demands shared paths whenever an
-    # ai_work_event is followed by (or follows) a commit. This is the
-    # closure piece that makes the "AI session → code commit" chain
-    # concrete: same file moved through both.
-    if template.get("require_file_overlap"):
-        for left, right in zip(nodes, nodes[1:]):
-            if not _file_overlap_between(left, right):
-                return False
-
     return True
-
-
-def _file_overlap_between(left: EvidenceNode, right: EvidenceNode) -> bool:
-    """True iff left's file_paths intersects right's commit paths (or vice versa).
-
-    Returns True when neither side carries file_paths data, since a chain
-    without that signal isn't proven to violate the constraint — caller
-    should rely on other constraints to gate. Only short-circuits to False
-    when both sides advertise paths and they don't overlap.
-    """
-    left_files = _node_file_paths(left)
-    right_files = _node_file_paths(right)
-    if not left_files and not right_files:
-        return False
-    if not left_files or not right_files:
-        # Asymmetric: one side has paths, the other doesn't — can't prove
-        # overlap. Treat as not-matched so the chain only fires on real
-        # bilateral evidence.
-        return False
-    return bool(left_files & right_files)
-
-
-def _node_file_paths(node: EvidenceNode) -> set[str]:
-    """Pull file_paths from an ai_work_event payload or commit.payload.paths."""
-    payload = getattr(node, "payload", None) or {}
-    if node.kind == "ai_work_event":
-        paths = payload.get("file_paths", [])
-    elif node.kind == "commit":
-        paths = payload.get("paths", [])
-    else:
-        return set()
-    if not node.project:
-        return set()
-    return {f"{node.project}:{p}" for p in paths if p}
 
 
 def _time_gaps(nodes: list[EvidenceNode]) -> list[float | None]:

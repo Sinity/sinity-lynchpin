@@ -1,24 +1,4 @@
-"""Skill cartography Layer 1 — mine polylogue/atuin/git evidence, synthesize
-a skill map via ``claude -p``.
-
-Evidence-based skill map, NOT self-report or agent testimony. The rich
-lanes are polylogue dialogues (agent-orchestration practice, architectural
-choice-points, domain discussion) and especially correction patterns --
-what the operator catches agents on. Atuin/git evidence is thin here: the
-operator directs agents rather than typing code or committing directly.
-
-Same state-dump -> claude -p -> versioned-output shape as the sinnix
-enrich-dump family of tools; kept as a standalone script (like
-lynchpin.cli.asciinema_index) rather than wired into the materialize DAG,
-since this is a periodic evidence-mining job, not a daily substrate input.
-
-Output: <configured analysis output>/cartography/<timestamp>/
-        {evidence-bundle.json,skill-map.json}
-Re-derivable at any time; never writes to polylogue's or sinex's stores.
-
-Run: python scripts/cartography.py
-Env: SINNIX_CARTOGRAPHY_SINCE_DAYS (default 90)
-"""
+"""Build skill cartography from shell history and Git activity."""
 from __future__ import annotations
 
 import json
@@ -38,45 +18,6 @@ OPERATOR_AUTHOR = "Sinity"
 
 def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
-
-
-def gather_corrections(run_dir: Path) -> dict:
-    """Operator messages that catch/correct an agent (high-signal for real knowledge)."""
-    query = (
-        'role:user AND (text:"no wait" OR text:"actually" OR text:"that.s wrong" '
-        'OR text:"you are wrong" OR text:"incorrect")'
-    )
-    proc = _run([
-        "polylogue", "--since", f"{SINCE_DAYS} days ago",
-        "find", query,
-        "then", "read", "--view", "messages", "--format", "json", "--all",
-    ])
-    (run_dir / "corrections.stderr").write_text(proc.stderr)
-    if proc.returncode != 0 or not proc.stdout.strip():
-        return {"status": "unavailable", "note": "polylogue query failed, see corrections.stderr"}
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return {"status": "unavailable", "note": "polylogue query returned non-JSON, see corrections.stderr"}
-
-
-def gather_facets(run_dir: Path) -> dict:
-    """Domain/topic facets discussed, bounded window."""
-    try:
-        proc = _run(
-            ["polylogue", "--since", f"{SINCE_DAYS} days ago", "facets", "--format", "json"],
-            timeout=60,
-        )
-    except subprocess.TimeoutExpired:
-        (run_dir / "facets.stderr").write_text("timed out after 60s")
-        return {"status": "unavailable", "note": "facets query timed out or failed, see facets.stderr"}
-    (run_dir / "facets.stderr").write_text(proc.stderr)
-    if proc.returncode != 0 or not proc.stdout.strip():
-        return {"status": "unavailable", "note": "facets query timed out or failed, see facets.stderr"}
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return {"status": "unavailable", "note": "facets query returned non-JSON, see facets.stderr"}
 
 
 def gather_atuin(run_dir: Path) -> dict:
@@ -116,19 +57,14 @@ def synthesize_skill_map(run_dir: Path, bundle_path: Path) -> None:
         "You are building Layer 1 of sinnix-d0t (skill cartography): a living, "
         "evidence-based model of the operator's actual knowledge/skills, NOT self-report "
         "or agent testimony/praise -- receiver-behavior and ground-truth evidence only. "
-        f"Read the evidence bundle at {bundle_path} (correction patterns from polylogue -- what "
-        "the operator catches agents on is HIGH signal for real knowledge; discussed "
-        "facets/topics; atuin/git activity, expected to be THIN since the operator "
-        "directs agents rather than typing code directly -- treat that thinness itself "
-        "as evidence of an agent-orchestration-heavy practice, not a gap). "
+        f"Read the shell and Git evidence bundle at {bundle_path}. "
+        "Ground every claim in a named observation and report missing evidence. "
         'Output a JSON array of skill nodes, each: {"skill": name, "taxonomy": '
         "one of [languages_runtimes, systems, ml_ai_practice, math, domain_knowledge, "
         'meta_skills], "confidence": 0-1, "evidence": [short anchors citing what in '
-        'the bundle supports this], "note": one sentence}. Per the bead\'s own '
-        "rescope, expect meta_skills (agent orchestration, architectural judgment) to "
-        "dominate with high confidence, and object-level coding fluency to show thin "
-        "evidence -- say so explicitly rather than inflating it. Write ONLY the JSON "
-        "array to stdout, no prose."
+        'the bundle supports this], "note": one sentence}. '
+        "Set confidence from the supplied observations and identify missing evidence. "
+        "Write ONLY the JSON array to stdout, no prose."
     )
     proc = _run(["claude", "-p", "--output-format", "json", prompt])
     (run_dir / "claude-p-response.json").write_text(proc.stdout)
@@ -171,16 +107,12 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     print(f"cartography: gathering evidence (last {SINCE_DAYS}d) into {run_dir}", file=sys.stderr)
 
-    corrections = gather_corrections(run_dir)
-    facets = gather_facets(run_dir)
     atuin = gather_atuin(run_dir)
     git_activity = gather_git_activity(run_dir)
 
     bundle = {
         "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "window_days": SINCE_DAYS,
-        "corrections": corrections,
-        "facets": facets,
         "atuin": atuin,
         "git_activity": git_activity,
     }

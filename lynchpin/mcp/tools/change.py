@@ -5,14 +5,12 @@ FastMCP inspects annotations at decoration time and cannot handle postponed
 string annotations for tool parameters.
 """
 
-from pathlib import Path
 from typing import Any
 
 from lynchpin.mcp.tools._utils import (
     best_materialized_refresh_id,
     ensure_substrate_materialized_for_read,
     json_safe as _json_safe,
-    pinned_materialization_for_read,
 )
 
 
@@ -171,74 +169,6 @@ def conventional_commits(
     return [{"project": r[0], "kind": r[1], "count": r[2], "pct": r[3]} for r in rows]
 
 
-def ai_tool_usage(
-    start: str | None = None,
-    end: str | None = None,
-    project: str | None = None,
-    refresh_id: str | None = None,
-) -> dict[str, Any]:
-    """AI tool usage patterns from polylogue action_events.
-
-    Reads action_events table from the Polylogue archive (3.74M+ rows).
-    Returns action_kind distribution with optional date and project filtering.
-    """
-    import sqlite3
-
-    from lynchpin.core.config import get_config
-
-    db_path = get_config().polylogue_db
-    if not db_path.exists():
-        return {
-            "degraded": True,
-            "reason": f"polylogue database not found at {db_path}",
-            "rows": [],
-        }
-
-    try:
-        conn = sqlite3.connect(f"{Path(db_path).resolve().as_uri()}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-
-        # Build SQL query with optional date range and project filter
-        where_clauses = []
-        params: list[Any] = []
-
-        if start:
-            where_clauses.append("timestamp >= ?")
-            params.append(start)
-        if end:
-            where_clauses.append("timestamp <= ?")
-            params.append(end)
-
-        where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
-
-        sql = f"""
-            SELECT action_kind, COUNT(*) AS n, COUNT(DISTINCT conversation_id) AS sessions
-            FROM action_events
-            WHERE {where_clause}
-            GROUP BY action_kind
-            ORDER BY n DESC
-        """
-
-        rows = conn.execute(sql, params).fetchall()
-        result = [
-            {"action_kind": r["action_kind"], "count": r["n"], "sessions": r["sessions"]}
-            for r in rows
-        ]
-
-        conn.close()
-        return {
-            "degraded": False,
-            "reason": None,
-            "rows": result,
-        }
-    except Exception as exc:
-        return {
-            "degraded": True,
-            "reason": f"failed to read polylogue action_events: {exc}",
-            "rows": [],
-        }
-
-
 def breaking_changes(
     project: str | None = None,
     refresh_id: str | None = None,
@@ -263,57 +193,6 @@ def breaking_changes(
     ]
 
 
-def commit_kind_attribution(
-    refresh_id: str | None = None,
-) -> dict[str, Any]:
-    """Commit kind and AI attribution correlation.
-
-    Returns a dict with:
-      - "degraded": bool — True if ai_attribution is all NULL
-      - "reason": str | None — explanation if degraded
-      - "rows": list[dict] — the attribution data
-    """
-    from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.readers_change import (
-        load_ai_attribution_count,
-        load_commit_kind_ai_attribution,
-    )
-
-    materialization = (
-        ensure_substrate_materialized_for_read(caller="mcp.change.commit_kind_attribution")
-        if refresh_id is None
-        else pinned_materialization_for_read(caller="mcp.change.commit_kind_attribution", refresh_id=refresh_id)
-    )
-    with connect(substrate_path(), read_only=True) as conn:
-        if refresh_id is None:
-            refresh_id = best_materialized_refresh_id(conn, "commit_fact", caller="mcp.change.commit_kind_attribution")
-            if refresh_id is None:
-                return {
-                    "degraded": False,
-                    "reason": None,
-                    "materialization": materialization,
-                    "rows": [],
-                }
-
-        # Check if any row has non-NULL ai_attribution
-        ai_count = load_ai_attribution_count(conn, refresh_id=refresh_id)
-        has_ai_data = ai_count > 0
-
-        rows = load_commit_kind_ai_attribution(conn, refresh_id=refresh_id)
-
-        degraded = not has_ai_data and len(rows) > 0
-        reason = (
-            f"ai_attribution backfill not run for refresh_id {refresh_id!r}"
-            if degraded
-            else None
-        )
-
-    return {
-        "degraded": degraded,
-        "reason": reason,
-        "materialization": materialization,
-        "rows": [{"kind": r[0], "total": r[1], "ai_assisted": r[2], "ai_pct": r[3]} for r in rows],
-    }
 
 
 def symbol_churn_hotspots(
@@ -362,11 +241,9 @@ def commit_analysis(
     project: str | None = None,
     refresh_id: str | None = None,
 ) -> Any:
-    """Commit-level analysis. view: conventional (commit type distribution), attribution (kind×AI attribution correlation), breaking (breaking-change commits)."""
+    """Commit-level analysis. view: conventional (commit type distribution), breaking (breaking-change commits)."""
     if view == "conventional":
         return conventional_commits(project=project, refresh_id=refresh_id)
-    if view == "attribution":
-        return commit_kind_attribution(refresh_id=refresh_id)
     if view == "breaking":
         return breaking_changes(project=project, refresh_id=refresh_id)
-    return {"error": f"unknown view {view!r}. choices: conventional, attribution, breaking"}
+    return {"error": f"unknown view {view!r}. choices: conventional, breaking"}

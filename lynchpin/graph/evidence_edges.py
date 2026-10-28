@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, timedelta
-from typing import Any, Sequence
+from datetime import date, datetime
+from typing import Sequence
 
 from ..core.parse import as_local
 from ..core.evidence_graph import EvidenceEdge, EvidenceNode
@@ -60,9 +60,7 @@ def temporal_overlap_edges(nodes: Sequence[EvidenceNode]) -> tuple[EvidenceEdge,
 
     Treats point events (start == end, e.g. commits whose authored_at is the
     only timestamp) as instants that overlap an interval iff the instant
-    falls inside it. Previously such nodes were excluded entirely by the
-    ``end > start`` filter, making commits invisible to the overlap layer
-    even though "commit landed during an AI session" is a high-value signal.
+    falls inside it.
 
     Two intervals overlap iff max(starts) < min(ends). A point inside an
     interval is the degenerate case. Same-source pairs are skipped to avoid
@@ -124,249 +122,6 @@ def temporal_overlap_edges(nodes: Sequence[EvidenceNode]) -> tuple[EvidenceEdge,
     return tuple(edges)
 
 
-def load_symbol_changes_index() -> dict[str, list[dict[str, Any]]]:
-    import json
-
-    from lynchpin.core.io import resolve_analysis_path
-
-    path = resolve_analysis_path("active_symbol_changes.json")
-    try:
-        with open(path, encoding="utf-8") as f:
-            payload = json.load(f)
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(
-            f"active symbol-change product is missing: {path}"
-        ) from exc
-    if not isinstance(payload, dict):
-        raise ValueError(f"active symbol-change product is not a JSON object: {path}")
-    events = payload.get("events") or []
-    if not isinstance(events, list):
-        raise ValueError(f"active symbol-change product has non-list events: {path}")
-    by_sha: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for entry in events:
-        if not isinstance(entry, dict):
-            continue
-        sha = entry.get("sha")
-        if sha:
-            by_sha[str(sha)].append(entry)
-    return dict(by_sha)
-
-
-def extract_overlap_sources_from_nodes(
-    nodes: Sequence[EvidenceNode],
-) -> "tuple[list[Any], list[Any], list[dict[str, Any]]]":
-    """Extract typed source rows from EvidenceNode payloads for substrate promotion."""
-    from datetime import datetime as _dt
-
-    from ..sources.git import GitCommitFact
-    from ..sources.polylogue import WorkEvent
-
-    work_events: list[WorkEvent] = []
-    commit_facts: list[GitCommitFact] = []
-
-    for node in nodes:
-        payload = node.payload or {}
-        if node.kind == "ai_work_event":
-            event_id = payload.get("event_id")
-            conversation_id = payload.get("conversation_id")
-            if not event_id or not conversation_id:
-                continue
-            file_paths = tuple(p for p in (payload.get("file_paths") or []) if p)
-            tools_used = tuple(t for t in (payload.get("tools_used") or []) if t)
-            duration_ms = int(payload.get("duration_ms") or 0)
-            kind = str(payload.get("kind") or "unknown")
-            confidence = float(
-                payload.get("kind_confidence") or payload.get("confidence") or 0.0
-            )
-            provider = str(payload.get("provider") or "")
-            summary = node.summary or ""
-            work_events.append(
-                WorkEvent(
-                    event_id=str(event_id),
-                    conversation_id=str(conversation_id),
-                    provider=provider,
-                    kind=kind,
-                    confidence=confidence,
-                    start=node.start,
-                    end=node.end,
-                    duration_ms=duration_ms,
-                    file_paths=file_paths,
-                    tools_used=tools_used,
-                    summary=summary,
-                )
-            )
-        elif node.kind == "commit":
-            sha = payload.get("commit") or payload.get("sha")
-            if not sha or not node.project:
-                continue
-            paths = tuple(p for p in (payload.get("paths") or []) if p)
-            authored_at = node.start or _dt.combine(node.date, _dt.min.time())
-            commit_facts.append(
-                GitCommitFact(
-                    repo=node.project,
-                    commit=str(sha),
-                    authored_at=authored_at,
-                    author=str(payload.get("author") or ""),
-                    subject=str(payload.get("subject") or node.summary or ""),
-                    lines_added=int(payload.get("lines_added") or 0),
-                    lines_deleted=int(payload.get("lines_deleted") or 0),
-                    lines_changed=int(payload.get("lines_changed") or 0),
-                    files_changed=int(payload.get("files_changed") or len(paths)),
-                    paths=paths,
-                    path_roots=tuple(p for p in (payload.get("path_roots") or []) if p),
-                )
-            )
-
-    symbol_changes = load_symbol_changes_index()
-    symbol_rows: list[dict[str, Any]] = []
-    for entries in symbol_changes.values():
-        symbol_rows.extend(entries)
-
-    return work_events, commit_facts, symbol_rows
-
-
-def overlap_edges_via_substrate(
-    nodes: Sequence[EvidenceNode],
-    *,
-    refresh_id: str,
-) -> tuple[EvidenceEdge, ...]:
-    """Compute file/symbol overlap edges for the in-memory graph.
-
-    The name is retained for call-site compatibility. Earlier versions built a
-    temporary DuckDB database and SQL views for every graph read; for the small
-    per-window node set already in memory, a direct indexed join is much cheaper
-    and keeps the same edge IDs/evidence shape.
-    """
-    del refresh_id
-
-    work_events = [
-        node
-        for node in nodes
-        if node.kind == "ai_work_event"
-        and node.project is not None
-        and node.start is not None
-        and _filtered_paths((node.payload or {}).get("file_paths") or ())
-    ]
-    commits = [
-        node
-        for node in nodes
-        if node.kind == "commit"
-        and node.project is not None
-        and node.start is not None
-        and _filtered_paths((node.payload or {}).get("paths") or ())
-    ]
-    if not work_events or not commits:
-        return ()
-
-    edges: list[EvidenceEdge] = []
-    commits_by_project: dict[str, list[EvidenceNode]] = defaultdict(list)
-    for commit in commits:
-        commits_by_project[commit.project or ""].append(commit)
-
-    symbol_rows_by_sha = _symbol_rows_by_sha()
-    max_gap = timedelta(hours=24)
-    for work_event in work_events:
-        we_at = as_local(work_event.start)
-        we_paths = _filtered_paths((work_event.payload or {}).get("file_paths") or ())
-        for commit in commits_by_project.get(work_event.project or "", ()):
-            commit_at = as_local(commit.start)
-            if abs(commit_at - we_at) > max_gap:
-                continue
-            commit_paths = _filtered_paths((commit.payload or {}).get("paths") or ())
-            shared_paths = sorted(we_paths & commit_paths)
-            if shared_paths:
-                edges.append(
-                    EvidenceEdge(
-                        work_event.id,
-                        commit.id,
-                        "file_overlap",
-                        _format_overlap_evidence("shared paths", shared_paths),
-                        weight=0.85,
-                    )
-                )
-            shared_symbols = _shared_symbols_for_commit(
-                we_paths,
-                symbol_rows_by_sha.get(
-                    str(
-                        (commit.payload or {}).get("sha")
-                        or (commit.payload or {}).get("commit")
-                        or ""
-                    ),
-                    (),
-                ),
-            )
-            if shared_symbols:
-                edges.append(
-                    EvidenceEdge(
-                        work_event.id,
-                        commit.id,
-                        "symbol_overlap",
-                        _format_overlap_evidence("shared symbols", shared_symbols),
-                        weight=0.95,
-                    )
-                )
-
-    return tuple(edges)
-
-
-def _filtered_paths(paths: Any) -> set[str]:
-    return {path for path in (str(p) for p in paths if p) if not _high_fanout_path(path)}
-
-
-def _high_fanout_path(path: str) -> bool:
-    lowered = path.lower()
-    return (
-        "__init__.py" in lowered
-        or "__pycache__" in lowered
-        or path.endswith("Cargo.lock")
-        or path.endswith("pyproject.toml")
-        or path.endswith("package.json")
-        or path.endswith("package-lock.json")
-        or path.endswith("yarn.lock")
-        or path.endswith("pnpm-lock.yaml")
-        or path.endswith("flake.lock")
-        or path.endswith("lock.json")
-        or path.endswith(".gitignore")
-        or path.startswith("node_modules/")
-    )
-
-
-def _format_overlap_evidence(prefix: str, items: Sequence[str]) -> str:
-    preview = ", ".join(items[:3])
-    suffix = f" (+{len(items) - 3})" if len(items) > 3 else ""
-    return f"{prefix}: {preview}{suffix}"
-
-
-def _symbol_rows_by_sha() -> dict[str, list[dict[str, Any]]]:
-    rows_by_sha: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for entries in load_symbol_changes_index().values():
-        for row in entries:
-            sha = str(row.get("sha") or "")
-            if sha:
-                rows_by_sha[sha].append(row)
-    return rows_by_sha
-
-
-def _shared_symbols_for_commit(
-    work_event_paths: set[str], symbol_rows: Sequence[dict[str, Any]]
-) -> list[str]:
-    symbols: set[str] = set()
-    stripped_we_paths = {path.lstrip("/") for path in work_event_paths}
-    for row in symbol_rows:
-        symbol_path = str(row.get("path") or "").lstrip("/")
-        if not symbol_path:
-            continue
-        if not any(
-            ai_path.endswith(symbol_path) or symbol_path.endswith(ai_path)
-            for ai_path in stripped_we_paths
-        ):
-            continue
-        name = str(row.get("qualified_name") or "")
-        if name:
-            symbols.add(name)
-    return sorted(symbols)
-
-
 def mentions_project_edges(nodes: Sequence[EvidenceNode]) -> tuple[EvidenceEdge, ...]:
     """Emit mentions_project edges from raw-log nodes.
 
@@ -417,69 +172,6 @@ def mentions_project_edges(nodes: Sequence[EvidenceNode]) -> tuple[EvidenceEdge,
                 )
             )
 
-    return tuple(edges)
-
-
-def polylogue_work_event_tool_overlap_edges(
-    nodes: Sequence[EvidenceNode], *, max_gap_min: float = 60.0
-) -> tuple[EvidenceEdge, ...]:
-    """Bridge ai_work_event and terminal_session when tools and commands co-occur."""
-    terminals_by_project: dict[str, list[EvidenceNode]] = defaultdict(list)
-    for node in nodes:
-        if (
-            node.kind != "terminal_session"
-            or node.project is None
-            or node.start is None
-        ):
-            continue
-        terminals_by_project[node.project].append(node)
-    if not terminals_by_project:
-        return ()
-
-    edges: list[EvidenceEdge] = []
-    max_gap_s = max_gap_min * 60
-    for we_node in nodes:
-        if (
-            we_node.kind != "ai_work_event"
-            or we_node.project is None
-            or we_node.start is None
-        ):
-            continue
-        tools_used = {
-            str(t) for t in (we_node.payload or {}).get("tools_used", []) if t
-        }
-        candidate_tokens: set[str] = set()
-        for tool in tools_used:
-            candidate_tokens.update(TOOL_COMMAND_TOKENS.get(tool, ()))
-        if not candidate_tokens:
-            continue
-        we_at = node_anchor_time(we_node)
-        if we_at is None:
-            continue
-        for term_node in terminals_by_project.get(we_node.project, ()):
-            term_at = node_anchor_time(term_node)
-            if term_at is None:
-                continue
-            if abs((term_at - we_at).total_seconds()) > max_gap_s:
-                continue
-            commands = {
-                str(c).split()[0]
-                for c in (term_node.payload or {}).get("commands_summary", [])
-                if c
-            }
-            shared = candidate_tokens & commands
-            if not shared:
-                continue
-            preview = ", ".join(sorted(shared)[:3])
-            edges.append(
-                EvidenceEdge(
-                    we_node.id,
-                    term_node.id,
-                    "tool_overlap",
-                    f"co-occurring commands: {preview} (heuristic, not authorship)",
-                    weight=0.5,
-                )
-            )
     return tuple(edges)
 
 
@@ -551,23 +243,16 @@ def cross_boundary_edges(
         same_project_day_edges,
         temporal_overlap_edges,
         temporal_proximity_edges,
-        polylogue_work_event_tool_overlap_edges,
         mentions_project_edges,
-        overlap_edges_via_substrate,
     )
     boundary_ids = {node.id for node in boundary_nodes}
     tail_ids = {node.id for node in tail_nodes}
     combined = tuple(boundary_nodes) + tuple(tail_nodes)
     edges: list[EvidenceEdge] = []
     for builder in builders:
-        kwargs = (
-            {"refresh_id": "incremental-boundary"}
-            if builder is overlap_edges_via_substrate
-            else {}
-        )
         edges.extend(
             edge
-            for edge in builder(combined, **kwargs)
+            for edge in builder(combined)
             if (
                 edge.source_id in boundary_ids
                 and edge.target_id in tail_ids
@@ -603,11 +288,8 @@ def proximity_weight(gap_min: int) -> float:
 
 
 __all__ = [
-    "load_symbol_changes_index",
     "cross_boundary_edges",
     "mentions_project_edges",
-    "overlap_edges_via_substrate",
-    "polylogue_work_event_tool_overlap_edges",
     "same_project_day_edges",
     "temporal_overlap_edges",
     "temporal_proximity_edges",

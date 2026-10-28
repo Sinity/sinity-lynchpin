@@ -3,7 +3,6 @@
 Phase 2.1 tables (this file):
 - ``commit_fact``      — git commits (typed shape from GitCommitFact + JSON-layer annotations consumed downstream)
 - ``file_change_fact`` — per-file-per-commit churn
-- ``ai_work_event``    — Polylogue work events with Lynchpin overlay kind/tier
 - ``symbol_change``    — commit × symbol change rows (from active_symbol_changes)
 - ``pr_review_row``    — PR review topology (from M.7)
 
@@ -100,7 +99,6 @@ DDL_STATEMENTS: tuple[str, ...] = (
         conventional_signature  VARCHAR,
         breaking_change         BOOLEAN NOT NULL DEFAULT FALSE,
         github_refs             STRUCT(issues INTEGER[], prs INTEGER[]),
-        ai_attribution          JSON,
         -- Active-facts enrichment columns (Arc 3: make substrate the canonical source,
         -- replacing active_commit_facts.json for all downstream consumers).
         categories              JSON NOT NULL DEFAULT '{}',
@@ -144,122 +142,6 @@ DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX file_change_fact_path ON file_change_fact(path)",
     "CREATE INDEX file_change_fact_project_authored_at ON file_change_fact(project, authored_at)",
     "CREATE INDEX file_change_fact_refresh_id ON file_change_fact(refresh_id)",
-    # ────────────────────────────────────────────────────────────────────
-    # ai_work_event
-    # ────────────────────────────────────────────────────────────────────
-    """
-    CREATE TABLE ai_work_event (
-        event_id               VARCHAR NOT NULL,
-        conversation_id        VARCHAR NOT NULL,
-        provider               VARCHAR NOT NULL,
-        project                VARCHAR,
-        kind                   VARCHAR NOT NULL,
-        kind_confidence        DOUBLE NOT NULL DEFAULT 0.0,
-        kind_tier              VARCHAR,             -- high | medium | low (Arc K)
-        kind_source            VARCHAR,             -- source | lynchpin_overlay | agreement | disagreement
-        source_kind            VARCHAR,
-        source_confidence      DOUBLE,
-        overlay_kind           VARCHAR,
-        overlay_confidence     DOUBLE,
-        workflow_shape         VARCHAR,
-        workflow_shape_confidence DOUBLE NOT NULL DEFAULT 0.0,
-        terminal_state         VARCHAR,
-        terminal_state_confidence DOUBLE NOT NULL DEFAULT 0.0,
-        file_paths             VARCHAR[] NOT NULL DEFAULT [],
-        tools_used             VARCHAR[] NOT NULL DEFAULT [],
-        start_ts               TIMESTAMPTZ,         -- nullable: see WorkEvent docs
-        end_ts                 TIMESTAMPTZ,
-        duration_ms            BIGINT NOT NULL DEFAULT 0,  -- authoritative duration column
-        summary                VARCHAR,
-        refresh_id             VARCHAR NOT NULL,
-        materialized_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (event_id, refresh_id)
-    )
-    """,
-    "CREATE INDEX ai_work_event_project_start ON ai_work_event(project, start_ts)",
-    "CREATE INDEX ai_work_event_conversation ON ai_work_event(conversation_id)",
-    "CREATE INDEX ai_work_event_kind_tier ON ai_work_event(kind, kind_tier)",
-    "CREATE INDEX ai_work_event_refresh_id ON ai_work_event(refresh_id)",
-    # ────────────────────────────────────────────────────────────────────
-    # Polylogue session time-composition — AW-like session timelines,
-    # per-session rollups, and cross-source overlaps.
-    # ────────────────────────────────────────────────────────────────────
-    """
-    CREATE TABLE polylogue_session_time_composition (
-        session_id              VARCHAR NOT NULL,
-        provider                VARCHAR NOT NULL,
-        title                   VARCHAR,
-        start_ts                TIMESTAMPTZ,
-        end_ts                  TIMESTAMPTZ,
-        status                  VARCHAR NOT NULL,
-        reason                  VARCHAR,
-        message_count           INTEGER NOT NULL DEFAULT 0,
-        wall_seconds            DOUBLE NOT NULL DEFAULT 0.0,
-        engaged_seconds         DOUBLE NOT NULL DEFAULT 0.0,
-        span_count              INTEGER NOT NULL DEFAULT 0,
-        overlap_count           INTEGER NOT NULL DEFAULT 0,
-        seconds_by_lane         JSON NOT NULL DEFAULT '{}',
-        seconds_by_kind         JSON NOT NULL DEFAULT '{}',
-        cross_source_seconds    JSON NOT NULL DEFAULT '{}',
-        projects                VARCHAR[] NOT NULL DEFAULT [],
-        tags                    VARCHAR[] NOT NULL DEFAULT [],
-        refresh_id              VARCHAR NOT NULL,
-        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (session_id, refresh_id)
-    )
-    """,
-    "CREATE INDEX polylogue_session_time_start ON polylogue_session_time_composition(start_ts)",
-    "CREATE INDEX polylogue_session_time_status ON polylogue_session_time_composition(status)",
-    "CREATE INDEX polylogue_session_time_refresh_id ON polylogue_session_time_composition(refresh_id)",
-    """
-    CREATE TABLE polylogue_timeline_span (
-        span_id                 VARCHAR NOT NULL,
-        session_id              VARCHAR NOT NULL,
-        provider                VARCHAR NOT NULL,
-        lane                    VARCHAR NOT NULL,
-        kind                    VARCHAR NOT NULL,
-        start_ts                TIMESTAMPTZ NOT NULL,
-        end_ts                  TIMESTAMPTZ NOT NULL,
-        duration_s              DOUBLE NOT NULL DEFAULT 0.0,
-        source                  VARCHAR NOT NULL,
-        role                    VARCHAR,
-        project                 VARCHAR,
-        app                     VARCHAR,
-        summary                 VARCHAR,
-        tool_names              VARCHAR[] NOT NULL DEFAULT [],
-        fidelity                VARCHAR NOT NULL,
-        confidence              DOUBLE NOT NULL DEFAULT 1.0,
-        metadata                JSON NOT NULL DEFAULT '{}',
-        refresh_id              VARCHAR NOT NULL,
-        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (span_id, refresh_id)
-    )
-    """,
-    "CREATE INDEX polylogue_timeline_session ON polylogue_timeline_span(session_id)",
-    "CREATE INDEX polylogue_timeline_start ON polylogue_timeline_span(start_ts)",
-    "CREATE INDEX polylogue_timeline_lane_kind ON polylogue_timeline_span(lane, kind)",
-    "CREATE INDEX polylogue_timeline_refresh_id ON polylogue_timeline_span(refresh_id)",
-    """
-    CREATE TABLE polylogue_cross_source_overlap (
-        session_id              VARCHAR NOT NULL,
-        primary_span_id         VARCHAR NOT NULL,
-        other_span_id           VARCHAR NOT NULL,
-        source                  VARCHAR NOT NULL,
-        lane                    VARCHAR NOT NULL,
-        kind                    VARCHAR NOT NULL,
-        start_ts                TIMESTAMPTZ NOT NULL,
-        end_ts                  TIMESTAMPTZ NOT NULL,
-        duration_s              DOUBLE NOT NULL DEFAULT 0.0,
-        project                 VARCHAR,
-        metadata                JSON NOT NULL DEFAULT '{}',
-        refresh_id              VARCHAR NOT NULL,
-        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (primary_span_id, other_span_id, refresh_id)
-    )
-    """,
-    "CREATE INDEX polylogue_overlap_session ON polylogue_cross_source_overlap(session_id)",
-    "CREATE INDEX polylogue_overlap_source ON polylogue_cross_source_overlap(source)",
-    "CREATE INDEX polylogue_overlap_refresh_id ON polylogue_cross_source_overlap(refresh_id)",
     # ────────────────────────────────────────────────────────────────────
     # symbol_change
     # ────────────────────────────────────────────────────────────────────
@@ -560,8 +442,6 @@ DDL_STATEMENTS: tuple[str, ...] = (
         sms_sent                   INTEGER NOT NULL DEFAULT 0,
         messenger_sent             INTEGER NOT NULL DEFAULT 0,
         outlook_inbox              INTEGER NOT NULL DEFAULT 0,
-        polylogue_sessions         INTEGER NOT NULL DEFAULT 0,
-        polylogue_engaged_minutes  DOUBLE NOT NULL DEFAULT 0.0,
         web_visits                 INTEGER NOT NULL DEFAULT 0,
         web_social_visits          INTEGER NOT NULL DEFAULT 0,
         shell_commands             INTEGER NOT NULL DEFAULT 0,
@@ -574,7 +454,6 @@ DDL_STATEMENTS: tuple[str, ...] = (
         stress_min                 DOUBLE,
         stress_max                 DOUBLE,
         web_unique_domains         INTEGER NOT NULL DEFAULT 0,
-        polylogue_messages         INTEGER NOT NULL DEFAULT 0,
         weather_temp_mean          DOUBLE,
         weather_precip_mm          DOUBLE,
         weather_sunshine_hours     DOUBLE,
@@ -1324,7 +1203,6 @@ DDL_STATEMENTS = (
         # Distinguishes "source had nothing in window" (empty, normal) from "source
         # is broken" (unavailable / error). Lets MCP / readiness reports tell the
         # difference between an empty substrate and a silently failed one — fixes
-        # the prior failure mode where polylogue-stale → ai_work_event=0 looked
         # identical to a successful promote with no events.
         """
     CREATE TABLE substrate_source_status (
@@ -1449,7 +1327,6 @@ DDL_STATEMENTS = (
 DOMAIN_TABLES: tuple[str, ...] = (
     "commit_fact",
     "file_change_fact",
-    "ai_work_event",
     "symbol_change",
     "pr_review_row",
     "spotify_daily",

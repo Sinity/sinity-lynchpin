@@ -1,6 +1,6 @@
 """Freeze a deterministic fixture output for work_correlation.
 
-Build a synthetic but realistic mix of git/github/ai/raw_log/focus/shell evidence
+Build a synthetic but realistic mix of git/github/raw_log/focus/shell evidence
 across multiple projects and dates, plus an EvidenceGraph for the graph-driven
 code paths, then materialize every public output via JSON. Use this to diff
 before/after each polars migration step. Output is written to stdout.
@@ -95,16 +95,6 @@ def _make_inputs():
         ),
     ]
 
-    ai_sessions = [
-        SimpleNamespace(
-            conversation_id=f"conv-{i}",
-            first_message_at=_dt(i % 5, hour=10),
-            work_event_projects=(projects[i % 3],),
-            title="",
-        )
-        for i in range(6)
-    ]
-
     raw_log_entries = [
         SimpleNamespace(
             timestamp=_dt(i % 5, hour=15),
@@ -137,7 +127,6 @@ def _make_inputs():
     return dict(
         git_facts=git_facts,
         github_items=github_items,
-        ai_sessions=ai_sessions,
         raw_log_entries=raw_log_entries,
         focus_spans=focus_spans,
         shell_sessions=shell_sessions,
@@ -159,19 +148,6 @@ def _make_graph():
             project=proj,
             summary=f"commit {i}",
             payload={"commit": f"sha{i}", "github_refs": {"prs": [i + 100], "issues": []}},
-        ))
-        nodes.append(EvidenceNode(
-            id=f"ai-ev:{proj}:{i}",
-            kind="ai_work_event",
-            source="polylogue",
-            date=day,
-            project=proj,
-            summary="ai event",
-            payload={
-                "conversation_id": f"conv-{i}",
-                "kind": "implementation" if i % 2 == 0 else "discussion",
-                "kind_tier": "high" if i % 2 == 0 else "medium",
-            },
         ))
         nodes.append(EvidenceNode(
             id=f"focus:{proj}:{i}",
@@ -210,13 +186,6 @@ def _make_graph():
             payload={"source_path": f"/log/{i}.md", "line_no": str(i)},
         ))
         # add some edges (relations) for dataset_correlations
-        edges.append(EvidenceEdge(
-            source_id=f"commit:{proj}:{i}",
-            target_id=f"ai-ev:{proj}:{i}",
-            relation="references",
-            evidence=f"commit-ai overlap {i}",
-            weight=1.0 + i * 0.3,
-        ))
         edges.append(EvidenceEdge(
             source_id=f"focus:{proj}:{i}",
             target_id=f"term:{proj}:{i}",

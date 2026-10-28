@@ -12,7 +12,7 @@ Workload classification uses two signals:
 WorkloadKind taxonomy:
   Always-on daemons:
     SinexStack        sinexd + postgres + nats-server
-    PolylogueDaemon   polylogued
+    PolylogueDaemon   polylogue-live.service
   Agent sessions (the agent process itself):
     AgentSession      claude / codex processes
   Agent-spawned transient work (runs inside agent.slice):
@@ -113,6 +113,8 @@ def _classify(comm: str | None, cgroup: str | None) -> WorkloadKind | None:
     if comm in _EXCLUDED_COMMS:
         return None  # session-manager parents double-count child IO
     if cgroup:
+        if "polylogue-live.service" in cgroup.split("/"):
+            return WorkloadKind.PolylogueDaemon
         if "stashbox.service" in cgroup or "transmission.service" in cgroup:
             return WorkloadKind.MediaService
         if (
@@ -467,8 +469,8 @@ def detect_orphans(
     process instances (not a class of process) that have been running for hours,
     which for transient work (nix check, pytest, cargo, claude) signals orphaning.
 
-    The always-on daemons (postgres, nats-server, sinexd, polylogued) are
-    excluded since multi-hour runtime is expected for them.
+    Always-on service processes are excluded because multi-hour runtime is
+    expected for them.
     """
     _ALWAYS_ON_COMMS = frozenset({
         "sinexd", "nats-server", ".postgres-wrapp", "postgres",
@@ -481,6 +483,8 @@ def detect_orphans(
 
     for s in process_io_delta_samples(start=start, end=end):
         if not s.comm or s.comm in _EXCLUDED_COMMS or s.comm in _ALWAYS_ON_COMMS:
+            continue
+        if s.cgroup and "polylogue-live.service" in s.cgroup.split("/"):
             continue
         key = (s.pid, s.process_start_time_ticks)
         if key not in procs:
@@ -534,8 +538,6 @@ class AgentSessionRecord:
     sinnix-scope call); processes that went through sinnix-scope themselves get
     their own build.slice scope and are *not* here.
 
-    Polylogue fields are populated only when a session profile is available
-    whose active window overlaps with ``[first_seen, last_seen]``.
     """
 
     scope_unit: str
@@ -544,8 +546,6 @@ class AgentSessionRecord:
     last_seen: datetime
     agent_io_mb: float
     direct_child_io_mb: dict[str, float] = field(default_factory=dict)
-    polylogue_session_id: str | None = None
-    polylogue_project: str | None = None
 
     @property
     def duration_hours(self) -> float:
@@ -565,8 +565,6 @@ class AgentSessionRecord:
             "agent_io_mb": round(self.agent_io_mb, 1),
             "direct_child_io_mb": {k: round(v, 1) for k, v in self.direct_child_io_mb.items()},
             "total_io_mb": round(self.total_io_mb, 1),
-            "polylogue_session_id": self.polylogue_session_id,
-            "polylogue_project": self.polylogue_project,
         }
 
 
@@ -581,7 +579,6 @@ def agent_session_attribution(
     same scope were spawned by the same agent invocation without going through
     an explicit ``sinnix-scope`` call — their IO is directly attributable.
 
-    Optionally enriches with polylogue session IDs by overlapping time windows.
     """
     # scope_unit -> {agent: {io, first, last, comm}, children: {comm: io}}
     scopes: dict[str, dict] = {}
@@ -625,34 +622,5 @@ def agent_session_attribution(
             agent_io_mb=sc["agent_io"] / _MB,
             direct_child_io_mb={k: v / _MB for k, v in sc["children"].items()},
         ))
-
-    # Enrich with polylogue session profiles where available
-    try:
-        from ...sources.polylogue import iter_session_profiles  # noqa: PLC0415
-        profiles = list(iter_session_profiles())
-    except Exception:
-        profiles = []
-
-    if profiles:
-        for rec in records:
-            # Find the polylogue session whose window best overlaps this agent scope
-            best: object = None
-            best_overlap = 0.0
-            rec_start_ts = rec.first_seen.timestamp()
-            rec_end_ts = rec.last_seen.timestamp()
-            for p in profiles:
-                p_start = getattr(p, "session_start", None) or getattr(p, "started_at", None)
-                p_end = getattr(p, "session_end", None) or getattr(p, "ended_at", None)
-                if p_start is None:
-                    continue
-                ps = p_start.timestamp() if hasattr(p_start, "timestamp") else float(p_start)
-                pe = (p_end.timestamp() if hasattr(p_end, "timestamp") else float(p_end)) if p_end else ps + 3600
-                overlap = max(0.0, min(rec_end_ts, pe) - max(rec_start_ts, ps))
-                if overlap > best_overlap:
-                    best_overlap = overlap
-                    best = p
-            if best is not None and best_overlap > 60:
-                rec.polylogue_session_id = str(getattr(best, "session_id", None) or getattr(best, "conversation_id", ""))
-                rec.polylogue_project = str(getattr(best, "project", None) or "")
 
     return sorted(records, key=lambda r: r.first_seen)

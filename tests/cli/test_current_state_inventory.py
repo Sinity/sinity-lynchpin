@@ -23,7 +23,6 @@ from lynchpin.core.evidence_graph import EvidenceNode
 from lynchpin.graph.movement import MovementSummary
 from lynchpin.graph.work_correlation import CorrelatedWorkDay, WorkCorrelationSummary
 from lynchpin.sources.github import GitHubActor, GitHubItem
-from lynchpin.sources.polylogue import PolylogueReadiness
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -244,20 +243,6 @@ def test_current_state_evidence_pack_combines_readiness_inventory_and_correlatio
     start = datetime(2026, 5, 1)
     end = datetime(2026, 5, 5)
     inventory_item = project_inventory(roots=(tmp_path,), include_unregistered=False)[0]
-    readiness = PolylogueReadiness(
-        db_path=tmp_path / "polylogue.db",
-        status="degraded",
-        reason="session-profile products are stale",
-        conversation_count=1,
-        message_count=None,
-        conversation_stats_count=1,
-        session_profile_count=0,
-        day_summary_count=0,
-        work_event_count=0,
-        provider_event_count=None,
-        derives_profiles_from_base_tables=True,
-        derives_day_summaries_from_profiles=True,
-    )
     row = CorrelatedWorkDay(
         date=start.date(),
         project="sinity-lynchpin",
@@ -266,29 +251,28 @@ def test_current_state_evidence_pack_combines_readiness_inventory_and_correlatio
         commit_subjects=("feat: correlate",),
         github_refs=(),
         github_lifecycles={},
-        ai_session_count=1,
-        ai_conversation_ids=("conv-1",),
+
+
         raw_log_count=0,
         raw_log_refs=(),
         focus_minutes=30,
         shell_minutes=5,
         shell_command_count=2,
-        sources=("git", "polylogue"),
+        sources=("git", "terminal"),
     )
     summary = WorkCorrelationSummary(
         row_count=1,
         cross_source_row_count=1,
         projects=("sinity-lynchpin",),
-        source_counts={"git": 1, "polylogue": 1},
-        source_pair_counts={"git+polylogue": 1},
-        git_without_ai_or_focus=0,
-        ai_without_git=0,
+        source_counts={"git": 1, "terminal": 1},
+        source_pair_counts={"git+terminal": 1},
+        git_without_focus=0,
+
         focus_without_git=0,
         terminal_without_git=0,
     )
 
     monkeypatch.setattr("lynchpin.graph.current_state.active_project_inventory", lambda: (inventory_item,))
-    monkeypatch.setattr("lynchpin.graph.current_state.archive_readiness", lambda: readiness)
     graph_calls = {}
 
     def fake_build_evidence_graph(*, start, end, projects=None, include_github_frontier=False):
@@ -302,8 +286,7 @@ def test_current_state_evidence_pack_combines_readiness_inventory_and_correlatio
     readiness_calls = {}
     monkeypatch.setattr(
         "lynchpin.graph.current_state.source_readiness",
-        lambda *, start, end, include_polylogue_product_counts=False, include_github_frontier=False, include_analysis_inventory=True: readiness_calls.update(
-            include_polylogue_product_counts=include_polylogue_product_counts,
+        lambda *, start, end, include_github_frontier=False, include_analysis_inventory=True: readiness_calls.update(
             include_github_frontier=include_github_frontier,
             include_analysis_inventory=include_analysis_inventory,
         )
@@ -325,16 +308,13 @@ def test_current_state_evidence_pack_combines_readiness_inventory_and_correlatio
 
     assert graph_calls["include_github_frontier"] is False
     assert readiness_calls == {
-        "include_polylogue_product_counts": True,
         "include_github_frontier": False,
         "include_analysis_inventory": True,
     }
-    assert pack.polylogue_readiness.status == "degraded"
     assert pack.correlation_summary.cross_source_row_count == 1
-    assert "Polylogue: `degraded`" in rendered
     assert "Source Readiness" in rendered
     assert "Movement Summary" in rendered
-    assert "git+polylogue" in rendered
+    assert "git+terminal" in rendered
     assert "Strongest Correlated Rows" in rendered
     assert "sinity-lynchpin" in rendered
     assert pack.github_frontiers == ()
@@ -344,35 +324,20 @@ def test_current_state_evidence_pack_can_include_github_frontier(monkeypatch, tm
     start = datetime(2026, 5, 1)
     end = datetime(2026, 5, 5)
     inventory_item = project_inventory(roots=(tmp_path,), include_unregistered=False)[0]
-    readiness = PolylogueReadiness(
-        db_path=tmp_path / "polylogue.db",
-        status="ok",
-        reason="ready",
-        conversation_count=1,
-        message_count=None,
-        conversation_stats_count=1,
-        session_profile_count=1,
-        day_summary_count=1,
-        work_event_count=1,
-        provider_event_count=None,
-        derives_profiles_from_base_tables=False,
-        derives_day_summaries_from_profiles=False,
-    )
     summary = WorkCorrelationSummary(
         row_count=0,
         cross_source_row_count=0,
         projects=(),
         source_counts={},
         source_pair_counts={},
-        git_without_ai_or_focus=0,
-        ai_without_git=0,
+        git_without_focus=0,
+
         focus_without_git=0,
         terminal_without_git=0,
     )
     frontier = (ProjectGitHubFrontier(project="polylogue", slug="Sinity/polylogue", status="ok", reason=None, items=()),)
 
     monkeypatch.setattr("lynchpin.graph.current_state.active_project_inventory", lambda: (inventory_item,))
-    monkeypatch.setattr("lynchpin.graph.current_state.archive_readiness", lambda: readiness)
     monkeypatch.setattr(
         "lynchpin.graph.current_state.build_evidence_graph",
         lambda *, start, end, projects=None, include_github_frontier=False: EvidenceGraph(
@@ -388,8 +353,7 @@ def test_current_state_evidence_pack_can_include_github_frontier(monkeypatch, tm
     readiness_calls = {}
     monkeypatch.setattr(
         "lynchpin.graph.current_state.source_readiness",
-        lambda *, start, end, include_polylogue_product_counts=False, include_github_frontier=False, include_analysis_inventory=True: readiness_calls.update(
-            include_polylogue_product_counts=include_polylogue_product_counts,
+        lambda *, start, end, include_github_frontier=False, include_analysis_inventory=True: readiness_calls.update(
             include_github_frontier=include_github_frontier,
             include_analysis_inventory=include_analysis_inventory,
         )
@@ -420,7 +384,6 @@ def test_current_state_evidence_pack_can_include_github_frontier(monkeypatch, tm
     assert frontier_calls == {"start": start.date(), "end": end.date() + timedelta(days=1)}
     assert calls["include_github_context"] is True
     assert readiness_calls == {
-        "include_polylogue_product_counts": True,
         "include_github_frontier": True,
         "include_analysis_inventory": True,
     }
@@ -434,28 +397,14 @@ def test_current_state_evidence_pack_filters_inventory_for_selected_projects(mon
     end = datetime(2026, 5, 5)
     lynchpin_item = project_inventory(roots=(tmp_path,), include_unregistered=False)[0]
     polylogue_item = ProjectGitHubFrontier(project="polylogue", slug="Sinity/polylogue", status="ok", reason=None, items=())
-    readiness = PolylogueReadiness(
-        db_path=tmp_path / "polylogue.db",
-        status="ok",
-        reason="ready",
-        conversation_count=1,
-        message_count=None,
-        conversation_stats_count=1,
-        session_profile_count=1,
-        day_summary_count=1,
-        work_event_count=1,
-        provider_event_count=None,
-        derives_profiles_from_base_tables=False,
-        derives_day_summaries_from_profiles=False,
-    )
     summary = WorkCorrelationSummary(
         row_count=0,
         cross_source_row_count=0,
         projects=(),
         source_counts={},
         source_pair_counts={},
-        git_without_ai_or_focus=0,
-        ai_without_git=0,
+        git_without_focus=0,
+
         focus_without_git=0,
         terminal_without_git=0,
     )
@@ -483,7 +432,6 @@ def test_current_state_evidence_pack_filters_inventory_for_selected_projects(mon
             ),
         ),
     )
-    monkeypatch.setattr("lynchpin.graph.current_state.archive_readiness", lambda: readiness)
 
     def fake_build_evidence_graph(*, start, end, projects=None, include_github_frontier=False):
         seen["projects"] = projects
@@ -497,7 +445,7 @@ def test_current_state_evidence_pack_filters_inventory_for_selected_projects(mon
     monkeypatch.setattr("lynchpin.graph.current_state.build_evidence_graph", fake_build_evidence_graph)
     monkeypatch.setattr(
         "lynchpin.graph.current_state.source_readiness",
-        lambda *, start, end, include_polylogue_product_counts=False, include_github_frontier=False, include_analysis_inventory=True: SourceReadinessReport(start=start, end=end, generated_at=datetime(2026, 5, 1), sources=()),
+        lambda *, start, end, include_github_frontier=False, include_analysis_inventory=True: SourceReadinessReport(start=start, end=end, generated_at=datetime(2026, 5, 1), sources=()),
     )
     monkeypatch.setattr("lynchpin.graph.current_state.work_day_correlations", lambda *, start, end, include_github_context=False, graph=None: ())
     monkeypatch.setattr("lynchpin.graph.current_state.summarize_work_correlations", lambda rows: summary)

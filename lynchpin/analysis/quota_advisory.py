@@ -2,7 +2,7 @@
 
 This module is deliberately outside the Sinnix request path.  It consumes
 redacted quota snapshots and completed agent manifests, then joins them with
-Polylogue token evidence and Beads outcomes.  Missing evidence stays missing.
+job usage and Beads outcomes.  Missing evidence stays missing.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from typing import Any, Mapping, Sequence
 
 from ..core.config import get_config
 from ..core.io import save_json
-from ..sources.polylogue import conversation_transcripts
 
 FEATURES = (
     "uncached_input",
@@ -152,7 +151,6 @@ def write_quota_advisory(
     payload["sources"] = {
         "quota": "redacted Sinnix quota rows",
         "agent_jobs": "v3 completion manifests",
-        "polylogue": "session token evidence",
         "beads": "repository issue records",
     }
     save_json(out_file, payload, sort_keys=True)
@@ -189,7 +187,6 @@ def _load_live_observations() -> list[QuotaObservation]:
     beads_path = get_config().sinnix_root / ".beads/issues.jsonl"
     beads = _load_jsonl(beads_path)
     bead_status = {str(row.get("id")): row.get("status") for row in beads if row.get("id")}
-    profiles = _polylogue_token_index()
     observations: list[QuotaObservation] = []
     for path in sorted(jobs_root.glob("*.json")):
         job = _load_json(path)
@@ -204,8 +201,6 @@ def _load_live_observations() -> list[QuotaObservation]:
             if row.get("provider") != provider:
                 continue
             features = {name: float(usage.get(name, 0) or 0) for name in FEATURES}
-            token_data = profiles.get(identity.get("polylogue_session_id"), {})
-            features["output"] = features["output"] or float(token_data.get("all_message_tokens", 0))
             observations.append(QuotaObservation(provider, identity.get("account_hash"), row.get("plan_epoch"), str((job.get("declared") or {}).get("role") or "unclassified"), bead_id if bead_id in bead_status else None, job.get("job_id"), features, float(row.get("delta_fraction", 0) or 0), _duration_seconds(job, completion), (bead_status.get(bead_id) == "closed") if bead_id else None, (row.get("window") or {}).get("resets_at")))
     return observations
 
@@ -215,15 +210,6 @@ def _load_quota_windows() -> list[dict[str, Any]]:
     payload = _load_json(path)
     rows = payload.get("rows", []) if isinstance(payload, dict) else payload
     return [row for row in rows if isinstance(row, dict)]
-
-
-def _polylogue_token_index() -> dict[str, dict[str, Any]]:
-    try:
-        end = datetime.now(timezone.utc).date()
-        transcripts = conversation_transcripts(start=end, end=end)
-    except Exception:
-        return {}
-    return {t.conversation_id: {"all_message_tokens": t.all_message_tokens} for t in transcripts}
 
 
 def _duration_seconds(job: Mapping[str, Any], completion: Mapping[str, Any]) -> float | None:

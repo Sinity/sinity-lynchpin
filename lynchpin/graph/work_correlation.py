@@ -3,7 +3,7 @@
 This module keeps the first correlation layer deliberately concrete: one row per
 project per day, with source-specific evidence retained rather than collapsed
 into an opaque score. It is intended as input to current-state analysis where
-git, GitHub, Polylogue, ActivityWatch, and terminal evidence must be interpreted
+git, GitHub, ActivityWatch, and terminal evidence must be interpreted
 together without double-counting any one scalar.
 """
 
@@ -38,11 +38,6 @@ class _MutableCorrelatedWorkDay:
     commit_subjects: list[str] = field(default_factory=list)
     github_refs: set[str] = field(default_factory=set)
     github_lifecycle_refs: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
-    ai_conversation_ids: set[str] = field(default_factory=set)
-    # Event-level kind observations only. Session-profile kind labels are too
-    # coarse to merge into project/day claims without overstating certainty.
-    ai_event_kind_breakdown: Counter[str] = field(default_factory=Counter)
-    ai_event_kind_weighted: dict[str, float] = field(default_factory=dict)
     raw_log_refs: set[str] = field(default_factory=set)
     # Atomic focus spans and per-day focus rollups describe the same time.
     # They are kept apart and resolved in ``focus_minutes`` so a rollup never
@@ -77,19 +72,13 @@ class CorrelatedWorkDay:
     commit_subjects: tuple[str, ...]
     github_refs: tuple[str, ...]
     github_lifecycles: dict[str, int]
-    ai_session_count: int
-    ai_conversation_ids: tuple[str, ...]
     raw_log_count: int
     raw_log_refs: tuple[str, ...]
     focus_minutes: float
     shell_minutes: float
     shell_command_count: int
     sources: tuple[str, ...]
-    # Arc B.1: kind breakdown. Tuple-of-pairs keeps the dataclass hashable;
-    # callers can `dict(row.ai_kind_breakdown)` when they need a map. Defaults
-    # to empty so tests / existing constructions don't have to supply them.
-    ai_kind_breakdown: tuple[tuple[str, int], ...] = ()
-    ai_kind_weighted: tuple[tuple[str, float], ...] = ()
+
 
     @property
     def source_count(self) -> int:
@@ -99,15 +88,6 @@ class CorrelatedWorkDay:
     def has_cross_source_support(self) -> bool:
         return self.source_count >= 2
 
-    @property
-    def dominant_ai_kind(self) -> str | None:
-        """Top kind by weighted score, breaking ties by raw count."""
-        if not self.ai_kind_weighted:
-            return None
-        weighted = dict(self.ai_kind_weighted)
-        raw = dict(self.ai_kind_breakdown)
-        return max(weighted, key=lambda k: (weighted[k], raw.get(k, 0)))
-
 
 @dataclass(frozen=True)
 class WorkCorrelationSummary:
@@ -116,8 +96,7 @@ class WorkCorrelationSummary:
     projects: tuple[str, ...]
     source_counts: dict[str, int]
     source_pair_counts: dict[str, int]
-    git_without_ai_or_focus: int
-    ai_without_git: int
+    git_without_focus: int
     focus_without_git: int
     terminal_without_git: int
 
@@ -175,7 +154,6 @@ def correlate_work_days(
     *,
     git_facts: Sequence[object] = (),
     github_items: Sequence[GitHubItem | dict[str, object]] = (),
-    ai_sessions: Sequence[object] = (),
     raw_log_entries: Sequence[object] = (),
     focus_spans: Sequence[object] = (),
     shell_sessions: Sequence[object] = (),
@@ -224,17 +202,6 @@ def correlate_work_days(
         bucket.github_refs.add(ref)
         bucket.github_lifecycle_refs[classify_lifecycle(item).lifecycle].add(ref)
 
-    for session in ai_sessions:
-        first_message_at = getattr(session, "first_message_at", None)
-        session_date = logical_date(first_message_at) if first_message_at is not None else getattr(session, "canonical_session_date", None)
-        if session_date is None:
-            continue
-        conv_id = str(getattr(session, "conversation_id", ""))
-        for project in _projects_from_ai_session(session):
-            bucket = row(session_date, project)
-            bucket.sources.add("polylogue")
-            bucket.ai_conversation_ids.add(conv_id)
-
     for entry in raw_log_entries:
         timestamp = getattr(entry, "timestamp", None)
         if timestamp is None:
@@ -280,8 +247,7 @@ def summarize_work_correlations(rows: Sequence[CorrelatedWorkDay]) -> WorkCorrel
     """Summarize which source joins are present and where evidence is isolated."""
     source_counts: Counter[str] = Counter()
     source_pair_counts: Counter[str] = Counter()
-    git_without_ai_or_focus = 0
-    ai_without_git = 0
+    git_without_focus = 0
     focus_without_git = 0
     terminal_without_git = 0
 
@@ -292,10 +258,8 @@ def summarize_work_correlations(rows: Sequence[CorrelatedWorkDay]) -> WorkCorrel
         for idx, left in enumerate(ordered):
             for right in ordered[idx + 1:]:
                 source_pair_counts[f"{left}+{right}"] += 1
-        if "git" in sources and "polylogue" not in sources and "activitywatch" not in sources:
-            git_without_ai_or_focus += 1
-        if "polylogue" in sources and "git" not in sources:
-            ai_without_git += 1
+        if "git" in sources and "activitywatch" not in sources:
+            git_without_focus += 1
         if "activitywatch" in sources and "git" not in sources:
             focus_without_git += 1
         if "terminal" in sources and "git" not in sources:
@@ -307,8 +271,8 @@ def summarize_work_correlations(rows: Sequence[CorrelatedWorkDay]) -> WorkCorrel
         projects=tuple(sorted({row.project for row in rows})),
         source_counts=dict(sorted(source_counts.items())),
         source_pair_counts=dict(sorted(source_pair_counts.items())),
-        git_without_ai_or_focus=git_without_ai_or_focus,
-        ai_without_git=ai_without_git,
+        git_without_focus=git_without_focus,
+
         focus_without_git=focus_without_git,
         terminal_without_git=terminal_without_git,
     )
@@ -381,25 +345,6 @@ def _correlations_from_graph(
             lifecycle = str(payload.get("lifecycle") or "referenced")
             if lifecycle and lifecycle != "referenced":
                 bucket.github_lifecycle_refs[lifecycle].add(f"{ref_kind}#{number}")
-        elif kind == "ai_session":
-            bucket.sources.add("polylogue")
-            conversation_id = str(payload.get("conversation_id") or "").strip()
-            if conversation_id:
-                bucket.ai_conversation_ids.add(conversation_id)
-        elif kind == "ai_work_event":
-            # Per-event kind is the preferred signal (Arc A + Arc K).
-            event_kind = payload.get("kind")
-            tier_raw = str(payload.get("kind_tier") or "medium")
-            if event_kind:
-                from .work_event_kind import tier_weight
-                # Defensive cast: Arc K only emits high/medium/low, but
-                # work_event_kind isn't always Arc K's output.
-                tier = tier_raw if tier_raw in ("high", "medium", "low") else "medium"
-                bucket.ai_event_kind_breakdown[event_kind] += 1
-                bucket.ai_event_kind_weighted[event_kind] = (
-                    bucket.ai_event_kind_weighted.get(event_kind, 0.0)
-                    + tier_weight(tier)  # type: ignore[arg-type]
-                )
         elif kind == "raw_log":
             bucket.sources.add("raw_log")
             source_path = str(payload.get("source_path") or "")
@@ -420,19 +365,19 @@ def _correlations_from_graph(
 
 def render_work_day_correlations(rows: Sequence[CorrelatedWorkDay]) -> str:
     lines = [
-        "| Date | Project | Sources | Commits | GitHub | AI Sessions | Raw Log | Focus h | Shell cmds |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Date | Project | Sources | Commits | GitHub | Raw Log | Focus h | Shell cmds |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         github = _format_refs(row.github_refs)
         lines.append(
-            "| {date} | {project} | {sources} | {commits} | {github} | {ai} | {raw_log} | {focus:.2f} | {shell} |".format(
+            "| {date} | {project} | {sources} | {commits} | {github} | {raw_log} | {focus:.2f} | {shell} |".format(
                 date=row.date.isoformat(),
                 project=row.project,
                 sources=", ".join(row.sources),
                 commits=row.commit_count,
                 github=github,
-                ai=row.ai_session_count,
+
                 raw_log=row.raw_log_count,
                 focus=row.focus_minutes / 60.0,
                 shell=row.shell_command_count,
@@ -466,8 +411,7 @@ def render_work_correlation_summary(summary: WorkCorrelationSummary) -> str:
         f"- Projects: {', '.join(summary.projects)}",
         f"- Source counts: {_format_counts(summary.source_counts)}",
         f"- Source pair counts: {_format_counts(summary.source_pair_counts)}",
-        f"- Git without AI or focus: {summary.git_without_ai_or_focus}",
-        f"- AI without git: {summary.ai_without_git}",
+        f"- Git without focus: {summary.git_without_focus}",
         f"- Focus without git: {summary.focus_without_git}",
         f"- Terminal without git: {summary.terminal_without_git}",
     ]
@@ -486,7 +430,6 @@ def strongest_work_correlations(
             key=lambda row: (
                 row.source_count,
                 row.commit_count,
-                row.ai_session_count,
                 len(row.github_refs),
                 row.raw_log_count,
                 row.focus_minutes,
@@ -615,18 +558,8 @@ def _freeze(row: _MutableCorrelatedWorkDay) -> CorrelatedWorkDay:
             lifecycle: len(refs)
             for lifecycle, refs in sorted(row.github_lifecycle_refs.items())
         },
-        ai_session_count=len({cid for cid in row.ai_conversation_ids if cid}),
-        ai_conversation_ids=tuple(sorted(cid for cid in row.ai_conversation_ids if cid)),
-        ai_kind_breakdown=tuple(
-            sorted(row.ai_event_kind_breakdown.items(), key=lambda kv: (-kv[1], kv[0]))
-        ),
-        ai_kind_weighted=tuple(
-            (kind, round(weight, 3))
-            for kind, weight in sorted(
-                row.ai_event_kind_weighted.items(),
-                key=lambda kv: (-kv[1], kv[0]),
-            )
-        ),
+
+
         raw_log_count=len(row.raw_log_refs),
         raw_log_refs=tuple(sorted(row.raw_log_refs)),
         focus_minutes=round(row.focus_minutes, 2),
@@ -718,7 +651,6 @@ def _claim_score(row: CorrelatedWorkDay, relation_count: int) -> float:
         row.source_count
         + min(relation_count, 6) * 0.35
         + min(row.commit_count, 5) * 0.12
-        + min(row.ai_session_count, 3) * 0.2
         + min(row.focus_minutes / 60.0, 6.0) * 0.08
         + min(row.shell_command_count, 12) * 0.04,
         3,
@@ -739,8 +671,6 @@ def _claim_summary(row: CorrelatedWorkDay, relation_count: int) -> str:
     parts = []
     if row.commit_count:
         parts.append(f"{row.commit_count} commits")
-    if row.ai_session_count:
-        parts.append(f"{row.ai_session_count} AI sessions")
     if row.focus_minutes:
         parts.append(f"{row.focus_minutes / 60.0:.2f}h focus")
     if row.shell_command_count:
@@ -759,8 +689,6 @@ def _claim_caveats(row: CorrelatedWorkDay, relation_count: int) -> tuple[str, ..
     caveats: list[str] = []
     if row.source_count < 2:
         caveats.append("single-source support; do not treat as corroborated work")
-    if row.ai_session_count:
-        caveats.append("AI sessions indicate assistance intensity, not independent work units")
     if row.github_refs:
         caveats.append("GitHub refs may be commit-message references unless github_context lifecycle evidence is present")
     if row.focus_minutes and row.commit_count == 0:
@@ -845,19 +773,6 @@ def _github_item_from_context(item: object) -> GitHubItem:
         closed_at=parse_datetime(item.get("closed_at") or item.get("closedAt")),
         merged_at=parse_datetime(item.get("merged_at") or item.get("mergedAt")),
     )
-
-
-def _projects_from_ai_session(session: object) -> tuple[str, ...]:
-    projects = getattr(session, "work_event_projects", ()) or ()
-    result = tuple(project for project in (_normalize_project(p) for p in projects) if project)
-    if result:
-        return result
-    title = str(getattr(session, "title", "") or "")
-    for token in title.replace("/", " ").replace(":", " ").split():
-        project = _normalize_project(token)
-        if project:
-            return (project,)
-    return ()
 
 
 def _projects_from_text(text: str) -> tuple[str, ...]:

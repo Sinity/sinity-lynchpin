@@ -1,7 +1,7 @@
 """Cross-source operator daily matrix — every source signal per day.
 
 The panoramic daily view. Joins ActivityWatch, git, health, substance, social,
-communication, AI, web, terminal, and music into one typed ``OperatorDay``
+communication, web, terminal, and music into one typed ``OperatorDay``
 record per date. This is the foundation for ALL downstream cross-source
 analysis: correlations, anomaly detection, predictive models, life-phase
 detection.
@@ -103,11 +103,6 @@ class OperatorDay:
     outlook_sent: int = 0
     gmail_messages: int = 0
 
-    # ── AI (2025-05+) ──
-    polylogue_sessions: int = 0
-    polylogue_messages: int = 0
-    polylogue_engaged_minutes: float = 0.0
-    polylogue_projects: tuple[str, ...] = ()
 
     # ── Web ──
     web_visits: int = 0
@@ -215,7 +210,6 @@ _COVERAGE_KEY: dict[str, str | None] = {
     "messenger": "fbmessenger",
     "outlook": None,
     "sleep": "sleep",
-    "polylogue": "polylogue",
     "web": "webhistory",
     "terminal": "atuin",
     "spotify": "spotify",
@@ -246,7 +240,7 @@ def operator_daily_matrix(
         start, end: date range (inclusive).
         skip_slow: if True, skip sources that still require heavier session/raw
                    scans (clipboard, raw_log, samsung, and keylog keybind
-                   attribution). Product-backed web, terminal, Polylogue, IRC,
+                   attribution). Product-backed web, terminal, IRC,
                    keylog daily counts, and Spotify daily signals still load
                    through their canonical products; refreshing stale products
                    can still require substantial local work.
@@ -306,8 +300,6 @@ def operator_daily_matrix(
     _try_fill(ctx, "web", lambda: _fill_web(ctx))
     # ── Terminal (product-backed Atuin) ──
     _try_fill(ctx, "terminal", lambda: _fill_terminal(ctx))
-    # ── Polylogue (product-backed archive insights) ──
-    _try_fill(ctx, "polylogue", lambda: _fill_polylogue(ctx))
     # ── IRC (product-backed WeeChat events) ──
     _try_fill(ctx, "irc", lambda: _fill_irc(ctx))
     # ── Spotify (product-backed) ──
@@ -667,21 +659,6 @@ def _fill_outlook(ctx: _FillContext) -> None:
             r = ctx.rows[d.date]
             r.outlook_inbox = d.inbox_count
             r.outlook_sent = d.sent_count
-
-
-def _fill_polylogue(ctx: _FillContext) -> None:
-    from ..sources.polylogue import daily_activity
-    daily = daily_activity(start=ctx.start, end=ctx.end)
-    for d in daily:
-        if d.date in ctx.rows and ctx.mark(d.date):
-            r = ctx.rows[d.date]
-            r.polylogue_sessions += d.session_count
-            r.polylogue_messages += d.total_messages
-            r.polylogue_engaged_minutes += d.engaged_minutes
-            if d.projects:
-                r.polylogue_projects = tuple(
-                    dict.fromkeys((*r.polylogue_projects, *d.projects))
-                )
 
 
 def _fill_web(ctx: _FillContext) -> None:

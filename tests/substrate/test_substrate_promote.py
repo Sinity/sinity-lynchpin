@@ -72,24 +72,6 @@ def test_incomplete_source_keeps_native_promotion_degraded(tmp_path, monkeypatch
         assert conn.execute("SELECT status FROM substrate_promotion_run WHERE refresh_id = 'fixture:incomplete'").fetchone()[0] == "degraded"
 
 
-@pytest.fixture(autouse=True)
-def _isolate_live_polylogue(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Substrate-promotion unit tests must not ingest live personal archives."""
-    monkeypatch.setattr("lynchpin.sources.polylogue.work_events", lambda *args, **kwargs: [])
-    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda *args, **kwargs: iter(()))
-    monkeypatch.setattr("lynchpin.sources.machine.gpu_samples", lambda *args, **kwargs: iter(()))
-    monkeypatch.setattr("lynchpin.sources.machine.metric_samples", lambda *args, **kwargs: iter(()))
-    monkeypatch.setattr("lynchpin.sources.machine.network_samples", lambda *args, **kwargs: iter(()))
-    monkeypatch.setattr(
-        "lynchpin.sources.machine.readiness",
-        lambda *args, **kwargs: SimpleNamespace(
-            status="ready",
-            reason="isolated test fixture",
-        ),
-    )
-    monkeypatch.setattr("lynchpin.sources.machine.service_states", lambda *args, **kwargs: iter(()))
-
-
 def _reload_config(monkeypatch: pytest.MonkeyPatch | None = None) -> None:
     """Clear cached config so env-var monkeypatches take effect.
 
@@ -346,8 +328,6 @@ def test_substrate_promote_handles_missing_files(
     monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
     _reload_config(monkeypatch)
 
-    import lynchpin.sources.polylogue as polylogue_src
-    monkeypatch.setattr(polylogue_src, "work_events", lambda *a, **kw: [])
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
 
@@ -698,72 +678,6 @@ def test_snapshot_loss_still_isolates_partial_promotion_failure(
     assert canonical.read_bytes() == before
     assert generation_refresh_id(canonical) == "prior"
     assert not substrate_read_snapshot_path().exists()
-
-
-def test_substrate_promote_merges_active_ai_attribution(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """High/medium active_ai_attribution rows land in commit_fact.ai_attribution."""
-    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
-    _reload_config(monkeypatch)
-
-    sha_medium = "abc" + "0" * 37
-    sha_none = "def" + "0" * 37
-    cf_file = tmp_path / "commit_facts.json"
-    cf_file.write_text(json.dumps(_make_commit_facts_payload([
-        _make_commit_entry(sha_medium),
-        _make_commit_entry(sha_none),
-    ])))
-    ai_file = tmp_path / "ai.json"
-    ai_file.write_text(json.dumps({
-        "commits": [
-            {
-                "sha": sha_medium,
-                "ai_attribution": "medium",
-                "supporting_session_ids": ["s1"],
-                "supporting_providers": ["claude-code"],
-                "supporting_session_count": 1,
-            },
-            {
-                "sha": sha_none,
-                "ai_attribution": "none",
-                "supporting_session_ids": [],
-                "supporting_providers": [],
-                "supporting_session_count": 0,
-            },
-        ]
-    }))
-    fc_file = tmp_path / "fc.json"
-    fc_file.write_text(json.dumps(_make_file_change_payload([])))
-    sym_file = tmp_path / "sym.json"
-    sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
-
-    from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import connect, substrate_path
-
-    run_substrate_promote(
-        commit_facts_file=str(cf_file),
-        file_changes_file=str(fc_file),
-        symbol_changes_file=str(sym_file),
-        ai_attribution_file=str(ai_file),
-        refresh_id="r-ai",
-        sources=_json_sources(),
-        write_evidence_graph=False,
-    )
-
-    with connect(substrate_path(), read_only=True) as conn:
-        rows = conn.execute(
-            """
-            SELECT sha, CAST(ai_attribution AS VARCHAR)
-            FROM commit_fact
-            WHERE refresh_id = 'r-ai'
-            ORDER BY sha
-            """
-        ).fetchall()
-
-    by_sha = {sha: value for sha, value in rows}
-    assert '"classification": "medium"' in by_sha[sha_medium]
-    assert by_sha[sha_none] is None
 
 
 def test_substrate_promote_loads_file_change_facts(
@@ -1315,7 +1229,6 @@ def test_substrate_promote_selected_sources_do_not_probe_others(
     def fail_unselected(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("unselected source was probed")
 
-    monkeypatch.setattr("lynchpin.sources.polylogue.work_events", fail_unselected)
     monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", fail_unselected)
     monkeypatch.setattr("lynchpin.sources.machine.metric_samples", fail_unselected)
 

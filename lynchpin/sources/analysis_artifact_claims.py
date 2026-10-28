@@ -16,7 +16,6 @@ from .analysis_artifact_code_claims import (
 from .analysis_artifact_metric_claims import _cross_project_metrics_claims
 from .analysis_artifact_models import AnalysisArtifact, AnalysisClaim, ClaimExtractor
 from .analysis_artifact_quality_claims import (
-    _active_ai_attribution_claims,
     _active_ci_health_claims,
     _active_python_dependency_hygiene_claims,
     _active_rust_dependency_hygiene_claims,
@@ -142,7 +141,6 @@ _CLAIM_EXTRACTORS: dict[str, ClaimExtractor] = {
     "active_symbol_changes.json": _active_symbol_changes_claims,
     "active_symbol_diffs.json": _active_symbol_diffs_claims,
     "active_ci_health.json": _active_ci_health_claims,
-    "active_ai_attribution.json": _active_ai_attribution_claims,
     "cross_project_metrics.json": _cross_project_metrics_claims,
     "code_history_claims.json": _code_history_claims,
     "machine_attribution_claims.json": _machine_attribution_claims,

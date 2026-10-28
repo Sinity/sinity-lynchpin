@@ -14,7 +14,7 @@ while exported epoch timestamps remain UTC.
 
 This module exposes typed iterators for time-aligned analysis. Useful for:
   - Reverse-engineering Samsung's stress score formula (see analysis.health_modeling)
-  - Cross-correlating with AW activity, polylogue, substance log, etc.
+  - Cross-correlating with AW activity, substance log, etc.
   - Back-projection of unmeasured signals where one stands in for another
 """
 from __future__ import annotations

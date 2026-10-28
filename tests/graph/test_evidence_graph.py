@@ -14,7 +14,6 @@ from lynchpin.sources.github import GitHubActor, GitHubItem
 from tests.graph.evidence_graph_fixtures import (  # noqa: F401
     _mock_empty_sources,
     _no_analysis_claims,
-    _no_substrate_overlap,
 )
 
 UTC = timezone.utc
@@ -71,7 +70,6 @@ def test_activitywatch_evidence_uses_core_focus_spans(monkeypatch) -> None:
     )
 
     assert calls["min_duration_s"] == 60.0
-    assert calls["enrich_polylogue"] is False
     assert [node.kind for node in nodes] == ["focus_span"]
     assert nodes[0].payload["span_source"] == "aw_trimmed"
     assert nodes[0].payload["keypress_count"] == 42
@@ -369,13 +367,6 @@ def test_materialized_graph_uses_only_converged_builder_surfaces(
     )
     monkeypatch.setattr("lynchpin.graph.evidence_git.commit_facts", lambda **kwargs: ())
     monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: (),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events", lambda **kwargs: ()
-    )
-    monkeypatch.setattr(
         "lynchpin.graph.evidence_raw_log.entries_in_range", lambda **kwargs: ()
     )
     monkeypatch.setattr(
@@ -464,16 +455,6 @@ def test_materialized_graph_uses_only_converged_builder_surfaces(
     graph = build_evidence_graph(start=date(2026, 6, 1), end=date(2026, 6, 6))
 
     assert graph.nodes == ()
-    assert readiness_calls == [
-        {
-            "start": date(2026, 6, 1),
-            "end": date(2026, 6, 6),
-            "include_polylogue_product_counts": True,
-            "include_github_frontier": False,
-            "include_analysis_inventory": True,
-            "repair_materializations": False,
-        }
-    ]
     assert machine_calls == [
         {
             "start": date(2026, 6, 1),
@@ -528,36 +509,6 @@ def test_materialized_graph_includes_ensured_personal_daily_signals(
     assert nodes[0].payload["metric"] == "keypress_count"
 
 
-def test_polylogue_work_events_degrade_locally_when_products_fail(
-    monkeypatch,
-) -> None:
-    from lynchpin.graph.evidence_polylogue import add_polylogue_work_events
-
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: (),
-    )
-
-    def broken_work_events(**kwargs):
-        from lynchpin.sources.polylogue import PolylogueMaterializationError
-
-        raise PolylogueMaterializationError("session work-event rows are incomplete")
-
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events", broken_work_events
-    )
-
-    nodes = []
-    add_polylogue_work_events(
-        nodes,
-        start=date(2026, 5, 5),
-        end=date(2026, 5, 5),
-        selected=set(),
-    )
-
-    assert nodes == []
-
-
 def test_build_evidence_graph_links_commit_refs_and_project_day(monkeypatch):
     monkeypatch.setattr(
         "lynchpin.graph.evidence_graph.add_machine_analysis_nodes",
@@ -580,13 +531,6 @@ def test_build_evidence_graph_links_commit_refs_and_project_day(monkeypatch):
                 paths=(),
             ),
         ),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: (),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events", lambda **kwargs: ()
     )
     monkeypatch.setattr(
         "lynchpin.graph.evidence_raw_log.entries_in_range", lambda **kwargs: ()
@@ -662,13 +606,6 @@ def test_build_evidence_graph_passes_mode_to_source_readiness(monkeypatch):
     calls = {}
     monkeypatch.setattr("lynchpin.graph.evidence_git.commit_facts", lambda **kwargs: ())
     monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: (),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events", lambda **kwargs: ()
-    )
-    monkeypatch.setattr(
         "lynchpin.graph.evidence_raw_log.entries_in_range", lambda **kwargs: ()
     )
     monkeypatch.setattr(
@@ -726,7 +663,6 @@ def test_build_evidence_graph_passes_mode_to_source_readiness(monkeypatch):
     )
 
     assert graph.mode == "network"
-    assert calls["include_polylogue_product_counts"] is True
     assert calls["include_github_frontier"] is True
     assert calls["repair_materializations"] is False
 
@@ -739,13 +675,6 @@ def test_network_evidence_graph_uses_temporal_focus_spans(monkeypatch):
     start = datetime(2026, 5, 5, 12, tzinfo=UTC)
     end = datetime(2026, 5, 5, 12, 45, tzinfo=UTC)
     monkeypatch.setattr("lynchpin.graph.evidence_git.commit_facts", lambda **kwargs: ())
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: (),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events", lambda **kwargs: ()
-    )
     monkeypatch.setattr(
         "lynchpin.graph.evidence_raw_log.entries_in_range", lambda **kwargs: ()
     )
@@ -873,13 +802,6 @@ def test_network_evidence_graph_enriches_only_selected_project_commits(monkeypat
             "projects", tuple(sorted(projects or ()))
         )
         and iter(()),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: (),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events", lambda **kwargs: ()
     )
     monkeypatch.setattr(
         "lynchpin.graph.evidence_raw_log.entries_in_range", lambda **kwargs: ()
@@ -1059,13 +981,6 @@ def test_materialized_git_evidence_ignores_github_cache_misses(monkeypatch) -> N
 def test_build_base_evidence_graph_excludes_analysis_nodes(monkeypatch):
     monkeypatch.setattr("lynchpin.graph.evidence_git.commit_facts", lambda **kwargs: ())
     monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: (),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events", lambda **kwargs: ()
-    )
-    monkeypatch.setattr(
         "lynchpin.graph.evidence_raw_log.entries_in_range", lambda **kwargs: ()
     )
     monkeypatch.setattr(
@@ -1150,7 +1065,6 @@ def test_materialized_graph_runs_product_readiness_without_frontier(monkeypatch)
         calls.update(kwargs)
         return SimpleNamespace(caveats=())
 
-    monkeypatch.setattr("lynchpin.graph.evidence_polylogue.work_events", empty_source)
     monkeypatch.setattr(
         "lynchpin.graph.evidence_analysis.latest_artifacts", empty_source
     )
@@ -1173,14 +1087,6 @@ def test_materialized_graph_runs_product_readiness_without_frontier(monkeypatch)
     assert graph.mode == "materialized"
     assert base.mode == "materialized"
     assert source_calls
-    assert calls == {
-        "start": date(2026, 5, 5),
-        "end": date(2026, 5, 5),
-        "include_polylogue_product_counts": True,
-        "include_github_frontier": False,
-        "include_analysis_inventory": True,
-        "repair_materializations": False,
-    }
 
 
 def test_spotify_evidence_converges_daily_product(monkeypatch):
@@ -1253,22 +1159,6 @@ def test_spotify_evidence_uses_product_reader_exclusive_end(monkeypatch):
     assert reader_calls == [(date(2026, 1, 1), date(2026, 1, 3), False)]
 
 
-def _patch_polylogue_work_events(
-    monkeypatch,
-    events,
-    *,
-    sessions=(),
-):
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: sessions,
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events",
-        lambda **kwargs: events,
-    )
-
-
 def _patch_evidence_graph_minimal(monkeypatch):
     """Stub all sources except polylogue/git/terminal so a focused test only
     exercises the new substrate. Callers should still set the polylogue and
@@ -1328,120 +1218,6 @@ def _patch_evidence_graph_minimal(monkeypatch):
     monkeypatch.setattr(
         "lynchpin.graph.terminal_patterns.detect_patterns", lambda **kwargs: ()
     )
-
-
-def test_polylogue_work_events_appear_in_local_heavy_and_skip_local_fast(
-    monkeypatch,
-):
-    when = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
-    events = (
-        SimpleNamespace(
-            event_id="we-high",
-            conversation_id="c1",
-            provider="claude-code",
-            kind="implementation",
-            confidence=0.9,
-            start=when,
-            end=when.replace(hour=14, minute=30),
-            duration_ms=30 * 60_000,
-            file_paths=("/realm/project/sinity-lynchpin/lynchpin/foo.py",),
-            tools_used=("Edit",),
-            summary="Implementing foo",
-            workflow_shape="agentic_loop",
-            workflow_shape_confidence=0.86,
-            terminal_state="tool_left",
-            terminal_state_confidence=0.72,
-        ),
-        SimpleNamespace(
-            event_id="we-low",
-            conversation_id="c1",
-            provider="claude-code",
-            kind="research",
-            confidence=0.4,
-            start=when.replace(hour=15),
-            end=when.replace(hour=15, minute=10),
-            duration_ms=10 * 60_000,
-            file_paths=("/realm/project/sinity-lynchpin/docs/notes.md",),
-            tools_used=("Read",),
-            summary="Reading notes",
-        ),
-    )
-    _patch_evidence_graph_minimal(monkeypatch)
-    _patch_polylogue_work_events(monkeypatch, events)
-
-    graph = build_evidence_graph(start=date(2026, 5, 7), end=date(2026, 5, 7))
-    we_kinds = sorted(
-        n.payload["event_id"] for n in graph.nodes if n.kind == "ai_work_event"
-    )
-    assert we_kinds == ["we-high", "we-low"]
-
-    high = next(
-        n
-        for n in graph.nodes
-        if n.kind == "ai_work_event" and n.payload["event_id"] == "we-high"
-    )
-    assert high.project == "sinity-lynchpin"
-    assert high.payload["kind"] == "implementation"
-    # Arc K overlay: file_paths (.py), Edit tool, 30min duration all support
-    # implementation, so Polylogue + overlay AGREE — kind_source becomes
-    # "agreement" and tier is high (combined confidence ≥ 0.8 with ≥2 features).
-    assert high.payload["kind_source"] == "agreement"
-    assert high.payload["kind_tier"] == "high"
-    assert high.payload["source_kind"] == "implementation"
-    assert high.payload["overlay_kind"] == "implementation"
-    assert high.payload["workflow_shape"] == "agentic_loop"
-    assert high.payload["workflow_shape_confidence"] == 0.86
-    assert high.payload["terminal_state"] == "tool_left"
-    assert high.payload["terminal_state_confidence"] == 0.72
-    assert any(c.message.startswith("Work-event boundaries") for c in high.caveats)
-
-
-def test_polylogue_work_events_reuse_session_project_before_path_resolution(
-    monkeypatch,
-) -> None:
-    from lynchpin.graph import evidence_polylogue
-
-    when = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
-    session = SimpleNamespace(
-        conversation_id="c1",
-        work_event_projects=("sinity-lynchpin",),
-        title="Lynchpin work",
-    )
-    event = SimpleNamespace(
-        event_id="we-session-project",
-        conversation_id="c1",
-        provider="codex",
-        kind="implementation",
-        confidence=0.8,
-        start=when,
-        end=when,
-        duration_ms=1_000,
-        file_paths=("/tmp/generated/path/outside/registry.py",),
-        tools_used=("Edit",),
-        summary="implementation",
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.session_profiles_for_date",
-        lambda **kwargs: (session,),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_polylogue.work_events",
-        lambda **kwargs: (event,),
-    )
-    monkeypatch.setattr(
-        "lynchpin.core.classify.resolve_project",
-        lambda path: (_ for _ in ()).throw(AssertionError("path resolver called")),
-    )
-
-    nodes = []
-    evidence_polylogue.add_polylogue_work_events(
-        nodes,
-        start=date(2026, 5, 7),
-        end=date(2026, 5, 7),
-        selected=set(),
-    )
-
-    assert [node.project for node in nodes] == ["sinity-lynchpin"]
 
 
 def test_build_context_caches_base_graph(monkeypatch):

@@ -11,7 +11,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import Sequence
 
 from ..analysis.core.git import run_git
 from ..core.evidence import SourceReadinessReport
@@ -35,9 +35,6 @@ from .work_correlation import (
     summarize_work_correlations,
     work_day_correlations,
 )
-
-if TYPE_CHECKING:
-    from ..sources.polylogue import PolylogueReadiness
 
 
 @dataclass(frozen=True)
@@ -89,19 +86,12 @@ class CurrentStateEvidencePack:
     end: datetime
     generated_at: datetime
     inventory: tuple[ProjectInventoryItem, ...]
-    polylogue_readiness: PolylogueReadiness
     evidence_graph: EvidenceGraph
     source_readiness: SourceReadinessReport
     work_correlations: tuple[CorrelatedWorkDay, ...]
     correlation_summary: WorkCorrelationSummary
     movement: MovementSummary
     github_frontiers: tuple[ProjectGitHubFrontier, ...] = ()
-
-
-def archive_readiness(*args: Any, **kwargs: Any) -> "PolylogueReadiness":
-    from ..sources.polylogue import archive_readiness as impl
-
-    return impl(*args, **kwargs)
 
 
 def project_inventory(
@@ -242,7 +232,6 @@ def current_state_evidence_pack(
     readiness = source_readiness(
         start=start_date,
         end=end_date,
-        include_polylogue_product_counts=True,
         include_github_frontier=include_github,
         include_analysis_inventory=True,
     )
@@ -251,7 +240,6 @@ def current_state_evidence_pack(
         end=end,
         generated_at=datetime.now(timezone.utc),
         inventory=inventory,
-        polylogue_readiness=archive_readiness(),
         evidence_graph=evidence_graph,
         source_readiness=readiness,
         work_correlations=correlations,
@@ -343,18 +331,12 @@ def github_frontier_summary_markdown(frontiers: Sequence[ProjectGitHubFrontier])
 
 
 def evidence_pack_markdown(pack: CurrentStateEvidencePack) -> str:
-    readiness = pack.polylogue_readiness
     strongest_rows = strongest_work_correlations(pack.work_correlations)
     lines = [
         f"# Current-State Evidence Pack ({pack.start.date().isoformat()} → {pack.end.date().isoformat()})",
         "",
         "## Readiness",
         "",
-        f"- Polylogue: `{readiness.status}` — {readiness.reason}",
-        f"- Polylogue conversations: {readiness.conversation_count}",
-        f"- Polylogue session products: {readiness.session_profile_count}",
-        f"- Polylogue day products: {readiness.day_summary_count}",
-        f"- Polylogue work-event products: {readiness.work_event_count}",
         "",
         "## Source Readiness",
         "",

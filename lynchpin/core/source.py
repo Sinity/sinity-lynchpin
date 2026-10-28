@@ -4,9 +4,8 @@ Two helpers consolidate patterns that were repeated across
 ``lynchpin/sources/*.py``:
 
 1. :class:`SourceReadiness` — the (status, reason, path, row_count)
-   tuple every source returned via a per-source dataclass. Four
-   near-identical copies existed (machine, polylogue, sinnix_generations,
-   borg_drill); now there is one.
+   tuple shared by source adapters, including machine, sinnix_generations,
+   and borg_drill.
 
 2. :func:`read_jsonl_with` — open a JSONL file, parse line by line,
    skip malformed lines with a warning, hydrate each record via a
@@ -41,7 +40,7 @@ class DayActivity(Protocol):
     Naming convention for daily_activity functions:
     - Signature: daily_activity(*, start: date, end: date, ensure: bool = True) -> list[DayActivity]
     - Variant names (daily_browsing, daily_listening, etc.) are acceptable when
-      the source produces multiple per-day rows (e.g., git per-repo, polylogue per-provider).
+      the source produces multiple per-day rows (e.g., git per-repo, activitywatch per-app).
     - ensure=True is the canonical default for sources with ingest products;
       sources reading live DBs directly may omit ensure.
     """

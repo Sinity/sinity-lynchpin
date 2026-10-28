@@ -1,11 +1,8 @@
-"""Live polylogue repo + archive analysis for ecosystem dashboards."""
+"""Polylogue code repository analysis for ecosystem dashboards."""
 
 from __future__ import annotations
 
 import ast
-import json
-import subprocess
-import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,7 +11,6 @@ from typing import Any
 
 from lynchpin.analysis.core.git import run_git
 
-from ...core.config import get_config
 from ..core.textshape import compute_repetition_metrics
 from lynchpin.core.io import save_json
 
@@ -139,126 +135,6 @@ def _import_area(module_name: str) -> str:
     return parts[1]
 
 
-def _safe_archive_probe(*, timeout_seconds: int = 20) -> dict[str, Any]:
-    script = """
-import json
-from collections import Counter
-from datetime import date, timedelta
-from lynchpin.sources.polylogue import archive_stats, day_session_summaries
-
-end = date.today()
-start = end - timedelta(days=89)
-
-payload = {
-    "archive_stats": None,
-    "recent_90d": {
-        "window_start": start.isoformat(),
-        "window_end": end.isoformat(),
-        "session_count": 0,
-        "total_cost_usd": 0.0,
-        "total_messages": 0,
-        "total_words": 0,
-        "providers": {},
-        "projects": {},
-        "work_event_breakdown": {},
-    },
-    "notes": [],
-}
-
-try:
-    payload["archive_stats"] = archive_stats()
-except Exception as exc:
-    payload["notes"].append(f"archive_stats failed: {type(exc).__name__}: {exc}")
-
-try:
-    days = day_session_summaries(start=start, end=end)
-    provider_sessions = Counter()
-    project_counter = Counter()
-    work_kind_counter = Counter()
-    total_cost = total_messages = total_words = total_sessions = 0
-    for day in days:
-        total_sessions += day.session_count
-        total_cost += day.total_cost_usd
-        total_messages += day.total_messages
-        total_words += day.total_words
-        provider_sessions.update(day.providers)
-        project_counter.update(day.repos_active)
-        work_kind_counter.update(day.work_event_breakdown)
-    payload["recent_90d"].update({
-        "session_count": total_sessions,
-        "total_cost_usd": round(total_cost, 4),
-        "total_messages": total_messages,
-        "total_words": total_words,
-        "providers": dict(provider_sessions.most_common()),
-        "projects": dict(project_counter.most_common(20)),
-        "work_event_breakdown": dict(work_kind_counter.most_common()),
-    })
-except Exception as exc:
-    payload["notes"].append(f"day_session_summaries failed: {type(exc).__name__}: {exc}")
-
-print(json.dumps(payload))
-"""
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            cwd=str(Path(__file__).resolve().parents[2]),
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired:
-        return {
-            "archive_stats": None,
-            "recent_90d": {
-                "window_start": None,
-                "window_end": None,
-                "session_count": 0,
-                "total_cost_usd": 0.0,
-                "total_messages": 0,
-                "total_words": 0,
-                "providers": {},
-                "projects": {},
-                "work_event_breakdown": {},
-            },
-            "notes": [f"archive probe timed out after {timeout_seconds}s"],
-        }
-
-    if result.returncode != 0:
-        return {
-            "archive_stats": None,
-            "recent_90d": {
-                "window_start": None,
-                "window_end": None,
-                "session_count": 0,
-                "total_cost_usd": 0.0,
-                "total_messages": 0,
-                "total_words": 0,
-                "providers": {},
-                "projects": {},
-                "work_event_breakdown": {},
-            },
-            "notes": [result.stderr.strip() or "archive probe failed"],
-        }
-    payload = json.loads(result.stdout)
-    if not isinstance(payload, dict):
-        return {
-            "archive_stats": None,
-            "recent_90d": {
-                "window_start": None,
-                "window_end": None,
-                "session_count": 0,
-                "total_cost_usd": 0.0,
-                "total_messages": 0,
-                "total_words": 0,
-                "providers": {},
-                "projects": {},
-                "work_event_breakdown": {},
-            },
-            "notes": ["archive probe returned non-object JSON"],
-        }
-    return payload
-
-
 def _distribution_stats(rows: list[dict[str, Any]]) -> dict[str, float | int]:
     weights = {row["area"]: row["code_lines"] for row in rows if row["code_lines"] > 0}
     total = sum(weights.values())
@@ -290,12 +166,10 @@ def _capability_matrix(
     *,
     repo: dict[str, Any],
     areas: list[dict[str, Any]],
-    archive_probe: dict[str, Any],
     readme_text: str,
 ) -> list[dict[str, Any]]:
     area_names = {row["area"].lower() for row in areas}
     readme_lower = readme_text.lower()
-    recent = archive_probe.get("recent_90d", {})
     capability_specs = [
         ("archive substrate", "storage" in area_names or "archive" in readme_lower, True, ["archive", "ingest", "sqlite"]),
         ("lexical search", "query" in area_names or "fts" in readme_lower, False, ["search", "fts", "lexical"]),
@@ -304,7 +178,7 @@ def _capability_matrix(
         ("site publishing", "site" in readme_lower or "render" in area_names, True, ["site", "html archive", "publication"]),
         ("assistant surface", "mcp" in readme_lower or "mcp" in area_names, True, ["mcp", "assistant"]),
         ("python api", repo["classes"] > 0 and "library api" in readme_lower, True, ["python api", "library api"]),
-        ("operational analytics", recent.get("session_count", 0) > 0 or "dashboard" in readme_lower, True, ["dashboard", "analytics", "stats"]),
+        ("operational analytics", "dashboard" in readme_lower, True, ["dashboard", "analytics", "stats"]),
         ("validation/devtools", "devtools" in readme_lower or "devtools" in area_names, True, ["devtools", "validation", "benchmark"]),
     ]
     matrix = []
@@ -320,11 +194,10 @@ def _capability_matrix(
     return matrix
 
 
-def _diagnostic_scorecard(matrix: list[dict[str, Any]], repo: dict[str, Any], archive_probe: dict[str, Any]) -> list[dict[str, str]]:
+def _diagnostic_scorecard(matrix: list[dict[str, Any]], repo: dict[str, Any]) -> list[dict[str, str]]:
     mentioned = sum(1 for row in matrix if row["mentioned_in_readme"])
     evidenced = sum(1 for row in matrix if row["repo_evidence"])
     differentiated = sum(1 for row in matrix if row["repo_evidence"] and row["distinguishes_from_ripgrep"])
-    recent_sessions = archive_probe.get("recent_90d", {}).get("session_count", 0)
 
     def assessment(value: int, *, high: int, medium: int) -> str:
         if value >= high:
@@ -348,11 +221,6 @@ def _diagnostic_scorecard(matrix: list[dict[str, Any]], repo: dict[str, Any], ar
             "dimension": "README fidelity",
             "assessment": assessment(mentioned, high=6, medium=4),
             "reason": f"{mentioned} capabilities are explicitly surfaced in README messaging.",
-        },
-        {
-            "dimension": "live archive grounding",
-            "assessment": assessment(recent_sessions, high=200, medium=25),
-            "reason": f"Recent 90-day archive probe found {recent_sessions} profiled sessions.",
         },
         {
             "dimension": "test and maintenance posture",
@@ -387,7 +255,9 @@ def _pitch_rewrites(matrix: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def run_polylogue_metrics(out_file: str | Path) -> dict[str, Any]:
-    repo = Path(get_config().polylogue_project_root).resolve()
+    from lynchpin.core.projects import project_path
+
+    repo = project_path("polylogue").resolve()
     package_root = repo / "polylogue"
     tests_root = repo / "tests"
 
@@ -457,7 +327,6 @@ def run_polylogue_metrics(out_file: str | Path) -> dict[str, Any]:
             }
         )
 
-    archive_probe = _safe_archive_probe()
     readme_text = _readme_text(repo)
     capability_gap_matrix = _capability_matrix(
         repo={
@@ -465,7 +334,6 @@ def run_polylogue_metrics(out_file: str | Path) -> dict[str, Any]:
             "test_code_lines": test_code_lines,
         },
         areas=area_rows,
-        archive_probe=archive_probe,
         readme_text=readme_text,
     )
     scorecard = _diagnostic_scorecard(
@@ -473,7 +341,6 @@ def run_polylogue_metrics(out_file: str | Path) -> dict[str, Any]:
         {
             "test_code_lines": test_code_lines,
         },
-        archive_probe,
     )
     complexity_density = {
         "defs_per_kloc": round(total_functions / max(total_package_code, 1) * 1000, 4),
@@ -520,11 +387,6 @@ def run_polylogue_metrics(out_file: str | Path) -> dict[str, Any]:
                 {"source": source, "target": target, "weight": weight}
                 for (source, target), weight in edge_weights.most_common(50)
             ],
-        },
-        "archive": {
-            "stats": archive_probe.get("archive_stats"),
-            "recent_90d": archive_probe.get("recent_90d"),
-            "notes": archive_probe.get("notes", []),
         },
         "capability_gap_matrix": capability_gap_matrix,
         "diagnostic_scorecard": scorecard,

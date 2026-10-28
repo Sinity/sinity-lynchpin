@@ -258,7 +258,6 @@ def test_analysis_materialization_policy_declares_current_state_substrate_source
         "commits",
         "file_changes",
         "symbols",
-        "ai_work_events",
         "evidence_graph",
         "work_observations",
     )

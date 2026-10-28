@@ -1,6 +1,6 @@
 """Tests for the operator-rhythm composer.
 
-The composer is a pure function over four input lists; tests don't
+The composer is a pure function over three input lists; tests don't
 need a substrate. They verify per-source attribution, weekday/hour
 bucketing, partial-source detection, peak ranking, and graceful
 empty behavior.
@@ -21,7 +21,7 @@ def _ts(year: int, month: int, day: int, hour: int) -> datetime:
     return datetime(year, month, day, hour, 0, 0, tzinfo=UTC)
 
 
-def test_compute_combines_all_four_signals_in_same_bucket() -> None:
+def test_compute_combines_focus_and_commits_in_same_bucket() -> None:
     # 2026-05-25 is a Monday → dow=0; 14:00 UTC stays 14:00 in UTC.
     rhythm = compute_operator_rhythm(
         start=date(2026, 5, 25),
@@ -29,7 +29,7 @@ def test_compute_combines_all_four_signals_in_same_bucket() -> None:
         project=None,
         focus_rows=[(date(2026, 5, 25), 14, 35.0)],
         commit_timestamps=[_ts(2026, 5, 25, 14), _ts(2026, 5, 25, 14)],
-        ai_session_timestamps=[_ts(2026, 5, 25, 14)],
+
         pressure_timestamps=[],
         target_tz=UTC,
     )
@@ -39,7 +39,6 @@ def test_compute_combines_all_four_signals_in_same_bucket() -> None:
     assert bucket.hour == 14
     assert bucket.focus_min == 35.0
     assert bucket.commit_count == 2
-    assert bucket.ai_session_count == 1
     assert bucket.pressure_episode_count == 0
 
 
@@ -53,7 +52,7 @@ def test_compute_separates_distinct_hour_buckets() -> None:
             (date(2026, 5, 26), 22, 40.0),
         ],
         commit_timestamps=[],
-        ai_session_timestamps=[],
+
         pressure_timestamps=[],
     )
     by_key = {(b.dow, b.hour): b for b in rhythm.buckets}
@@ -68,7 +67,7 @@ def test_compute_omits_all_zero_buckets() -> None:
         project=None,
         focus_rows=[(date(2026, 5, 25), 9, 0.0)],  # zero focus
         commit_timestamps=[],
-        ai_session_timestamps=[],
+
         pressure_timestamps=[],
     )
     assert rhythm.buckets == ()
@@ -81,10 +80,10 @@ def test_partial_sources_flagged_when_input_empty() -> None:
         project=None,
         focus_rows=[(date(2026, 5, 25), 14, 30.0)],
         commit_timestamps=[],
-        ai_session_timestamps=[],
+
         pressure_timestamps=[],
     )
-    assert set(rhythm.partial_sources) == {"commit_fact", "ai_session", "machine_episode"}
+    assert set(rhythm.partial_sources) == {"commit_fact", "machine_episode"}
     assert "activitywatch" not in rhythm.partial_sources
 
 
@@ -99,7 +98,7 @@ def test_peak_hours_prefer_loudest_signal() -> None:
             (date(2026, 5, 27), 22, 5.0),   # Wed 22:00 — minor
         ],
         commit_timestamps=[_ts(2026, 5, 27, 22)] * 8,  # Wed 22:00 — commit peak
-        ai_session_timestamps=[],
+
         pressure_timestamps=[],
         target_tz=UTC,
     )
@@ -116,7 +115,7 @@ def test_empty_window_returns_empty_rhythm_with_render_handling() -> None:
         project=None,
         focus_rows=[],
         commit_timestamps=[],
-        ai_session_timestamps=[],
+
         pressure_timestamps=[],
     )
     assert rhythm.buckets == ()
@@ -131,13 +130,13 @@ def test_render_summary_names_partials_and_peaks() -> None:
         project="lynchpin",
         focus_rows=[(date(2026, 5, 25), 14, 30.0)],
         commit_timestamps=[_ts(2026, 5, 25, 14)],
-        ai_session_timestamps=[],
+
         pressure_timestamps=[],
     )
     out = render_rhythm_summary(rhythm)
     assert "lynchpin" in out
     assert WEEKDAY_NAMES[0] in out  # Monday
-    assert "ai_session" in out  # partial source listed
+    assert "machine_episode" in out  # partial source listed
 
 
 def test_timezone_handling_converts_to_local() -> None:
@@ -149,7 +148,7 @@ def test_timezone_handling_converts_to_local() -> None:
         project=None,
         focus_rows=[],
         commit_timestamps=[datetime(2026, 5, 25, 14, 0, 0, tzinfo=UTC)],
-        ai_session_timestamps=[],
+
         pressure_timestamps=[],
         target_tz=UTC,
     )

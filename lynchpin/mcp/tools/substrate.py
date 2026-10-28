@@ -78,31 +78,6 @@ def _is_select_only(sql: str) -> bool:
     return len(statements) == 1 and statements[0].type == duckdb.StatementType.SELECT
 
 
-def _best_commit_ai_join_refresh_id(conn: Any) -> str | None:
-    row = conn.execute(
-        """
-        WITH commit_counts AS (
-            SELECT refresh_id, COUNT(*) AS commit_count
-            FROM commit_fact
-            GROUP BY refresh_id
-        ),
-        ai_counts AS (
-            SELECT refresh_id, COUNT(*) AS ai_count
-            FROM ai_work_event
-            GROUP BY refresh_id
-        )
-        SELECT c.refresh_id
-        FROM commit_counts c
-        JOIN ai_counts a USING (refresh_id)
-        ORDER BY LEAST(c.commit_count, a.ai_count) DESC,
-                 c.commit_count + a.ai_count DESC,
-                 c.refresh_id DESC
-        LIMIT 1
-        """
-    ).fetchone()
-    return str(row[0]) if row else None
-
-
 def _query_tables(conn: Any, sql: str) -> set[str] | None:
     """Return relations the statement names, or None when DuckDB cannot say."""
     try:
@@ -573,10 +548,6 @@ def substrate_source_status(
     ``ok`` (rows present), ``empty`` (source ran but yielded nothing in the
     window — legitimate), ``unavailable`` (source/file missing — typically
     a stale upstream archive), or ``error`` (exception during promote).
-
-    This distinguishes silent failures (e.g., polylogue's session insights
-    are stale → ``ai_work_events`` returns 0 with no error) from successful
-    promotes that genuinely had nothing to record.
 
     Parameters:
         refresh_id: exact ID. Default: most recent promote run.
@@ -1109,8 +1080,8 @@ def load_evidence_graph_summary(
     Returns:
         {
             "build": {refresh_id, start_date, end_date, mode, generated_at},
-            "node_kind_counts": {"commit": N, "ai_work_event": N, ...},
-            "edge_relation_counts": {"file_overlap": N, ...},
+            "node_kind_counts": {"commit": N, "focus_span": N, ...},
+            "edge_relation_counts": {"temporal_overlap": N, ...},
             "project_day_summary": [
                 {"project": str, "date_count": int, "total_commits": int}
             ],
@@ -1201,139 +1172,6 @@ def load_evidence_graph_summary(
 
 
 # ── M.13 AI-Attribution Backfill ─────────────────────────────────────────────
-
-
-def ai_attribution_backfill(
-    refresh_id: str | None = None,
-    time_window_hours: int = 24,
-    dry_run: bool = False,
-) -> dict[str, Any]:
-    """Backfill commit_fact.ai_attribution by matching commits to AI work events.
-
-    Matches commits to ai_work_event rows where:
-    - Same project
-    - Commit authored_at within ±time_window_hours of work_event start_ts
-    - Non-empty file_path intersection between commit.paths and
-      ai_work_event.file_paths
-
-    Writes a JSON object to commit_fact.ai_attribution:
-    {
-        "matched_events": N,
-        "top_kinds": ["implementation", ...],
-        "matched_via": "file_path_overlap",
-        "backfilled_at": "ISO datetime"
-    }
-
-    This is an UPDATE — it modifies the substrate. Call with dry_run=True
-    to preview without writing.
-
-    Parameters:
-        refresh_id:         snapshot to backfill; default = latest.
-        time_window_hours:  ± hours window for temporal match (default 24).
-        dry_run:            preview matches without writing.
-
-    Returns:
-        {
-            "matched_commits": int,
-            "total_commits": int,
-            "match_rate": float,
-            "dry_run": bool,
-            "top_matches": [{"sha": str, "subject": str, "matched_events": int}],
-        }
-    """
-    import json as _json
-    from datetime import datetime as _dt, timezone as _tz
-
-    from lynchpin.substrate.connection import candidate_generation, connect, substrate_path
-
-    path = substrate_path()
-    with connect(path, read_only=True) as conn:
-        if refresh_id is None:
-            refresh_id = _best_commit_ai_join_refresh_id(conn)
-            if refresh_id is None:
-                return {"error": "no promote runs"}
-
-        total = conn.execute(
-            "SELECT COUNT(*) FROM commit_fact WHERE refresh_id = ?",
-            [refresh_id],
-        ).fetchone()[0]
-
-        # Match commits to AI work events by project + suffix-normalized path
-        # overlap + time window. Commit paths are repo-relative while
-        # Polylogue paths are often absolute or temporary-worktree paths, so
-        # exact list intersection misses legitimate matches.
-        matches = conn.execute("""
-            WITH candidate_paths AS (
-                SELECT
-                    c.sha,
-                    c.repo,
-                    c.subject,
-                    we.event_id,
-                    we.kind,
-                    cp.commit_path,
-                    ep.event_path
-                FROM commit_fact c
-                JOIN ai_work_event we
-                  ON c.refresh_id = we.refresh_id
-                 AND c.project = we.project
-                 AND ABS(EXTRACT(EPOCH FROM c.authored_at - we.start_ts)) < ?
-                , UNNEST(c.paths) AS cp(commit_path)
-                , UNNEST(we.file_paths) AS ep(event_path)
-                WHERE we.start_ts IS NOT NULL
-                  AND c.project IS NOT NULL
-                  AND we.project IS NOT NULL
-                  AND len(c.paths) > 0
-                  AND len(we.file_paths) > 0
-                  AND c.refresh_id = ?
-            ),
-            path_matches AS (
-                SELECT DISTINCT sha, repo, subject, event_id, kind
-                FROM candidate_paths
-                WHERE
-                    ends_with(ltrim(event_path, '/'), ltrim(commit_path, '/'))
-                    OR ends_with(ltrim(commit_path, '/'), ltrim(event_path, '/'))
-            )
-            SELECT sha, repo, subject,
-                   COUNT(event_id) AS matched_events,
-                   ARRAY_AGG(DISTINCT kind) AS kinds,
-                   ARRAY_AGG(DISTINCT event_id) AS event_ids
-            FROM path_matches
-            GROUP BY sha, repo, subject
-            ORDER BY matched_events DESC
-        """, [time_window_hours * 3600, refresh_id]).fetchall()
-
-    if matches is None:
-        matches = []
-
-    matched_count = len(matches)
-    now_iso = _dt.now(_tz.utc).isoformat()
-
-    if not dry_run:
-        with candidate_generation(changed_products=("commit_fact",)):
-            with connect() as conn:
-                for sha, repo, subject, cnt, kinds, event_ids in matches:
-                    attribution = _json.dumps({
-                        "matched_events": cnt,
-                        "top_kinds": list(kinds[:5]) if kinds else [],
-                        "matched_via": "project_suffix_path_overlap",
-                        "backfilled_at": now_iso,
-                    })
-                    conn.execute(
-                        "UPDATE commit_fact SET ai_attribution = ? "
-                        "WHERE refresh_id = ? AND sha = ? AND repo = ?",
-                        [attribution, refresh_id, sha, repo],
-                    )
-
-    return {
-        "matched_commits": matched_count,
-        "total_commits": total,
-        "match_rate": round(matched_count / max(total, 1), 3),
-        "dry_run": dry_run,
-        "top_matches": [
-            {"sha": r[0][:8], "subject": r[2][:60], "matched_events": r[3]}
-            for r in (matches[:10] if matches else [])
-        ],
-    }
 
 
 # ── Substrate Prune ──────────────────────────────────────────────────────────

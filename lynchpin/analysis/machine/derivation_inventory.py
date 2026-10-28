@@ -10,6 +10,7 @@ import platform
 import subprocess
 from typing import Any, Callable
 
+from lynchpin.core.projects import project_path
 from lynchpin.core.config import get_config
 from lynchpin.core.cache import files_signature
 from lynchpin.core.io import load_json_if_exists, save_json
@@ -199,7 +200,7 @@ def _default_roots() -> tuple[tuple[str, Path], ...]:
     cfg = get_config()
     return (
         ("sinex", Path("/realm/project/sinex/repo")),
-        ("polylogue", cfg.polylogue_project_root),
+        ("polylogue", project_path("polylogue")),
         ("sinity-lynchpin", cfg.repo_root),
     )
 

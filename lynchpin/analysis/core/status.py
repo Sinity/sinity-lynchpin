@@ -147,7 +147,7 @@ def build_analysis_status(*, spec_path: str | Path | None = None) -> dict[str, o
         ),
         "polylogue": _row(
             "stable" if has("polylogue_metrics.json") else "missing",
-            "Live polylogue repo scan and archive rollup are materialized." if has("polylogue_metrics.json") else "Polylogue metrics artifact missing.",
+            "Polylogue source repository scans are materialized." if has("polylogue_metrics.json") else "Polylogue metrics artifact missing.",
             [art("polylogue_metrics.json")],
         ),
         "comparison": _row(

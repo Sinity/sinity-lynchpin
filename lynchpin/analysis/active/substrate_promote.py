@@ -6,11 +6,6 @@ authoritative.
 Arc 2.6 cutover: substrate becomes populated by default on every materialization
 run, ready for Arc 4 (MCP server) to read from.
 
-Per-source readiness (Arc 2.7): every source's outcome is recorded in
-``substrate_source_status`` (status: ok | empty | unavailable | error). This
-fixes the prior silent-failure mode where an unavailable polylogue archive →
-``ai_work_event=0`` looked indistinguishable from a successful promote with
-no events in the window.
 """
 
 from __future__ import annotations
@@ -22,16 +17,13 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from .substrate_promote_ai import promote_ai_sources
 from .substrate_promote_artifacts import promote_artifact_sources
 from .substrate_promote_graph import promote_graph_source
 from .substrate_promote_machine import promote_machine_tables
 from .substrate_promote_personal import promote_personal_sources
-from .substrate_promote_polylogue_timeline import promote_polylogue_timeline_source
 from .substrate_promote_work import promote_work_sources
 from lynchpin.substrate.source_status import (
     MACHINE_SOURCE_IDS,
-    SOURCE_AI_WORK_EVENTS,
     SOURCE_COMMITS,
     SOURCE_EVIDENCE_GRAPH,
     SOURCE_PR_REVIEW,
@@ -49,7 +41,6 @@ from lynchpin.substrate.source_status import (
     SOURCE_BORG_DRILL,
     SOURCE_WORK_OBSERVATIONS,
     SOURCE_PERSONAL_DAILY_SIGNAL,
-    SOURCE_POLYLOGUE_TIMELINE,
     SOURCE_SPOTIFY_DAILY,
     SOURCE_SYMBOLS,
     SourceSelection,
@@ -93,7 +84,6 @@ def run_substrate_promote(
     commit_facts_file: str,
     file_changes_file: str,
     symbol_changes_file: str,
-    ai_attribution_file: str | None = None,
     sources: Collection[str] | None = None,
     refresh_id: str | None = None,
     write_evidence_graph: bool = True,
@@ -105,7 +95,7 @@ def run_substrate_promote(
 ) -> PromotionRunResult:
     """Promote materialized artifacts and live source families to the substrate.
 
-    JSON artifacts, AI work events, evidence graph, PR review rows, personal
+    JSON artifacts, evidence graph, PR review rows, personal
     exports, and machine telemetry each preserve their own source-status row.
 
     Returns per-table row counts.
@@ -140,7 +130,6 @@ def run_substrate_promote(
                     commit_facts_file=commit_facts_file,
                     file_changes_file=file_changes_file,
                     symbol_changes_file=symbol_changes_file,
-                    ai_attribution_file=ai_attribution_file,
                     refresh_id=refresh_id,
                     selection=selection,
                     write_evidence_graph=write_evidence_graph,
@@ -168,7 +157,6 @@ def run_substrate_promote(
             commit_facts_file=commit_facts_file,
             file_changes_file=file_changes_file,
             symbol_changes_file=symbol_changes_file,
-            ai_attribution_file=ai_attribution_file,
             refresh_id=refresh_id,
             selection=selection,
             write_evidence_graph=write_evidence_graph,
@@ -199,7 +187,6 @@ def _do_promote(
     commit_facts_file: str,
     file_changes_file: str,
     symbol_changes_file: str,
-    ai_attribution_file: str | None,
     refresh_id: str | None,
     selection: SourceSelection,
     write_evidence_graph: bool,
@@ -265,41 +252,11 @@ def _do_promote(
                 commit_facts_file=commit_facts_file,
                 file_changes_file=file_changes_file,
                 symbol_changes_file=symbol_changes_file,
-                ai_attribution_file=ai_attribution_file,
                 counts=counts,
                 selection=selection,
             ),
         )
 
-        _run_stage(
-            conn,
-            refresh_id=refresh_id or "",
-            step="promote_ai_work_events",
-            counts=counts,
-            fn=lambda: promote_ai_sources(
-                conn,
-                refresh_id=refresh_id,
-                window_start=window_start,
-                window_end=window_end,
-                counts=counts,
-                selection=selection,
-            ),
-        )
-
-        _run_stage(
-            conn,
-            refresh_id=refresh_id or "",
-            step="promote_polylogue_timeline",
-            counts=counts,
-            fn=lambda: promote_polylogue_timeline_source(
-                conn,
-                refresh_id=refresh_id,
-                window_start=window_start,
-                window_end=window_end,
-                counts=counts,
-                selection=selection,
-            ),
-        )
 
         _run_stage(
             conn,
@@ -555,8 +512,6 @@ __all__ = [
     "SOURCE_COMMITS",
     "SOURCE_FILE_CHANGES",
     "SOURCE_SYMBOLS",
-    "SOURCE_AI_WORK_EVENTS",
-    "SOURCE_POLYLOGUE_TIMELINE",
     "SOURCE_EVIDENCE_GRAPH",
     "SOURCE_PR_REVIEW",
     "SOURCE_SPOTIFY_DAILY",

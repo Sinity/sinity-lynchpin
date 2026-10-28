@@ -93,14 +93,14 @@ def test_project_velocity_windows_keep_dimensions_separate() -> None:
             commit_subjects=("feat(core): land core",),
             github_refs=("pr#5",),
             github_lifecycles={"executed": 1},
-            ai_session_count=2,
-            ai_conversation_ids=("conv1", "conv2"),
+
+
             raw_log_count=1,
             raw_log_refs=("log:1",),
             focus_minutes=90.0,
             shell_minutes=10.0,
             shell_command_count=4,
-            sources=("activitywatch", "git", "github", "polylogue", "raw_log", "terminal"),
+            sources=("activitywatch", "git", "github", "raw_log", "terminal"),
         )
     ]
 
@@ -116,7 +116,6 @@ def test_project_velocity_windows_keep_dimensions_separate() -> None:
     assert "velocity_score" not in project
     assert project["micro_effort"]["commit_count"] == 1
     assert project["meso_delivery"]["landed_package_count"] == 1
-    assert project["cross_source_support"]["ai_session_count"] == 2
     assert project["cross_source_support"]["focus_hours"] == 1.5
     assert project["interpretation_signals"]["support_level"] == "moderate"
     assert payload["summary"]["moderate_support_projects"] == ["demo"]
@@ -235,14 +234,14 @@ def test_package_support_commit_overlap_strong() -> None:
             commit_subjects=("feat(core): land core",),
             github_refs=("pr#5",),
             github_lifecycles={"executed": 1},
-            ai_session_count=2,
-            ai_conversation_ids=("conv1",),
+
+
             raw_log_count=0,
             raw_log_refs=(),
             focus_minutes=90.0,
             shell_minutes=10.0,
             shell_command_count=4,
-            sources=("activitywatch", "git", "polylogue"),
+            sources=("activitywatch", "git"),
         ),
         CorrelatedWorkDay(
             date=date(2026, 5, 1),
@@ -252,8 +251,8 @@ def test_package_support_commit_overlap_strong() -> None:
             commit_subjects=("chore: other",),
             github_refs=(),
             github_lifecycles={},
-            ai_session_count=0,
-            ai_conversation_ids=(),
+
+
             raw_log_count=0,
             raw_log_refs=(),
             focus_minutes=30.0,
@@ -278,7 +277,6 @@ def test_package_support_commit_overlap_strong() -> None:
     assert support["support_level"] == "strong"
     assert support["strong_match_days"] >= 1
     assert support["match_reasons"]["commit_overlap"] >= 1
-    assert support["ai_session_count"] == 2
 
 
 def test_package_support_github_ref_overlap_without_commit_overlap() -> None:
@@ -339,8 +337,8 @@ def test_package_support_github_ref_overlap_without_commit_overlap() -> None:
             commit_subjects=("feat(api): add endpoint",),
             github_refs=("pr#10",),  # ref overlap
             github_lifecycles={"executed": 1},
-            ai_session_count=1,
-            ai_conversation_ids=("conv3",),
+
+
             raw_log_count=0,
             raw_log_refs=(),
             focus_minutes=60.0,
@@ -403,14 +401,14 @@ def test_package_support_date_only_moderate() -> None:
             commit_subjects=(),
             github_refs=(),
             github_lifecycles={},
-            ai_session_count=3,
-            ai_conversation_ids=("conv4", "conv5"),
+
+
             raw_log_count=0,
             raw_log_refs=(),
             focus_minutes=120.0,
             shell_minutes=15.0,
             shell_command_count=6,
-            sources=("polylogue", "activitywatch", "terminal"),
+            sources=("activitywatch", "terminal"),
         ),
     ]
 
@@ -487,8 +485,8 @@ def test_package_support_no_matching_rows_weak() -> None:
             commit_subjects=("fix: something",),
             github_refs=("pr#99",),
             github_lifecycles={"executed": 1},
-            ai_session_count=0,
-            ai_conversation_ids=(),
+
+
             raw_log_count=0,
             raw_log_refs=(),
             focus_minutes=30.0,
@@ -624,14 +622,14 @@ def test_package_support_fields_in_top_packages() -> None:
             commit_subjects=("feat(core): land core",),
             github_refs=("pr#5",),
             github_lifecycles={"executed": 1},
-            ai_session_count=2,
-            ai_conversation_ids=("conv1",),
+
+
             raw_log_count=0,
             raw_log_refs=(),
             focus_minutes=90.0,
             shell_minutes=10.0,
             shell_command_count=4,
-            sources=("activitywatch", "git", "polylogue"),
+            sources=("activitywatch", "git"),
         ),
         CorrelatedWorkDay(
             date=date(2026, 5, 2),
@@ -641,8 +639,8 @@ def test_package_support_fields_in_top_packages() -> None:
             commit_subjects=("fix(other): patch",),
             github_refs=("pr#7",),
             github_lifecycles={"merged": 1},
-            ai_session_count=1,
-            ai_conversation_ids=("conv-other",),
+
+
             raw_log_count=1,
             raw_log_refs=("log:1",),
             focus_minutes=45.0,
@@ -667,7 +665,6 @@ def test_package_support_fields_in_top_packages() -> None:
         "source_counts",
         "source_pair_counts",
         "github_lifecycles",
-        "ai_session_count",
         "focus_hours",
         "shell_command_count",
         "raw_log_count",
@@ -749,14 +746,14 @@ def test_no_velocity_score_with_package_support() -> None:
             commit_subjects=("feat(core): land core",),
             github_refs=("pr#5",),
             github_lifecycles={"executed": 1},
-            ai_session_count=2,
-            ai_conversation_ids=("conv1",),
+
+
             raw_log_count=0,
             raw_log_refs=(),
             focus_minutes=90.0,
             shell_minutes=10.0,
             shell_command_count=4,
-            sources=("activitywatch", "git", "polylogue"),
+            sources=("activitywatch", "git"),
         ),
     ]
 

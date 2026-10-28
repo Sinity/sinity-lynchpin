@@ -13,13 +13,6 @@ def _no_analysis_claims(monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
-def _no_substrate_overlap(monkeypatch):
-    """Skip SQL overlap path in unit tests — tested by test_substrate_views.py."""
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_edges.overlap_edges_via_substrate",
-        lambda nodes, **kwargs: (),
-    )
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +26,6 @@ def _mock_empty_sources(monkeypatch, tmp_path):
     """
     aw = "lynchpin.graph.evidence_activitywatch"
     git = "lynchpin.graph.evidence_git"
-    polylogue = "lynchpin.graph.evidence_polylogue"
     raw_log = "lynchpin.graph.evidence_raw_log"
     system = "lynchpin.graph.evidence_system_signals"
     terminal = "lynchpin.graph.evidence_terminal"
@@ -46,8 +38,6 @@ def _mock_empty_sources(monkeypatch, tmp_path):
         return []
 
     monkeypatch.setattr(f"{git}.commit_facts", empty)
-    monkeypatch.setattr(f"{polylogue}.session_profiles_for_date", empty)
-    monkeypatch.setattr(f"{polylogue}.work_events", empty)
     monkeypatch.setattr(f"{raw_log}.entries_in_range", empty)
     monkeypatch.setattr(f"{aw}.project_focus_days", empty_list)
     monkeypatch.setattr(f"{aw}.deep_work", empty_list)

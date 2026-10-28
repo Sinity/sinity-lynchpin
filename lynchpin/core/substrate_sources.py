@@ -9,7 +9,6 @@ SUBSTRATE_TABLE_SOURCE: dict[str, str] = {
     "evidence_node": "evidence_graph",
     "evidence_edge": "evidence_graph",
     "project_day_correlation": "evidence_graph",
-    "ai_work_event": "ai_work_events",
     "analysis_claim": "evidence_graph",
     "pr_review_row": "pr_review",
     "activity_content_day": "activity_content",

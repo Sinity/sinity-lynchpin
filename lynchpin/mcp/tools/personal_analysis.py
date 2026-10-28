@@ -131,28 +131,10 @@ def burnout_warning_report() -> dict[str, Any]:
     return result
 
 
-def ai_session_efficiency_report(project: str | None = None) -> dict[str, Any]:
-    """Read session output proxies and their recorded provenance/limitations."""
-    result, payload = _read_report("ai_session_efficiency.json")
-    if payload is None:
-        return result
-    sessions = payload.get("sessions")
-    if isinstance(sessions, list):
-        if project is not None:
-            sessions = [s for s in sessions if isinstance(s, dict) and s.get("project") == project]
-        result["sessions"] = sessions
-        result["summary"]["session_count"] = len(sessions)
-    for key in ("aggregate_metrics", "efficiency_by_project"):
-        if key in payload:
-            result[key] = payload[key]
-    return result
-
-
 __all__ = [
     "anomaly_crossref_report",
     "life_phase_report",
     "productivity_predictors_report",
     "substance_health_report",
     "burnout_warning_report",
-    "ai_session_efficiency_report",
 ]

@@ -30,7 +30,7 @@ SignalRow = dict[str, Any]
 TEMPORAL_SIGNALS_SCHEMA_VERSION = 1
 # Canonical sources read by default_signal_specs; shared with preparation.
 _TEMPORAL_INPUT_PRODUCTS = (
-    "activitywatch_derived", "atuin", "polylogue", "webhistory",
+    "activitywatch_derived", "atuin", "webhistory",
     "browser_bookmarks", "communications", "arbtt", "google_takeout",
     "sleep", "health",
 )

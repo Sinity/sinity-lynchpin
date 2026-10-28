@@ -5,7 +5,6 @@ Covers:
 - commit_fact promote → load round-trip, idempotence, partition isolation, date
   filtering, project filtering
 - file_change_fact promote → load round-trip
-- ai_work_event promote → load (with and without classifier), min_kind_tier filter
 - pr_review_row promote → load round-trip, friction-signal filter
 - symbol_change promote → load round-trip
 - substrate_path locality
@@ -63,14 +62,14 @@ def _make_evidence_graph(
             },
         ),
         EvidenceNode(
-            id=f"ai_work:{node_suffix}ev001",
-            kind="ai_work_event",
-            source="polylogue",
+            id=f"note:{node_suffix}ev001",
+            kind="raw_log",
+            source="raw_log",
             date=date(2026, 5, 2),
             project="lynchpin",
-            summary="implementation session — evidence graph bridge",
+            summary="tracker note on evidence graph promotion",
             provenance=EvidenceProvenance(
-                source="polylogue",
+                source="raw_log",
                 cost="materialized",
                 path=None,
                 generated_at=generated_at,
@@ -96,16 +95,16 @@ def _make_evidence_graph(
     edges = (
         EvidenceEdge(
             source_id=f"commit:{node_suffix}sha001",
-            target_id=f"ai_work:{node_suffix}ev001",
+            target_id=f"note:{node_suffix}ev001",
             relation="same_project_day",
             evidence="shared project lynchpin on 2026-05-01",
             weight=1.0,
         ),
         EvidenceEdge(
-            source_id=f"ai_work:{node_suffix}ev001",
+            source_id=f"note:{node_suffix}ev001",
             target_id=f"github:{node_suffix}pr99",
             relation="references",
-            evidence="ai session references PR #99",
+            evidence="tracker note references PR #99",
             weight=0.8,
         ),
     )
@@ -160,10 +159,10 @@ def test_promote_evidence_graph_round_trip(tmp_path: Path) -> None:
     assert commit_node.payload.get("lines_added") == 42
 
     # Check node with provenance
-    ai_node = next(n for n in loaded.nodes if n.kind == "ai_work_event")
-    assert ai_node.provenance is not None
-    assert ai_node.provenance.source == "polylogue"
-    assert ai_node.provenance.note == "test provenance"
+    note_node = next(n for n in loaded.nodes if n.kind == "raw_log")
+    assert note_node.provenance is not None
+    assert note_node.provenance.source == "raw_log"
+    assert note_node.provenance.note == "test provenance"
 
     # Check node with caveats
     gh_node = next(n for n in loaded.nodes if n.kind == "github_pr")
@@ -174,8 +173,8 @@ def test_promote_evidence_graph_round_trip(tmp_path: Path) -> None:
 
     # Edges
     loaded_relations = {(e.source_id, e.target_id, e.relation) for e in loaded.edges}
-    assert ("commit:sha001", "ai_work:ev001", "same_project_day") in loaded_relations
-    assert ("ai_work:ev001", "github:pr99", "references") in loaded_relations
+    assert ("commit:sha001", "note:ev001", "same_project_day") in loaded_relations
+    assert ("note:ev001", "github:pr99", "references") in loaded_relations
 
 
 def test_promote_incremental_evidence_graph_overlays_predecessor_and_replaces_tail(tmp_path: Path) -> None:
@@ -286,7 +285,7 @@ def test_promote_incremental_evidence_graph_overlays_predecessor_and_replaces_ta
     assert loaded.end == tail.end
     assert {node.id for node in loaded.nodes} == {
         "commit:sha001",
-        "ai_work:ev001",
+        "note:ev001",
         "github:pr99",
         "commit:tail",
     }
@@ -580,16 +579,6 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
     monkeypatch.setattr(evidence_edges, "same_project_day_edges", lambda _nodes: (tail_tail_edge,))
     monkeypatch.setattr(evidence_edges, "temporal_overlap_edges", lambda _nodes: ())
     monkeypatch.setattr(evidence_edges, "temporal_proximity_edges", lambda _nodes: ())
-    monkeypatch.setattr(
-        evidence_edges,
-        "overlap_edges_via_substrate",
-        lambda _nodes, **_kwargs: (tail_tail_edge,),
-    )
-    monkeypatch.setattr(
-        evidence_edges,
-        "polylogue_work_event_tool_overlap_edges",
-        lambda _nodes: (),
-    )
     monkeypatch.setattr(evidence_edges, "mentions_project_edges", lambda _nodes: ())
 
     with caplog.at_level(logging.INFO, logger="lynchpin.graph.context_pack"):
@@ -652,7 +641,7 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
     assert loaded is not None
     assert {node.id for node in loaded.nodes} == {
         "commit:sha001",
-        "ai_work:ev001",
+        "note:ev001",
         "github:pr99",
         "commit:tail",
         "commit:tail2",

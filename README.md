@@ -1,7 +1,7 @@
 # Lynchpin
 
 Lynchpin joins personal data that normally lives in separate systems. It reads
-activity captures, terminal history, Git and GitHub data, AI-session archives,
+activity captures, terminal history, Git and GitHub data,
 browser and communication exports, health records, and machine telemetry. It
 turns them into reproducible DuckDB datasets, evidence graphs, analysis
 products, and bounded context packs for humans and agents.
@@ -23,7 +23,7 @@ exports, and generated narratives are supplied through external configuration.
 Lynchpin is useful when one question depends on several sources. Examples
 include:
 
-- Which AI sessions and terminal commands preceded a commit?
+- Which terminal commands preceded a commit?
 - What was happening on the machine when a build or service failed?
 - How did time, focus, and change volume differ across projects?
 - Which evidence supports a claim about work, health, sleep, or system load?
@@ -71,7 +71,6 @@ Narrative output remains downstream of the evidence rather than replacing it.
 - ActivityWatch application and focus events;
 - Atuin commands and asciinema recordings;
 - Git repositories, GitHub activity, code snapshots, and PR review details;
-- Polylogue session profiles and work events;
 - browser history, bookmarks, clipboard, and communication exports;
 - wearable health, sleep, media, and other provider exports;
 - machine metrics, service state, benchmarks, and system generations.
@@ -82,7 +81,7 @@ capture.
 
 ### Polylogue, Sinex, and Sinnix
 
-Lynchpin reads Polylogue's stable AI-session products and a broad set of
+Lynchpin reads a broad set of
 owner-native captures and exports.
 
 The public repository does not currently include a general adapter for Sinex's
@@ -96,7 +95,6 @@ coverage and freshness contract.
 The DuckDB layer provides ordinary SQL and stable readers for:
 
 - commits, files, symbols, and review history;
-- AI work events and session profiles;
 - activity, focus, health, and communication signals;
 - machine state, pressure, services, and experiments;
 - evidence claims, graph edges, and source readiness.
@@ -105,14 +103,13 @@ It is a join and acceleration layer, not a second archive of raw data.
 
 ## Evidence graphs and context packs
 
-The graph layer connects projects, commits, files, AI work, terminal activity,
+The graph layer connects projects, commits, files, terminal activity,
 focus spans, GitHub items, machine context, personal signals, and analysis
 claims.
 
 Current uses include:
 
 - project and day correlation;
-- session to commit correlation;
 - issue, pull request, and commit closure chains;
 - file and symbol overlap;
 - source-readiness and confidence matrices;
@@ -125,7 +122,7 @@ The analysis package covers both repositories and operator data:
 
 - code velocity, change surfaces, dependency maps, refactor candidates, and
   cross-project comparison;
-- work rhythms, focus fragmentation, AI-session efficiency, and workflow
+- work rhythms, focus fragmentation, workflow
   mechanics;
 - health, sleep, mood, and other longitudinal signals;
 - machine pressure, workload overlap, service behavior, experiments, and
@@ -218,7 +215,7 @@ shows which live datasets are available.
 - Operator-specific configuration lives outside the repository.
 - `.lynchpin/` contains rebuildable local state and is not published.
 - Polylogue owns AI-session ingestion and archive-specific interpretation.
-  Lynchpin owns cross-source correlation and analysis.
+  Lynchpin reads its other sources independently.
 - Sinex owns event capture, admission, persistence, and replay. Lynchpin does not
   currently treat the Sinex database as a general source of truth.
 - Sinnix owns host configuration and service deployment. Lynchpin owns the read

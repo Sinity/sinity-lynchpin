@@ -37,18 +37,6 @@ def _graph(nodes: list[EvidenceNode] = None) -> EvidenceGraph:
     )
 
 
-def _ai_work_event(*, kind_tier: str, day: date = date(2026, 5, 7)) -> EvidenceNode:
-    return EvidenceNode(
-        id=f"polylogue:we:{kind_tier}:{day.isoformat()}",
-        kind="ai_work_event",
-        source="polylogue",
-        date=day,
-        project="demo",
-        summary="x",
-        payload={"kind": "implementation", "kind_tier": kind_tier},
-    )
-
-
 def _correlated_day(*, project: str, day: date, sources: list[str]) -> CorrelatedWorkDay:
     return CorrelatedWorkDay(
         date=day,
@@ -58,8 +46,8 @@ def _correlated_day(*, project: str, day: date, sources: list[str]) -> Correlate
         commit_subjects=("x",) if "git" in sources else (),
         github_refs=(),
         github_lifecycles={},
-        ai_session_count=1 if "polylogue" in sources else 0,
-        ai_conversation_ids=("c1",) if "polylogue" in sources else (),
+
+
         raw_log_count=1 if "raw_log" in sources else 0,
         raw_log_refs=("a",) if "raw_log" in sources else (),
         focus_minutes=60.0 if "activitywatch" in sources else 0.0,
@@ -111,48 +99,13 @@ def test_date_coverage_low_when_bounds_miss_window():
     assert spotify_row.date_coverage.tier == "low"
 
 
-def test_kind_quality_high_when_majority_high_tier():
-    nodes = [_ai_work_event(kind_tier="high") for _ in range(8)]
-    nodes += [_ai_work_event(kind_tier="medium") for _ in range(2)]
-    readiness = _readiness(
-        SourceReadiness(source="polylogue", status="available", reason="ok",
-                        cost="materialized", last_date=date(2026, 5, 7)),
-    )
-    matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(nodes), correlation_rows=())
-    poly_row = next(r for r in matrix.rows if r.layer == "polylogue")
-    assert poly_row.kind_quality.tier == "high"
-    assert "8/10" in poly_row.kind_quality.detail
-
-
-def test_kind_quality_low_when_few_high_tier():
-    nodes = [_ai_work_event(kind_tier="low") for _ in range(8)]
-    nodes += [_ai_work_event(kind_tier="high") for _ in range(2)]
-    readiness = _readiness(
-        SourceReadiness(source="polylogue", status="available", reason="ok",
-                        cost="materialized", last_date=date(2026, 5, 7)),
-    )
-    matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(nodes), correlation_rows=())
-    poly_row = next(r for r in matrix.rows if r.layer == "polylogue")
-    assert poly_row.kind_quality.tier == "low"
-
-
-def test_kind_quality_n_a_for_non_polylogue_layer():
-    readiness = _readiness(
-        SourceReadiness(source="git", status="available", reason="ok",
-                        cost="materialized", last_date=date(2026, 5, 7)),
-    )
-    matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(), correlation_rows=())
-    git_row = next(r for r in matrix.rows if r.layer == "git")
-    assert git_row.kind_quality.tier == "n_a"
-
-
 def test_cross_source_high_when_layer_co_occurs_most_days():
     readiness = _readiness(
         SourceReadiness(source="git", status="available", reason="ok",
                         cost="materialized", last_date=date(2026, 5, 7)),
     )
     rows = [
-        _correlated_day(project="demo", day=date(2026, 5, d), sources=["git", "polylogue"])
+        _correlated_day(project="demo", day=date(2026, 5, d), sources=["git", "activitywatch"])
         for d in range(1, 8)
     ]
     matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(), correlation_rows=rows)
@@ -179,14 +132,13 @@ def test_render_includes_overall_tier_and_layers():
     readiness = _readiness(
         SourceReadiness(source="git", status="available", reason="ok",
                         cost="materialized", last_date=date(2026, 5, 7)),
-        SourceReadiness(source="polylogue", status="available", reason="ok",
+        SourceReadiness(source="activitywatch", status="available", reason="ok",
                         cost="materialized", last_date=date(2026, 5, 7)),
     )
-    nodes = [_ai_work_event(kind_tier="high") for _ in range(10)]
-    rows = [_correlated_day(project="demo", day=date(2026, 5, 1), sources=["git", "polylogue"])]
-    matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(nodes), correlation_rows=rows)
+    rows = [_correlated_day(project="demo", day=date(2026, 5, 1), sources=["git", "activitywatch"])]
+    matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(), correlation_rows=rows)
     rendered = render_substrate_confidence_matrix(matrix)
     assert "Overall substrate confidence" in rendered
     assert "git" in rendered
-    assert "polylogue" in rendered
+    assert "activitywatch" in rendered
     assert "Coverage" in rendered

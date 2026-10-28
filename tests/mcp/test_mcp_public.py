@@ -398,8 +398,6 @@ def test_lynchpin_project_dispatches_every_declared_snapshot_view(
         ("project", "velocity", "weekly", "velocity", "engineering_throughput", {"granularity": "week"}),
         ("project", "change_kinds", "conventional", "change", "conventional_commits", {}),
         ("project", "change_kinds", "breaking", "change", "breaking_changes", {}),
-        ("project", "change_kinds", "ai", "change", "commit_kind_attribution", {}),
-        ("project", "change_kinds", "attribution", "change", "commit_kind_attribution", {}),
         ("personal", "activity", "daily", "personal", "activity_content_daily", {}),
         ("personal", "activity", "focus", "personal", "focus_daily", {}),
         ("personal", "activity", "titles", "personal", "activity_title_usage", {}),

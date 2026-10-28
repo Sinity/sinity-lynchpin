@@ -165,38 +165,8 @@ def load_breaking_change_commits(
 # ── commit_kind_attribution ───────────────────────────────────────────────────
 
 
-def load_ai_attribution_count(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-) -> int:
-    """Return count of commit_fact rows with non-NULL ai_attribution."""
-    row = conn.execute(
-        "SELECT COUNT(*) FROM commit_fact "
-        "WHERE refresh_id = ? AND ai_attribution IS NOT NULL",
-        [refresh_id],
-    ).fetchone()
-    return row[0] if row else 0
 
 
-def load_commit_kind_ai_attribution(
-    conn: "duckdb.DuckDBPyConnection",
-    *,
-    refresh_id: str,
-) -> list[tuple[Any, ...]]:
-    """Return (conventional_kind, total, ai_assisted, ai_pct) rows."""
-    return conn.execute(
-        """
-        SELECT conventional_kind, COUNT(*) AS total,
-               SUM(CASE WHEN ai_attribution IS NOT NULL THEN 1 ELSE 0 END) AS ai_assisted,
-               ROUND(SUM(CASE WHEN ai_attribution IS NOT NULL THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS ai_pct
-        FROM commit_fact
-        WHERE refresh_id = ? AND conventional_kind IS NOT NULL
-        GROUP BY conventional_kind
-        ORDER BY total DESC
-        """,
-        [refresh_id],
-    ).fetchall()
 
 
 # ── symbol_churn_hotspots ─────────────────────────────────────────────────────
@@ -240,7 +210,5 @@ __all__ = [
     "load_file_churn_hotspots",
     "load_conventional_commit_distribution",
     "load_breaking_change_commits",
-    "load_ai_attribution_count",
-    "load_commit_kind_ai_attribution",
     "load_symbol_churn_hotspots",
 ]

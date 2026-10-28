@@ -40,6 +40,9 @@ def _sample(
 
 
 def test_workload_classifier_names_runtime_services() -> None:
+    assert workloads._classify("polylogue", "/user.slice/polylogue-live.service") == WorkloadKind.PolylogueDaemon
+    assert workloads._classify("polylogue", "/user.slice/agent.scope") == WorkloadKind.Other
+    assert workloads._classify("polylogued", None) == WorkloadKind.PolylogueDaemon
     assert workloads._classify("stash", "/system.slice/stashbox.service") == WorkloadKind.MediaService
     assert workloads._classify("ffmpeg", "/system.slice/stashbox.service") == WorkloadKind.MediaService
     assert workloads._classify("transmission-da", "/system.slice/transmission.service") == WorkloadKind.MediaService

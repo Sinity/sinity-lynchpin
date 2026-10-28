@@ -567,7 +567,7 @@ def _materialize_activity_content(
             else:
                 chunk_end = min(cursor + timedelta(days=RECENT_CHUNK_DAYS), end)
             span_start, span_end = map(as_local, date_to_dt_range(cursor, chunk_end - timedelta(days=1)))
-            for span in focus_spans(start=span_start, end=span_end, enrich_polylogue=False, ensure=False):
+            for span in focus_spans(start=span_start, end=span_end, ensure=False):
                 if span.kind != "focused" or not span.title or not span.app or span.duration_s <= 0:
                     continue
                 normalized = normalize_title(span.app, span.title)

@@ -27,7 +27,7 @@ def test_materialization_report_extracts_counts_source_statuses_and_reasons() ->
                             "row_count": 10,
                         },
                         {
-                            "source": "polylogue",
+                            "source": "atuin",
                             "kind": "export",
                             "status": "unavailable",
                             "reason": "excluded",
@@ -49,4 +49,4 @@ def test_materialization_report_extracts_counts_source_statuses_and_reasons() ->
     assert payload["steps"][0]["row_counts"] == {"machine_metric_sample": 10}
     assert payload["steps"][0]["degraded_reasons"] == ["excluded"]
     assert payload["steps"][1]["degraded_reasons"] == ["Skipped due to failed dependency: x"]
-    assert payload["source_statuses"][1]["source"] == "polylogue"
+    assert payload["source_statuses"][1]["source"] == "atuin"

@@ -451,13 +451,12 @@ def _promote_snapshot_daily_signals(
 def _record_absent_typed_projections(conn: Any, *, refresh_id: str, start: date, end: date) -> None:
     """Mark typed fact relations this refresh did not populate as unavailable.
 
-    The snapshot writes the evidence graph and personal products only.  Commit,
-    AI-work and work-observation facts come from the full substrate promotion;
+    The snapshot writes the evidence graph and personal products only. Commit
+    and work-observation facts come from the full substrate promotion;
     without its status rows an empty typed table would read as no activity
     while graph nodes for the same work exist.
     """
     from lynchpin.substrate.source_status import (
-        SOURCE_AI_WORK_EVENTS,
         SOURCE_COMMITS,
         SOURCE_FILE_CHANGES,
         SOURCE_SYMBOLS,
@@ -476,7 +475,6 @@ def _record_absent_typed_projections(conn: Any, *, refresh_id: str, start: date,
         SOURCE_COMMITS,
         SOURCE_FILE_CHANGES,
         SOURCE_SYMBOLS,
-        SOURCE_AI_WORK_EVENTS,
         SOURCE_WORK_OBSERVATIONS,
     ):
         if source in recorded:

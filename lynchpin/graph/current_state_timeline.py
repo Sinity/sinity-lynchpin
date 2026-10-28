@@ -3,18 +3,18 @@
 A first-class artifact alongside the context pack that walks the evidence
 graph day-by-day and interleaves:
 
-  - per-event rows (commits, AI work events, AI sessions, focus blocks,
+  - per-event rows (commits, focus blocks,
     terminal sessions, terminal patterns, GitHub items, raw-log entries,
     analysis claims)
   - temporal signals (changepoints, anomalies, trends, rhythms — Arc N
     output already on the graph)
-  - temporal evidence chains that fired on that day (ai_work_event → commit,
+  - temporal evidence chains that fired on that day (terminal command → commit,
     build/fix loops, debug → fix sequences, etc.)
   - issue closure-chain transitions when the day's events involve them
 
 Whereas the context pack's "Chronological Evidence" section is a 32-row
 flat sample, this artifact is full-window, grouped by day, citation-rich
-(includes node IDs, file paths, github_refs, kind tiers). It's intended as
+(includes node IDs, file paths, github_refs). It's intended as
 a separate prompt input that an LLM can consult when the pack's summary
 isn't enough.
 
@@ -234,22 +234,6 @@ def _node_to_row(node: EvidenceNode) -> TimelineRow:
             "files_changed": payload.get("files_changed"),
             "paths_count": len(payload.get("paths") or ()),
         }
-    elif node.kind == "ai_work_event":
-        excerpt = {
-            "event_id": payload.get("event_id"),
-            "kind": payload.get("kind"),
-            "kind_tier": payload.get("kind_tier"),
-            "kind_source": payload.get("kind_source"),
-            "duration_min": round((payload.get("duration_ms") or 0) / 60_000, 1),
-            "files": (payload.get("file_paths") or [])[:3],
-        }
-    elif node.kind == "ai_session":
-        excerpt = {
-            "conversation_id": payload.get("conversation_id"),
-            "provider": payload.get("provider"),
-            "messages": payload.get("message_count"),
-            "work_event_kind": payload.get("work_event_kind"),
-        }
     elif node.kind in {"github_issue", "github_pr", "github_ref"}:
         excerpt = {
             "number": payload.get("number"),
@@ -331,16 +315,6 @@ def _citation_cell(row: TimelineRow) -> str:
                 + [f"issue#{n}" for n in refs.get("issues", [])]
             )
             parts.append(ref_str)
-    elif row.kind == "ai_work_event":
-        kind = excerpt.get("kind") or "?"
-        tier = excerpt.get("kind_tier") or ""
-        tier_marker = f"[{tier}]" if tier else ""
-        parts.append(f"{kind}{tier_marker}")
-        files = excerpt.get("files") or []
-        if files:
-            parts.append("files=" + ",".join(f.rsplit("/", 1)[-1] for f in files[:2]))
-    elif row.kind == "ai_session":
-        parts.append(f"{excerpt.get('provider', '?')}/{excerpt.get('messages', 0)}msg")
     elif row.kind in {"github_issue", "github_pr"}:
         n = excerpt.get("number")
         state = excerpt.get("state")

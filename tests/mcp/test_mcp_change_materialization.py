@@ -51,19 +51,3 @@ def test_file_hotspots_materializes_substrate_before_snapshot_selection(monkeypa
             "top_project": "lynchpin",
         }
     ]
-
-
-def test_commit_kind_attribution_reports_materialization_when_no_snapshot(monkeypatch) -> None:
-    calls = _stub_read_path(monkeypatch)
-    monkeypatch.setattr(
-        "lynchpin.mcp.tools.change.best_materialized_refresh_id",
-        lambda *_args, **_kwargs: None,
-    )
-
-    from lynchpin.mcp.tools.change import commit_kind_attribution
-
-    result = commit_kind_attribution()
-
-    assert calls == ["mcp.change.commit_kind_attribution"]
-    assert result["rows"] == []
-    assert result["materialization"]["caller"] == "mcp.change.commit_kind_attribution"

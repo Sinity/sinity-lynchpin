@@ -3844,52 +3844,6 @@ def test_substrate_dataset_falls_back_when_status_manifest_is_stale(tmp_path, mo
     assert "promotion runs are present" in row.reason
 
 
-def test_polylogue_date_bounds_reads_direct_sqlite_product(tmp_path) -> None:
-    import sqlite3
-
-    from lynchpin.materialization import _polylogue_date_bounds_from_sqlite
-
-    path = tmp_path / "polylogue.db"
-    with sqlite3.connect(path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE session_profiles (
-                conversation_id TEXT PRIMARY KEY,
-                canonical_session_date TEXT
-            )
-            """
-        )
-        conn.execute("INSERT INTO session_profiles VALUES ('c1', '2026-06-05')")
-        conn.execute("INSERT INTO session_profiles VALUES ('c2', '2026-06-01')")
-
-    assert _polylogue_date_bounds_from_sqlite(path) == (
-        date(2026, 6, 1),
-        date(2026, 6, 5),
-    )
-
-    with sqlite3.connect(path) as conn:
-        conn.execute("INSERT INTO session_profiles VALUES ('c3', '2026-06-10')")
-
-    assert _polylogue_date_bounds_from_sqlite(path) == (
-        date(2026, 6, 1),
-        date(2026, 6, 10),
-    )
-    assert not (tmp_path / "polylogue.db-wal").exists()
-    assert not (tmp_path / "polylogue.db-shm").exists()
-
-
-def test_polylogue_date_bounds_direct_read_tolerates_missing_table(tmp_path) -> None:
-    import sqlite3
-
-    from lynchpin.materialization import _polylogue_date_bounds_from_sqlite
-
-    path = tmp_path / "polylogue.db"
-    with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE unrelated (id TEXT)")
-
-    assert _polylogue_date_bounds_from_sqlite(path) == (None, None)
-
-
 def test_jsonl_date_bounds_use_current_manifests(tmp_path) -> None:
     from lynchpin.materialization import _jsonl_date_bounds
 
@@ -4108,29 +4062,6 @@ def test_substack_audit_reports_current_canonical_index(monkeypatch, tmp_path) -
     assert row.status == "ready"
     assert row.row_count == 1
     assert row.first_date == date(2026, 1, 2)
-
-
-def test_polylogue_dataset_normalizes_unavailable_without_claiming_zero(monkeypatch, tmp_path):
-    from lynchpin import materialization
-    from lynchpin.core.source_contracts import dataset_status_to_substrate_status
-
-    cfg = SimpleNamespace(polylogue_archive_root=tmp_path / "archive", polylogue_root=tmp_path / "state")
-    for owner_status, expected_status, expected_count in (
-        ("unavailable", "missing", None),
-        ("degraded", "partial", 3),
-        ("unexpected", "error", None),
-    ):
-        readiness = SimpleNamespace(db_path=tmp_path / "archive.db", status=owner_status,
-                                    reason="neutral provider availability", session_profile_count=3)
-        monkeypatch.setattr(materialization, "archive_readiness", lambda: readiness)
-        row = materialization._polylogue_dataset(cfg)
-        assert row.status == expected_status
-        assert row.row_count == expected_count
-        assert row.first_date is None and row.last_date is None
-        assert dataset_status_to_substrate_status(row.status) == (
-            "error" if expected_status == "error" else "unavailable"
-        )
-
 
 
 def test_manifest_highwater_uses_the_same_frozen_inputs_as_versions(tmp_path):

@@ -9,12 +9,7 @@ cause ``issubclass('str', Context)`` → TypeError.
 from dataclasses import asdict
 from typing import Any
 
-from lynchpin.substrate.integrity import (
-    integrity_caveats,
-    measure_graph_integrity,
-    non_graph_integrity,
-    unavailable_graph_integrity,
-)
+from lynchpin.substrate.integrity import integrity_caveats, measure_graph_integrity, unavailable_graph_integrity
 from lynchpin.mcp.tools._utils import (
     best_materialized_refresh_id,
     dataclass_to_json_dict,
@@ -63,9 +58,9 @@ def project_day_correlations(
                           Use 2 for cross-source-verified project-days.
 
     Returns list of dicts with keys: project, date, refresh_id, commit_count,
-    ai_session_count, ai_work_event_count, github_item_count, focus_count,
+    github_item_count, focus_count,
     terminal_count, raw_log_count, commit_shas,
-    conversation_ids, github_node_ids, focus_minutes, shell_minutes,
+    github_node_ids, focus_minutes, shell_minutes,
     source_count.
     """
     from datetime import date as _date
@@ -234,73 +229,6 @@ def closure_chain_walks(
     ]
 
 
-def file_overlap_edges(
-    we_refresh_id: str | None = None,
-    commit_refresh_id: str | None = None,
-) -> list[dict[str, Any]]:
-    """Query the work_event_file_overlap view and return edge dicts.
-
-    These overlap rows are a separate derived view, not the persisted graph;
-    endpoint integrity of that graph is explicitly not applicable here.
-    """
-    from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.graph import compute_file_overlap_edges
-
-    if we_refresh_id is None or commit_refresh_id is None:
-        ensure_substrate_materialized_for_read(caller="file_overlap_edges")
-    path = substrate_path()
-    with connect(path, read_only=True) as conn:
-        edges = compute_file_overlap_edges(
-            conn,
-            we_refresh_id=we_refresh_id,
-            commit_refresh_id=commit_refresh_id,
-        )
-    return [
-        {"source_id": e.source_id, "target_id": e.target_id,
-         "relation": e.relation, "evidence": e.evidence, "weight": e.weight,
-         "graph_integrity": non_graph_integrity()}
-        for e in edges
-    ]
-
-
-def symbol_overlap_edges(
-    we_refresh_id: str | None = None,
-    commit_refresh_id: str | None = None,
-) -> list[dict[str, Any]]:
-    """Query the work_event_symbol_overlap view and return edge dicts."""
-    from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.graph import compute_symbol_overlap_edges
-
-    if we_refresh_id is None or commit_refresh_id is None:
-        ensure_substrate_materialized_for_read(caller="symbol_overlap_edges")
-    path = substrate_path()
-    with connect(path, read_only=True) as conn:
-        edges = compute_symbol_overlap_edges(
-            conn,
-            we_refresh_id=we_refresh_id,
-            commit_refresh_id=commit_refresh_id,
-        )
-    return [
-        {"source_id": e.source_id, "target_id": e.target_id,
-         "relation": e.relation, "evidence": e.evidence, "weight": e.weight,
-         "graph_integrity": non_graph_integrity()}
-        for e in edges
-    ]
-
-
-def overlap_edges(
-    level: str = "file",
-    we_refresh_id: str | None = None,
-    commit_refresh_id: str | None = None,
-) -> list[dict[str, Any]]:
-    """AI work-event ↔ commit overlap edges. level: file (shared paths ±24h), symbol (shared qualified symbol names)."""
-    if level == "file":
-        return file_overlap_edges(we_refresh_id=we_refresh_id, commit_refresh_id=commit_refresh_id)
-    if level == "symbol":
-        return symbol_overlap_edges(we_refresh_id=we_refresh_id, commit_refresh_id=commit_refresh_id)
-    return [{"error": f"unknown level {level!r}. choices: file, symbol"}]
-
-
 # ── D.2 ContextPackDiff ──────────────────────────────────────────────────────
 
 
@@ -311,7 +239,7 @@ def context_pack_diff(
     """Compare two substrate refresh snapshots (Arc D.2).
 
     Computes the difference between two refresh_ids across every source
-    dimension: commits, ai_work_events, evidence nodes/edges, and per-source
+    dimension: commits, evidence nodes/edges, and per-source
     status. This is the "compare to prior month" answer from the I.1 success
     criterion — a single query instead of a DAG re-run.
 
@@ -351,7 +279,6 @@ def context_pack_diff(
         tables = (
             "commit_fact",
             "file_change_fact",
-            "ai_work_event",
             "symbol_change",
             "pr_review_row",
             "evidence_node",
@@ -385,13 +312,13 @@ def context_pack_diff(
                 """
                 WITH a AS (
                     SELECT project, date, commit_count,
-                           ai_work_event_count, source_count
+                           source_count
                     FROM project_day_correlation
                     WHERE refresh_id = ?
                 ),
                 b AS (
                     SELECT project, date, commit_count,
-                           ai_work_event_count, source_count
+                           source_count
                     FROM project_day_correlation
                     WHERE refresh_id = ?
                 )
@@ -587,16 +514,10 @@ def project_pair_signals(
 ) -> list[dict[str, Any]]:
     """Cross-project relationship breakdown by signal kind.
 
-    Returns the full signal decomposition: shared AI sessions, shared AI work
-    events, and shared raw-log mentions.
-    Each signal carries a weight per
-    ``lynchpin/graph/project_relationships.py:54-60``; total weight is
-    the per-signal weighted sum.
-
-    Note: shared_commits (cross-repo PR/issue refs) was REMOVED because
-    bare ``#N`` numbers collide across repos with no real coordination
-    (e.g. sinex#542 and polylogue#542 are unrelated). Genuine cross-repo
-    refs need owner/repo#N which the upstream extractor doesn't preserve.
+    Returns shared raw-log project mentions and their weights.
+    Weights are declared in ``lynchpin.graph.project_relationships``.
+    Bare issue numbers are repository-local and do not establish
+    cross-project evidence.
 
     Parameters:
         project_a, project_b:

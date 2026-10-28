@@ -50,33 +50,11 @@
         "type": "github"
       }
     },
-    "polylogueSrc": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1791541325,
-        "narHash": "sha256-my4CgxxU0v2hd7grw6Bq/WNfTXsqIj1njyQu6IeNeEs=",
-        "owner": "Sinity",
-        "repo": "polylogue",
-        "rev": "153ed55bae8028d44fe8542ecde9a48c021759bd",
-        "type": "github"
-      },
-      "original": {
-        "owner": "Sinity",
-        "repo": "polylogue",
-        "rev": "153ed55bae8028d44fe8542ecde9a48c021759bd",
-        "type": "github"
-      }
-    },
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
-        "nixpkgsRepomix": "nixpkgsRepomix",
-        "polylogueSrc": "polylogueSrc"
+        "nixpkgsRepomix": "nixpkgsRepomix"
       }
     },
     "systems": {
