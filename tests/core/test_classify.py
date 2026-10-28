@@ -70,4 +70,3 @@ class TestTopics:
 
     def test_empty(self):
         assert extract_topics("") == []
-

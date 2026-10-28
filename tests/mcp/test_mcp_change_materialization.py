@@ -51,5 +51,3 @@ def test_file_hotspots_materializes_substrate_before_snapshot_selection(monkeypa
             "top_project": "lynchpin",
         }
     ]
-
-

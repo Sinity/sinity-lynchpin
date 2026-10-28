@@ -148,5 +148,3 @@ def _read_json(command: list[str]) -> Any:
         command, check=True, capture_output=True, text=True, timeout=30
     )
     return json.loads(result.stdout)
-
-

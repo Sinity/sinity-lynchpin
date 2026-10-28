@@ -232,5 +232,3 @@ def test_burnout_warning_returns_payload_fields(
     assert result["summary"]["status"] == "available"
     assert result["risk_level"] == "moderate"
     assert len(result["indicators"]) == 1
-
-

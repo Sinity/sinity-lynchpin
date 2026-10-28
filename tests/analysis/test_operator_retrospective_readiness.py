@@ -73,5 +73,3 @@ def test_retrospective_readiness_blocks_behavioral_when_core_source_is_partial()
     assert report.structural_explanation_allowed is True
     assert report.mode == "structural_only"
     assert report.blocking_sources == ("activitywatch",)
-
-

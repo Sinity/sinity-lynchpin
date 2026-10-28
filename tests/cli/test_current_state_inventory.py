@@ -251,8 +251,8 @@ def test_current_state_evidence_pack_combines_readiness_inventory_and_correlatio
         commit_subjects=("feat: correlate",),
         github_refs=(),
         github_lifecycles={},
-        
-        
+
+
         raw_log_count=0,
         raw_log_refs=(),
         focus_minutes=30,
@@ -267,7 +267,7 @@ def test_current_state_evidence_pack_combines_readiness_inventory_and_correlatio
         source_counts={"git": 1, "terminal": 1},
         source_pair_counts={"git+terminal": 1},
         git_without_focus=0,
-        
+
         focus_without_git=0,
         terminal_without_git=0,
     )
@@ -331,7 +331,7 @@ def test_current_state_evidence_pack_can_include_github_frontier(monkeypatch, tm
         source_counts={},
         source_pair_counts={},
         git_without_focus=0,
-        
+
         focus_without_git=0,
         terminal_without_git=0,
     )
@@ -404,7 +404,7 @@ def test_current_state_evidence_pack_filters_inventory_for_selected_projects(mon
         source_counts={},
         source_pair_counts={},
         git_without_focus=0,
-        
+
         focus_without_git=0,
         terminal_without_git=0,
     )

@@ -352,5 +352,3 @@ def keystrokes_daily(
         })
         cur += timedelta(days=1)
     return out
-
-

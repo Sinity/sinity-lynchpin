@@ -326,5 +326,3 @@ def test_work_day_correlations_distinguish_local_refs_from_fetched_github_items(
 
     assert rows[0].sources == ("github_ref",)
     assert rows[0].github_refs == ("pr#3",)
-
-

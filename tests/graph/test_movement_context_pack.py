@@ -71,8 +71,8 @@ def _row(project="sinity-lynchpin"):
         commit_subjects=("feat: one", "fix: two"),
         github_refs=("issue#1",),
         github_lifecycles={"executed": 1},
-        
-        
+
+
         raw_log_count=1,
         raw_log_refs=("logs.raw-log.md:1",),
         focus_minutes=90,
@@ -108,7 +108,7 @@ def test_context_pack_filters_projects_and_renders_caveats(monkeypatch, tmp_path
         end=end,
         generated_at=start,
         inventory=(),
-        
+
         evidence_graph=EvidenceGraph(
             start=start.date(),
             end=end.date(),
@@ -138,7 +138,7 @@ def test_context_pack_filters_projects_and_renders_caveats(monkeypatch, tmp_path
             source_counts={},
             source_pair_counts={},
             git_without_focus=0,
-            
+
             focus_without_git=0,
             terminal_without_git=0,
         ),
@@ -173,7 +173,7 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
         end=end,
         generated_at=start,
         inventory=(),
-        
+
         evidence_graph=EvidenceGraph(
             start=start.date(),
             end=end.date(),
@@ -192,7 +192,7 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
             source_counts={},
             source_pair_counts={},
             git_without_focus=0,
-            
+
             focus_without_git=0,
             terminal_without_git=0,
         ),
@@ -444,7 +444,7 @@ def test_graph_context_pack_dedupes_overlapping_caveats(monkeypatch, tmp_path):
         end=end,
         generated_at=start,
         inventory=(),
-        
+
         evidence_graph=graph,
         source_readiness=SourceReadinessReport(
             start=start.date(),
@@ -468,7 +468,7 @@ def test_graph_context_pack_dedupes_overlapping_caveats(monkeypatch, tmp_path):
             source_counts={},
             source_pair_counts={},
             git_without_focus=0,
-            
+
             focus_without_git=0,
             terminal_without_git=0,
         ),
@@ -499,7 +499,7 @@ def test_context_pack_can_include_weak_tags(monkeypatch, tmp_path):
         end=end,
         generated_at=start,
         inventory=(),
-        
+
         evidence_graph=graph,
         source_readiness=SourceReadinessReport(start=start.date(), end=end.date(), generated_at=start, sources=()),
         work_correlations=(),
@@ -510,7 +510,7 @@ def test_context_pack_can_include_weak_tags(monkeypatch, tmp_path):
             source_counts={},
             source_pair_counts={},
             git_without_focus=0,
-            
+
             focus_without_git=0,
             terminal_without_git=0,
         ),
@@ -549,7 +549,7 @@ def test_context_pack_records_exact_substrate_hit(monkeypatch, tmp_path):
         end=end,
         generated_at=start,
         inventory=(),
-        
+
         evidence_graph=graph,
         source_readiness=SourceReadinessReport(start=start.date(), end=end.date(), generated_at=start, sources=()),
         work_correlations=(),
@@ -560,7 +560,7 @@ def test_context_pack_records_exact_substrate_hit(monkeypatch, tmp_path):
             source_counts={},
             source_pair_counts={},
             git_without_focus=0,
-            
+
             focus_without_git=0,
             terminal_without_git=0,
         ),

@@ -18,5 +18,3 @@ def _sources_line(tmp_path: Path, archive: Path) -> str:
     }
     out = subprocess.run(["bash", str(_SCRIPT)], env=env, check=True, capture_output=True, text=True).stdout
     return next(line for line in out.splitlines() if line.startswith("sources"))
-
-

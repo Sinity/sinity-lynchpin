@@ -88,5 +88,3 @@ def test_error_burst_label_uses_measured_counts():
     assert len(matched) == 1 and "3 → 0" in matched[0].summary
     from lynchpin.graph.narrative import _chain_section
     assert "3 → 0" in _chain_section(matched[0]).title
-
-

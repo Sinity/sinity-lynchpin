@@ -43,7 +43,7 @@ def _graph() -> EvidenceGraph:
             summary="feat(current-state): add evidence graph",
             payload={"files_changed": 3, "lines_changed": 120, "github_refs": {"prs": [1], "issues": [2]}},
         ),
-        
+
         _node(
             "raw-log:2026-05-05T12:04",
             "raw_log",

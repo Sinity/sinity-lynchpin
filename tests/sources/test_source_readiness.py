@@ -86,10 +86,8 @@ def test_source_readiness_reflects_network_mode(monkeypatch, tmp_path):
                 "git_baseline": False,
                 "webhistory": False,
                 "sleep": False,
-                "codex": False,
                 "reddit": False,
                 "spotify": False,
-                "polylogue": True,
                 "fbmessenger": False,
                 "asciinema": False,
                 "keylog": False,
@@ -102,9 +100,6 @@ def test_source_readiness_reflects_network_mode(monkeypatch, tmp_path):
                 "irc": False,
                 "raw_log": False,
             }
-
-    calls = {}
-
 
     monkeypatch.setattr("lynchpin.graph.source_readiness.get_config", lambda: Config())
     monkeypatch.setattr(
@@ -127,7 +122,6 @@ def test_source_readiness_reflects_network_mode(monkeypatch, tmp_path):
         include_github_frontier=True,
     )
 
-    assert calls["include_polylogue_product_counts"] is True
     assert report.by_source()["github"].status == "available"
     assert report.by_source()["github"].caveats == ()
     assert "frontier rows are enabled" in report.by_source()["github"].reason
@@ -169,10 +163,8 @@ def test_source_readiness_reports_analysis_artifacts(monkeypatch, tmp_path):
                 "git_baseline": False,
                 "webhistory": False,
                 "sleep": False,
-                "codex": False,
                 "reddit": False,
                 "spotify": False,
-                "polylogue": True,
                 "fbmessenger": False,
                 "asciinema": False,
                 "keylog": False,
@@ -231,10 +223,8 @@ def test_source_readiness_uses_observed_source_observation_not_directory_mtime(
                 "git_baseline": False,
                 "webhistory": False,
                 "sleep": False,
-                "codex": False,
                 "reddit": False,
                 "spotify": True,
-                "polylogue": True,
                 "fbmessenger": False,
                 "asciinema": False,
                 "keylog": False,

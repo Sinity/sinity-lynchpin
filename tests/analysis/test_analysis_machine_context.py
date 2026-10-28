@@ -230,5 +230,3 @@ def test_machine_context_can_opt_into_ambient_sources(tmp_path, monkeypatch):
     )
 
     assert called["terminal"] is True
-
-
