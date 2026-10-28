@@ -83,13 +83,12 @@ def test_promote_operator_day_new_columns_round_trip(tmp_path):
             stress_min=20.0,
             stress_max=85.0,
             web_unique_domains=42,
-            polylogue_messages=150,
             weather_temp_mean=18.5,
             mood_dominant_emotion="joy",
             keylog_sessions=5,
             spo2_pct=97.5,
             skin_temp_c=36.1,
-            sources_present=frozenset({"substance", "health", "polylogue"}),
+            sources_present=frozenset({"substance", "health"}),
         ),
         OperatorDay(
             date=date(2026, 6, 2),
@@ -102,7 +101,7 @@ def test_promote_operator_day_new_columns_round_trip(tmp_path):
         assert promote_operator_day_rows(conn, refresh_id="r1", rows=rows) == 2
         got = conn.execute(
             "SELECT date, substance_mg_by_name, substance_unique_count, stress_min, stress_max, "
-            "web_unique_domains, polylogue_messages, weather_temp_mean, mood_dominant_emotion, "
+            "web_unique_domains, weather_temp_mean, mood_dominant_emotion, "
             "keylog_sessions, spo2_pct, skin_temp_c "
             "FROM operator_day WHERE refresh_id='r1' ORDER BY date"
         ).fetchall()
@@ -115,21 +114,20 @@ def test_promote_operator_day_new_columns_round_trip(tmp_path):
     assert r1[3] == 20.0       # stress_min
     assert r1[4] == 85.0       # stress_max
     assert r1[5] == 42         # web_unique_domains
-    assert r1[6] == 150        # polylogue_messages
-    assert abs(r1[7] - 18.5) < 0.001  # weather_temp_mean
-    assert r1[8] == "joy"      # mood_dominant_emotion
-    assert r1[9] == 5          # keylog_sessions
-    assert abs(r1[10] - 97.5) < 0.001  # spo2_pct
-    assert abs(r1[11] - 36.1) < 0.001  # skin_temp_c
+    assert abs(r1[6] - 18.5) < 0.001  # weather_temp_mean
+    assert r1[7] == "joy"      # mood_dominant_emotion
+    assert r1[8] == 5          # keylog_sessions
+    assert abs(r1[9] - 97.5) < 0.001  # spo2_pct
+    assert abs(r1[10] - 36.1) < 0.001  # skin_temp_c
 
     r2 = got[1]
     # Optional new columns must be NULL, not 0, when absent
     assert r2[3] is None       # stress_min
     assert r2[4] is None       # stress_max
-    assert r2[7] is None       # weather_temp_mean
-    assert r2[8] is None       # mood_dominant_emotion
-    assert r2[10] is None      # spo2_pct
-    assert r2[11] is None      # skin_temp_c
+    assert r2[6] is None       # weather_temp_mean
+    assert r2[7] is None       # mood_dominant_emotion
+    assert r2[9] is None      # spo2_pct
+    assert r2[10] is None      # skin_temp_c
     # Non-optional (DEFAULT 0) columns stay 0
     assert r2[2] == 0          # substance_unique_count
     assert r2[5] == 0          # web_unique_domains

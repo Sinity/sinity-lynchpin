@@ -197,7 +197,7 @@ def test_focus_product_keeps_positive_observations_during_selected_afk(monkeypat
     activitywatch._focus_spans_cached.cache_clear()
 
     spans = activitywatch.focus_spans(
-        start=event.start, end=event.end, enrich_polylogue=False, ensure=False
+        start=event.start, end=event.end, ensure=False
     )
     afk_spans = [span for span in spans if span.kind == "afk"]
     assert len(afk_spans) == 2

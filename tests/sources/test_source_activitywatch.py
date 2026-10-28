@@ -645,7 +645,7 @@ def test_focus_cache_distinguishes_both_occurrences_of_repeated_hour(monkeypatch
     for fold in (0, 1):
         start = datetime(2025, 10, 26, 2, 10, tzinfo=zone, fold=fold)
         end = datetime(2025, 10, 26, 2, 20, tzinfo=zone, fold=fold)
-        spans = aw.focus_spans(start=start, end=end, enrich_polylogue=False, ensure=False)
+        spans = aw.focus_spans(start=start, end=end, ensure=False)
         assert len(spans) == 1
         assert spans[0].start.timestamp() == start.timestamp()
         assert spans[0].app == str(fold)

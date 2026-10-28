@@ -112,6 +112,18 @@ def observability_inputs() -> tuple[ObservabilityInput, ...]:
             next_action="do not promote wholesale; export bounded windows when experiments need process attribution",
         ),
         ObservabilityInput(
+            id="machine.sinnix_observe",
+            owner="sinnix",
+            layer="operational_view",
+            integration_state="derived",
+            path=cfg.sinnix_root / "pkgs/sinnix-runtime/sinnix_runtime/observe",
+            substrate_table=None,
+            grain="on-demand report window",
+            state_dimensions=("pressure_snapshot", "systemd_state", "below_window", "project_ledgers"),
+            retention="not a canonical dataset",
+            next_action="keep as an operator report over owner-native observations; canonical machine capture remains with its source",
+        ),
+        ObservabilityInput(
             id="machine.sinnix_runtime_inventory",
             owner="sinnix",
             layer="operational_view",

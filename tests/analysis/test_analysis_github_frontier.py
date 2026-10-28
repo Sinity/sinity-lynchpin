@@ -62,7 +62,6 @@ def test_frontier_reads_github_context_product(monkeypatch, tmp_path) -> None:
         "iter_github_context",
         lambda projects=None, **_kwargs: iter((GitHubContextRow(project="demo", item=item),)),
     )
-    monkeypatch.setattr(github_frontier, "_project_kind_mix", lambda *, start, end: {})
 
     payload = build_active_github_frontier(
         start=date(2026, 5, 1),
