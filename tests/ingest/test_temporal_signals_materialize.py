@@ -12,9 +12,9 @@ from lynchpin.sources.temporal_signals import iter_temporal_signals
 
 
 def test_temporal_query_reuses_one_observation_and_refreshes_next_query(monkeypatch) -> None:
-    from lynchpin.sources import temporal_signals, terminal, polylogue, health
+    from lynchpin.sources import temporal_signals, terminal, health
 
-    counts = {"terminal": 0, "polylogue": 0, "health": 0}
+    counts = {"terminal": 0, "health": 0}
     generation = {"value": 1}
 
     def fake(source):
@@ -22,34 +22,29 @@ def test_temporal_query_reuses_one_observation_and_refreshes_next_query(monkeypa
             counts[source] += 1
             return [SimpleNamespace(date=start, error_rate=float(generation["value"]),
                                     command_count=generation["value"],
-                                    session_count=generation["value"],
-                                    engaged_minutes=float(generation["value"]),
                                     hrv_rmssd_avg=float(generation["value"]),
                                     heart_rate_resting=float(generation["value"]))]
         return load
 
     monkeypatch.setattr(terminal, "daily_terminal_activity", fake("terminal"))
-    monkeypatch.setattr(polylogue, "daily_activity", fake("polylogue"))
     monkeypatch.setattr(health, "daily_health_summary", fake("health"))
     day = date(2026, 5, 1)
     observed = []
 
     def inspect(start, end):
         first = (temporal_signals._load_error_rate(start, end),
-                 temporal_signals._load_ai_sessions(start, end),
                  temporal_signals._load_hrv(start, end))
         second = (temporal_signals._load_command_count(start, end),
-                  temporal_signals._load_ai_engaged(start, end),
                   temporal_signals._load_resting_hr(start, end))
         observed.append((first, second))
         return {}
 
     specs = (temporal_signals.SignalSpec("inspect", "observe", inspect),)
     temporal_signals.detect_temporal_signals(start=day, end=day, specs=specs)
-    assert counts == {"terminal": 1, "polylogue": 1, "health": 1}
+    assert counts == {"terminal": 1, "health": 1}
     generation["value"] = 2
     temporal_signals.detect_temporal_signals(start=day, end=day, specs=specs)
-    assert counts == {"terminal": 2, "polylogue": 2, "health": 2}
+    assert counts == {"terminal": 2, "health": 2}
     assert observed[0][0][0] != observed[1][0][0]
 
 
@@ -264,7 +259,7 @@ def test_temporal_inputs_do_not_rebuild_before_known_product_coverage(monkeypatc
             last_date=date(2026, 8, 20),
         ),
         SimpleNamespace(
-            name="polylogue",
+            name="health",
             status="ready",
             tail_stale=False,
             first_date=date(2022, 12, 11),
@@ -280,7 +275,7 @@ def test_temporal_inputs_do_not_rebuild_before_known_product_coverage(monkeypatc
     _ensure_temporal_inputs(date(2011, 11, 1), date(2026, 8, 20))
 
     assert ("activitywatch_derived", (date(2024, 2, 15), date(2026, 8, 21))) in calls
-    assert ("polylogue", (date(2022, 12, 11), date(2026, 8, 1))) in calls
+    assert ("health", (date(2022, 12, 11), date(2026, 8, 1))) in calls
 
 
 def test_iter_temporal_signals_converges_default_materialization(monkeypatch, tmp_path) -> None:

@@ -37,7 +37,7 @@ def test_materialize_activity_content_records_input_high_water(monkeypatch, tmp_
     assert manifest["input_file_count"] == 2
     assert manifest["input_latest_mtime"] is not None
     assert focus_calls
-    assert all(call["enrich_polylogue"] is False for call in focus_calls)
+    assert all(call["ensure"] is False for call in focus_calls)
 
 
 def test_materialize_activity_content_bounds_focus_windows(monkeypatch, tmp_path):
