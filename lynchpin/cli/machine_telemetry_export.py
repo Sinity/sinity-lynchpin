@@ -159,12 +159,14 @@ def export_table(
     sealed_days = sorted(r[0] for r in dt_rows)
 
     already = _existing_lake_days(lake_root, table)
-    if already:
+    if already and not full:
         # An existing partition is not evidence of a complete export: a
         # process death can leave an empty or truncated directory behind.
         # Verify it against the live source before treating the sealed day as
         # immutable and skipping it. A mismatch is a hard stop rather than a
         # silent overwrite, so the operator can inspect the lake and source.
+        # Explicit full rebuilds admit changed source days; their new staged
+        # partitions must pass the same verification before atomic replacement.
         verify_exported_days(
             conn,
             table=table,

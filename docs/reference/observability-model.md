@@ -106,6 +106,17 @@ window; `--reuse-machine-candidate PATH` admits completed, schema- and
 count-matching stages from a retained candidate. `materialize-machine --full`
 bypasses incremental and memoized skips.
 
+Canonical machine carriers also support an explicit affected-day refresh with
+`python -m lynchpin.ingest.machine_materialize --start D --end NEXT_D` (end
+exclusive). For the separate Parquet archive, ordinary
+`python -m lynchpin.cli.machine_telemetry_export` verifies existing days and
+refuses a source/partition mismatch. Use its explicit `--full` rebuild to
+regenerate published days after an intentional source change: new output is
+staged and verified before atomic replacement. A failed staged verification
+preserves the previous published partition. `--tables` limits the table set;
+`--full` still rebuilds every sealed day of those tables, not only the affected
+day. Source SQLite segments remain read-only.
+
 Optional bounded Below bundles default to `stability-lab` beneath the
 configured machine-host root (`LYNCHPIN_MACHINE_HOST_ROOT`). The analysis APIs
 and CLI share that default; `--root` still selects an explicit retained

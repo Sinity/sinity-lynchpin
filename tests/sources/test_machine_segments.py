@@ -615,6 +615,62 @@ def test_parquet_export_verifies_combined_days_and_reuses_completed_partitions(
     assert {path: path.stat().st_mtime_ns for path in files} == files
 
 
+def test_explicit_late_day_repair_materializes_and_reexports_three_members(tmp_path, monkeypatch):
+    from datetime import date, datetime, timezone
+    import sqlite3
+    import duckdb
+    from lynchpin.sources import machine
+    from lynchpin.sources.machine_package import iter_machine_table_rows
+    from lynchpin.ingest.machine_materialize import materialize_machine_telemetry
+    from lynchpin.cli.machine_telemetry_export import LakeVerificationError, run_export
+
+    current, legacy = sqlite_sources(
+        tmp_path, monkeypatch,
+        old=[(1, "2026-01-01T12:00:00+00:00")],
+        new=[(3, "2026-01-03T12:00:00+00:00")],
+    )
+    middle = tmp_path / "middle.sqlite"
+    with sqlite3.connect(legacy) as old, sqlite3.connect(middle) as sealed:
+        old.backup(sealed)
+        for table in ("metric_sample", "gpu_sample", "process_memory_sample", "service_state"):
+            sealed.execute(
+                f"UPDATE {table} SET id=2, observed_at='2026-01-02T12:00:00+00:00'"
+            )
+    payload = json.loads(manifest_path(current).read_text())
+    payload["sealed"].append(entry(middle, "middle"))
+    manifest_path(current).write_text(json.dumps(payload))
+    machine.get_config().machine_capture_root = tmp_path / "capture"
+    materialize_machine_telemetry(start=date(2026, 1, 1), end=date(2026, 1, 4))
+    lake = tmp_path / "lake"
+    kwargs = dict(sqlite_path=current, lake_root=lake, tables=("metric_sample",),
+                  now=datetime(2026, 1, 5, tzinfo=timezone.utc))
+    run_export(**kwargs)
+    with sqlite3.connect(current) as source:
+        source.execute(
+            "INSERT INTO metric_sample SELECT "
+            + ",".join(
+                "4" if column == "id" else "'2026-01-01T13:00:00+00:00'"
+                if column == "observed_at" else column
+                for column in (row[1] for row in source.execute("PRAGMA table_info(metric_sample)"))
+            )
+            + " FROM metric_sample WHERE id=3"
+        )
+    assert len(list(machine.metric_samples(start=date(2026, 1, 1), end=date(2026, 1, 3)))) == 4
+    with pytest.raises(LakeVerificationError):
+        run_export(**kwargs)
+    materialize_machine_telemetry(start=date(2026, 1, 1), end=date(2026, 1, 2))
+    carrier = tmp_path / "capture/processed/metric_sample.ndjson"
+    rows = list(iter_machine_table_rows(carrier, start=None, end=None))
+    assert len(rows) == 4
+    assert sum(row["observed_at"].startswith("2026-01-01") for row in rows) == 2
+    assert run_export(**kwargs, full=True)[0].rows_exported == 4
+    with duckdb.connect() as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM read_parquet(?)", [str(lake / "metric_sample/dt=*/*.parquet")]
+        ).fetchone()[0] == 4
+    assert run_export(**kwargs)[0].rows_exported == 0
+
+
 def test_daily_pressure_combines_segment_denominators(tmp_path, monkeypatch):
     from datetime import datetime
     from lynchpin.analysis.daytime_correlates import _load_machine_daily

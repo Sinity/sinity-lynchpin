@@ -161,6 +161,44 @@ def test_export_is_idempotent_and_incremental_by_default(tmp_path):
     assert third[0].rows_exported == 3
 
 
+def test_full_export_rebuilds_published_day_after_late_source_row(tmp_path):
+    import duckdb
+    from lynchpin.cli.machine_telemetry_export import run_export
+
+    db = tmp_path / "source.sqlite"
+    lake = tmp_path / "lake"
+    _seed_source_db(db, {"2026-08-15": 1})
+    kwargs = dict(sqlite_path=db, lake_root=lake, tables=("gpu_sample",),
+                  now=datetime(2026, 8, 17, tzinfo=timezone.utc))
+    run_export(**kwargs)
+    part = next((lake / "gpu_sample/dt=2026-08-15").glob("*.parquet"))
+    with sqlite3.connect(db) as source:
+        source.execute(
+            "INSERT INTO gpu_sample (observed_at, host, boot_id, gpu_power_w) "
+            "VALUES ('2026-08-15T12:00:00+00:00', 'fixture-host', 'fixture-boot', 250.0)"
+        )
+    from lynchpin.cli.machine_telemetry_export import LakeVerificationError
+
+    preimage = part.read_bytes()
+    with pytest.raises(LakeVerificationError):
+        run_export(**kwargs)
+    assert part.read_bytes() == preimage
+    result = run_export(**kwargs, full=True)
+    assert result[0].rows_exported == 2
+    assert result[0].verified_days == 1
+    with duckdb.connect() as conn:
+        rows = conn.execute(
+            "SELECT id, observed_at, host, boot_id, gpu_power_w "
+            "FROM read_parquet(?) ORDER BY id", [str(part)]
+        ).fetchall()
+    with sqlite3.connect(db) as source:
+        expected = source.execute(
+            "SELECT id, observed_at, host, boot_id, gpu_power_w FROM gpu_sample ORDER BY id"
+        ).fetchall()
+    assert rows == expected
+    assert run_export(**kwargs)[0].rows_exported == 0
+
+
 def test_incremental_export_recovers_missing_partition(tmp_path):
     from lynchpin.cli.machine_telemetry_export import run_export
 
@@ -287,7 +325,7 @@ def test_export_accepts_apostrophes_in_configured_paths(tmp_path, quoted_source,
 
 @pytest.mark.parametrize("change", ["value", "association", "null", "extra_column"])
 @pytest.mark.parametrize("full", [False, True])
-def test_export_rejects_changed_payload_with_unchanged_ids(tmp_path, change, full):
+def test_export_rejects_changed_payload_with_unchanged_ids(tmp_path, monkeypatch, change, full):
     import duckdb
     from lynchpin.cli.machine_telemetry_export import LakeVerificationError, run_export, _sql_literal
 
@@ -311,11 +349,29 @@ def test_export_rejects_changed_payload_with_unchanged_ids(tmp_path, change, ful
         "null": "coalesce(gpu_power_w, 0.0) AS gpu_power_w",
         "extra_column": '\'changed\' AS "extra""payload"',
     }
-    with duckdb.connect() as conn:
-        conn.execute(f"COPY (SELECT * REPLACE ({replacements[change]}) "
-                     f"FROM read_parquet({_sql_literal(part)}, hive_partitioning=false)) "
-                     f"TO {_sql_literal(changed)} (FORMAT PARQUET)")
-    changed.replace(part)
+    def corrupt_partition(path):
+        with duckdb.connect() as conn:
+            conn.execute(f"COPY (SELECT * REPLACE ({replacements[change]}) "
+                         f"FROM read_parquet({_sql_literal(path)}, hive_partitioning=false)) "
+                         f"TO {_sql_literal(changed)} (FORMAT PARQUET)")
+        changed.replace(path)
+
+    if full:
+        from lynchpin.cli import machine_telemetry_export as exporter
+
+        verify = exporter.verify_exported_days
+
+        def verify_corrupted_stage(conn, **kwargs):
+            # Full rebuilds may replace stale output, but must reject corruption
+            # in the new stage without changing the previously published file.
+            assert kwargs["out_dir"].name.startswith(".staging-")
+            staged = next(kwargs["out_dir"].glob("dt=*/*.parquet"))
+            corrupt_partition(staged)
+            return verify(conn, **kwargs)
+
+        monkeypatch.setattr(exporter, "verify_exported_days", verify_corrupted_stage)
+    else:
+        corrupt_partition(part)
     preimage = part.read_bytes()
     manifest_before = (lake / "manifest.json").read_bytes()
     with pytest.raises(LakeVerificationError):
