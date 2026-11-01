@@ -24,7 +24,6 @@ from ..core.evidence_graph import (
 )
 from . import evidence_analysis, evidence_edges, evidence_sources
 from .evidence_projects import selected_projects
-from .machine_analysis import add_machine_analysis_nodes
 from .performance import GraphStageRecorder, log_performance, recorded_stage, sample_performance
 from .source_readiness import source_readiness
 
@@ -218,17 +217,6 @@ def build_evidence_graph(
             nodes, edges, end=end, selected=selected,
             exclude_names=frozenset(exclude_analysis_artifacts), artifacts=analysis_artifacts,
         )
-    log.info("evidence_graph: adding machine analysis nodes")
-    with recorded_stage(recorder, "machine_analysis", window_start=start, window_end=end, node_count=lambda: len(nodes), edge_count=lambda: len(edges)):
-        add_machine_analysis_nodes(
-            nodes, edges, start=start, end=end, selected=selected,
-            exclude_names=frozenset(exclude_analysis_artifacts),
-        )
-    log.info(
-        "evidence_graph: after machine analysis nodes=%d edges=%d",
-        len(nodes),
-        len(edges),
-    )
 
     return _finalize_graph(
         nodes=nodes,

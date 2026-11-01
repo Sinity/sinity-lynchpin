@@ -119,19 +119,6 @@ class LynchpinConfig:
     filesystem_layout: Path = Path("/etc/sinnix/filesystem-layout.json")
     # Why capture roots could not be resolved; those sources then read as absent.
     filesystem_layout_error: str | None = None
-    chisel_cache_root: Path | None = None
-    chisel_scratch_root: Path | None = None
-
-    def chisel_cache(self) -> Path:
-        return self.chisel_cache_root or self.cache_dir / "chisel"
-
-    def chisel_scratch(self) -> Path:
-        import tempfile
-        job_scratch = os.environ.get("AGENTCTL_SCRATCH")
-        if job_scratch:
-            return Path(job_scratch) / "chisel"
-        return self.chisel_scratch_root or Path(tempfile.gettempdir()) / "lynchpin-chisel"
-
     def capture_path(self, lane: str) -> Path:
         """Resolve managed placement from the producer's exported registry."""
         return _capture_path(self.data_root, self.filesystem_layout, lane)
@@ -408,8 +395,6 @@ class LynchpinConfig:
         return cls(
             filesystem_layout=filesystem_layout,
             filesystem_layout_error="; ".join(layout_errors) or None,
-            chisel_cache_root=Path(os.environ["LYNCHPIN_CHISEL_CACHE_ROOT"]) if os.environ.get("LYNCHPIN_CHISEL_CACHE_ROOT") else None,
-            chisel_scratch_root=Path(os.environ["LYNCHPIN_CHISEL_SCRATCH_ROOT"]) if os.environ.get("LYNCHPIN_CHISEL_SCRATCH_ROOT") else None,
             repo_root=repo_root, local_root=local_root, sinnix_root=sinnix_root, data_root=data_root,
             accounts_root=accounts_root,
             health_root=health_root, derived_root=derived_root, libraries_root=libraries_root,

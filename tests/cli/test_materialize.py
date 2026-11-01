@@ -634,7 +634,7 @@ def test_selected_plan_includes_dependencies_and_excludes_unrelated_writers(monk
     def step(name, dependencies=()):
         return SimpleNamespace(product=name, dependencies=dependencies, to_json=lambda: {"product": name})
 
-    steps = [step("index"), step("activity", ("index",)), step("health"), step("code_snapshots")]
+    steps = [step("index"), step("activity", ("index",)), step("health"), step("github_context")]
     monkeypatch.setattr(materialize, "plan_materializations", lambda **kwargs: steps)
     monkeypatch.setattr(materialize, "materializer_dependency_model", lambda plan: ())
     monkeypatch.setattr(materialize, "materializer_execution_waves", lambda model: ())

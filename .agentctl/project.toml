@@ -12,7 +12,7 @@ command = ["nix", "develop", "--command"]
 # source tree). Jobs enter a cached `nix print-dev-env` realization keyed on
 # them instead of evaluating the devShell twice per new tree state.
 cache_inputs = ["flake.nix", "flake.lock"]
-inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LYNCHPIN_REPO_ROOT", "LYNCHPIN_LOCAL_ROOT", "SINEX_ROOT", "RAWLOG_FILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "LYNCHPIN_FILESYSTEM_LAYOUT", "LYNCHPIN_ASCIINEMA_ROOT", "LYNCHPIN_CHISEL_CACHE_ROOT", "LYNCHPIN_CHISEL_SCRATCH_ROOT", "LYNCHPIN_DATA_ROOT", "LYNCHPIN_HEALTH_ROOT", "LYNCHPIN_SAMSUNG_GDPR_CLOUD", "LYNCHPIN_SLEEP_JSONL", "SINEX_RUNTIME_TARGET_CONFIG", "LYNCHPIN_SINEX_HEALTH_CA_CERT", "LYNCHPIN_APPLICATION_HEALTH_TIMEOUT", "LYNCHPIN_APPLICATION_HEALTH"]
+inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LYNCHPIN_REPO_ROOT", "LYNCHPIN_LOCAL_ROOT", "SINEX_ROOT", "RAWLOG_FILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "LYNCHPIN_FILESYSTEM_LAYOUT", "LYNCHPIN_ASCIINEMA_ROOT", "LYNCHPIN_DATA_ROOT", "LYNCHPIN_HEALTH_ROOT", "LYNCHPIN_SAMSUNG_GDPR_CLOUD", "LYNCHPIN_SLEEP_JSONL", "SINEX_RUNTIME_TARGET_CONFIG", "LYNCHPIN_SINEX_HEALTH_CA_CERT", "LYNCHPIN_APPLICATION_HEALTH_TIMEOUT", "LYNCHPIN_APPLICATION_HEALTH"]
 unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
 
 [workspace]
@@ -39,13 +39,6 @@ exec = ["just", "lint"]
 pool = "normal"
 result = "exit"
 cache = "tree+environment"
-
-[operations.snapshot_layout]
-description = "Describe owner-led canonical snapshot placement without opening payloads"
-exec = ["python", "-m", "lynchpin.cli.chisel", "layout"]
-pool = "normal"
-result = "exit"
-cache = "none"
 
 [operations.input_activity]
 description = "Reconstruct private input evidence from explicit time bounds"
@@ -176,15 +169,6 @@ result = "json"
 cache = "none"
 timeout_seconds = 7200
 
-[operations.chisel]
-description = "Build the complete configured cross-project Chisel report portfolio"
-exec = ["just", "chisel"]
-pool = "bulk"
-result = "exit"
-cache = "none"
-scratch = "nvme"
-timeout_seconds = 900
-
 [operations.cleanup_machine_staging]
 description = "Preview or remove abandoned machine-carrier staging files through the owning materializer"
 exec = ["python", "-m", "lynchpin.ingest.machine_materialize", "--cleanup-staging"]
@@ -225,14 +209,6 @@ result = "exit"
 cache = "none"
 scratch = "nvme"
 timeout_seconds = 3600
-
-[operations.snapshot_locations]
-description = "Plan or publish current snapshot lookup address changes without rebuilding captures"
-exec = ["python", "-m", "lynchpin.cli.snapshot_locations"]
-pool = "bulk"
-result = "exit"
-cache = "none"
-timeout_seconds = 1800
 
 [operations.verify_package]
 description = "Build packaged API and MCP entry points with neutral deployment configuration"

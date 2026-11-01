@@ -351,8 +351,6 @@ def plan_materializations(
         elif maintenance:
             if getattr(row, "incremental_blocked_reason", None):
                 action, reason = "check-only", row.incremental_blocked_reason
-            elif row.name == "code_snapshots":
-                action, reason = "check-only", "Chisel snapshots require an explicit build; nightly tail maintenance does not rebuild the portfolio"
             elif row.name == "machine":
                 action, reason = "check-only", "machine reads use live SQLite or the canonical fallback; building the offline NDJSON copy requires an explicit materialization"
             elif row.repair_required:

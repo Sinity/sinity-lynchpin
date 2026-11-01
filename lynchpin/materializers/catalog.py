@@ -25,12 +25,12 @@ _CANONICAL_ONLY = frozenset(
     {"activitywatch_event_index", "activitywatch_derived", "activity_content", "personal_daily_signals", "temporal_signals", "sleep_productivity"}
 )
 _WINDOWLESS = frozenset(
-    {"google_takeout", "title_metadata", "spotify", "reddit", "facebook_messenger", "communications", "raindrop", "browser_bookmarks", "arbtt", "health_coverage", "code_snapshots", "substack"}
+    {"google_takeout", "title_metadata", "spotify", "reddit", "facebook_messenger", "communications", "raindrop", "browser_bookmarks", "arbtt", "health_coverage", "substack"}
 )
 # These handlers promote the shared DuckDB substrate as part of their normal
 # materialization.  A promotion has one writer lock, so letting both enter the
 # same execution wave turns an ordinary plan into a deterministic lock race.
-_SUBSTRATE_PROMOTION_PRODUCTS = frozenset({"code_snapshots", "github_context"})
+_SUBSTRATE_PROMOTION_PRODUCTS = frozenset({"github_context"})
 
 
 def _spec(name: str) -> ProductSpec:

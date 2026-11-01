@@ -110,8 +110,6 @@ def _read_substrate_status(path: Path) -> dict[str, Any]:
             publication_reason = None
             if publication_products:
                 publication_reason = ", ".join(publication_products)
-                if "code_snapshots" in publication_products:
-                    publication_reason += f": {_scalar_count(conn, 'code_snapshot_run')} runs"
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001 - sidecar writer must not break promotion.

@@ -37,7 +37,6 @@ from .active.substrate_promote import (
     SOURCE_WORK_OBSERVATIONS,
     run_substrate_promote,
 )
-from .change.commit_capsules import run_active_commit_semantics
 from .change.work_packages import run_active_work_packages
 from .code_index.code_inventory import run_active_code_inventory
 from .code_index.python_analysis import run_active_python_complexity, run_active_python_import_graph
@@ -46,13 +45,7 @@ from .code_index.symbol_diffs import run_active_symbol_diffs
 from .code_index.symbol_index import run_active_symbol_index
 from .frontier.ci_health import run_active_ci_health
 from .frontier.github_frontier import run_active_github_frontier
-from .interpretation.python_dependency_hygiene import run_active_python_dependency_hygiene
-from .interpretation.rust_dependency_hygiene import run_active_rust_dependency_hygiene
-from .interpretation.semantic_static_findings import run_active_semantic_static_findings
-from .interpretation.shape import run_active_guardrails, run_active_hotspots
-from .interpretation.structural_findings import run_active_structural_findings
 from .interpretation.velocity_windows import run_project_velocity_windows
-from .code_history_claims import write_code_history_claims
 from .keylog import write_keylog_analysis
 from .machine.attribution import write_below_attribution_analysis
 from .machine.attribution_candidates import write_machine_attribution_candidates
@@ -99,7 +92,6 @@ from .substance_health import write_report as write_substance_health_report
 from .burnout_warning import write_report as write_burnout_warning_report
 from .quota_advisory import write_quota_advisory
 from .operator_daily import operator_daily_matrix
-from .sinex import temporal as sinex_temporal
 from .workflow_mechanics import write_workflow_mechanics_report
 
 
@@ -374,20 +366,12 @@ def current_state_dag(
     dag.add(_step(dag, 'active_python_import_graph', 'run_active_python_import_graph', args=(_out('active_python_import_graph.json'),), kwargs={'projects': projects, 'snapshot_file': _out('active_project_snapshot.json')}, depends_on=['active_project_snapshot']))
     dag.add(_step(dag, 'active_rust_workspace_graph', 'run_active_rust_graph', args=(_out('active_rust_workspace_graph.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json'), 'file_changes_file': _out('active_file_change_facts.json')}, depends_on=['active_git_facts', 'active_project_snapshot']))
     dag.add(_step(dag, 'active_git_facts', 'run_active_git_facts', args=(_out('active_commit_facts.json'), _out('active_file_change_facts.json')), kwargs={'start': start, 'end': end, 'projects': projects}, depends_on=[]))
-    dag.add(_step(dag, 'code_history_claims', 'write_code_history_claims', args=(_out('code_history_claims.json'),), kwargs={'start': start, 'end': end}, depends_on=['active_git_facts']))
     dag.add(_step(dag, 'active_work_packages', 'run_active_work_packages', args=(_out('active_work_packages.json'),), kwargs={'start': start, 'end': end, 'projects': projects}, depends_on=['active_git_facts']))
     dag.add(_step(dag, 'project_velocity_windows', 'run_project_velocity_windows', args=(_out('project_velocity_windows.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'commit_facts_file': _out('active_commit_facts.json'), 'work_packages_file': _out('active_work_packages.json')}, depends_on=['active_git_facts', 'active_work_packages']))
-    dag.add(_step(dag, 'active_code_hotspots', 'run_active_hotspots', args=(_out('active_code_hotspots.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'file_changes_file': _out('active_file_change_facts.json'), 'snapshot_file': _out('active_project_snapshot.json')}, depends_on=['active_git_facts', 'active_project_snapshot']))
-    dag.add(_step(dag, 'active_quality_guardrails', 'run_active_guardrails', args=(_out('active_quality_guardrails.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'file_changes_file': _out('active_file_change_facts.json'), 'snapshot_file': _out('active_project_snapshot.json')}, depends_on=['active_git_facts', 'active_project_snapshot']))
-    dag.add(_step(dag, 'active_structural_findings', 'run_active_structural_findings', args=(_out('active_structural_findings.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json'), 'file_changes_file': _out('active_file_change_facts.json')}, depends_on=['active_git_facts', 'active_project_snapshot']))
-    dag.add(_step(dag, 'active_semantic_static_findings', 'run_active_semantic_static_findings', args=(_out('active_semantic_static_findings.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json'), 'file_changes_file': _out('active_file_change_facts.json')}, depends_on=['active_git_facts', 'active_project_snapshot']))
-    dag.add(_step(dag, 'active_rust_dependency_hygiene', 'run_active_rust_dependency_hygiene', args=(_out('active_rust_dependency_hygiene.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json')}, depends_on=['active_project_snapshot']))
-    dag.add(_step(dag, 'active_python_dependency_hygiene', 'run_active_python_dependency_hygiene', args=(_out('active_python_dependency_hygiene.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json'), 'import_graph_file': _out('active_python_import_graph.json')}, depends_on=['active_project_snapshot', 'active_python_import_graph']))
     dag.add(_step(dag, 'active_symbol_index', 'run_active_symbol_index', args=(_out('active_symbol_index.json'),), kwargs={'projects': projects}, depends_on=['active_project_snapshot']))
     dag.add(_step(dag, 'active_symbol_changes', 'run_active_symbol_diffs', args=(_out('active_symbol_changes.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'symbol_index_file': _out('active_symbol_index.json'), 'commit_facts_file': _out('active_commit_facts.json'), 'snapshot_file': _out('active_project_snapshot.json')}, depends_on=['active_symbol_index', 'active_git_facts', 'active_project_snapshot']))
     dag.add(_step(dag, 'active_ci_health', 'run_active_ci_health', args=(_out('active_ci_health.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json'), 'include_runs': include_github_frontier}, depends_on=['active_project_snapshot']))
-    dag.add(_step(dag, 'active_commit_semantics', 'run_active_commit_semantics', args=(_out('active_commit_semantics.json'),), kwargs={'start': start, 'end': end, 'projects': projects}, depends_on=['active_git_facts']))
-    dag.add(_step(dag, 'current_state_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'refresh_id': _current_state_refresh_id(start=start, end=end, projects=projects), 'window_start': start, 'window_end': end, 'sources': CURRENT_STATE_SUBSTRATE_SOURCES, 'write_evidence_graph': True}, depends_on=['active_git_facts', 'active_symbol_changes', 'code_history_claims']))
+    dag.add(_step(dag, 'current_state_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'refresh_id': _current_state_refresh_id(start=start, end=end, projects=projects), 'window_start': start, 'window_end': end, 'sources': CURRENT_STATE_SUBSTRATE_SOURCES, 'write_evidence_graph': True}, depends_on=['active_git_facts', 'active_symbol_changes']))
     dag.add(_step(dag, 'machine_analysis_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'refresh_id': _machine_analysis_refresh_id(start=start, end=end), 'window_start': start, 'window_end': end, 'sources': MACHINE_ANALYSIS_SUBSTRATE_SOURCES, 'write_evidence_graph': False}, depends_on=[]))
     machine_steps = _add_machine_analysis_steps(
         dag,
@@ -402,20 +386,12 @@ def current_state_dag(
         "active_python_complexity",
         "active_python_import_graph",
         "active_git_facts",
-        "code_history_claims",
         "active_rust_workspace_graph",
         "active_work_packages",
         "project_velocity_windows",
-        "active_code_hotspots",
-        "active_quality_guardrails",
-        "active_structural_findings",
-        "active_semantic_static_findings",
-        "active_rust_dependency_hygiene",
-        "active_python_dependency_hygiene",
         "active_symbol_index",
         "active_symbol_changes",
         "active_ci_health",
-        "active_commit_semantics",
         *machine_steps,
         "current_state_operator_day",
     ]
@@ -466,16 +442,3 @@ def _run_narrative(
         json_out=str(resolve_analysis_path("current_state_narrative.json")),
     )
     return {"status": "ok"}
-
-
-def _compute_sinex_temporal(repo: str, out_path: str) -> object:
-    monthly = sinex_temporal.compute_monthly_velocity(repo)
-    crate_growth = sinex_temporal.compute_crate_growth(repo)
-    stats = sinex_temporal.compute_sinex_stats(repo)
-    payload = {
-        'monthly_velocity': monthly,
-        'crate_growth': crate_growth,
-        'stats': stats,
-    }
-    save_json(resolve_analysis_path(out_path), payload)
-    return payload

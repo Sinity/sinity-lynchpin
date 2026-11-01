@@ -300,7 +300,6 @@ def _situation_snapshot(start: str | None = None, end: str | None = None) -> dic
                 "raw_log",
                 "communications",
                 "the_motte",
-                "code_snapshots",
             ),
         ),
         "recent_commits": commits,
@@ -523,7 +522,7 @@ def _query_dsl(spec: dict[str, Any]) -> dict[str, Any]:
 
 @app.tool(annotations=_tool_annotations("lynchpin_status"))
 def lynchpin_status(view: str = "runtime", start: str | None = None, end: str | None = None, source: str | None = None, detail: bool = False) -> dict[str, Any]:
-    """Runtime/readiness/status router. view: runtime, readiness, self_check, materialization, operations, chisel, github."""
+    """Runtime/readiness/status router. view: runtime, readiness, self_check, materialization, operations, github."""
     if invalid := _mark_route("lynchpin_status", view):
         return invalid
     if view == "runtime":
@@ -565,10 +564,6 @@ def lynchpin_status(view: str = "runtime", start: str | None = None, end: str | 
         from lynchpin.core.freshness import latest_receipts
 
         return _ok({"actions": _tool_actions("lynchpin_ops"), "receipts": latest_receipts(limit=20)}, **_action_meta("lynchpin_status", view, route="lynchpin.core.freshness.latest_receipts"))
-    if view == "chisel":
-        from lynchpin.mcp.tools.code_snapshots import code_snapshot_status
-
-        return _ok(code_snapshot_status(), **_action_meta("lynchpin_status", view, route="lynchpin.mcp.tools.code_snapshots.code_snapshot_status"))
     if view == "github":
         from lynchpin.materialization import audit_materialization
 
@@ -890,8 +885,6 @@ def lynchpin_project(
             expected_publication_id=expected_publication_id,
             _meta={"source_mode": "github_materialized"},
         )
-    if action == "snapshots":
-        return _internal_call("lynchpin.mcp.tools.code_snapshots", "code_snapshots", view=view or "status", project=target)
     return _invalid_action("lynchpin_project", action)
 
 
@@ -1088,7 +1081,7 @@ def lynchpin_ops(
     title: str | None = None,
     path: str | None = None,
 ) -> dict[str, Any]:
-    """Operations router. action: materialize, github_refresh, chisel, promote_artifact, prune, receipt."""
+    """Operations router. action: materialize, github_refresh, promote_artifact, prune, receipt."""
     if invalid := _mark_route("lynchpin_ops", action):
         return invalid
     started = datetime.now(timezone.utc)
@@ -1118,17 +1111,6 @@ def lynchpin_ops(
             report = materialize_github_context(projects={source} if source else None)
             rid = _record_operation_receipt(action=action, execute=True, reason="github context refreshed", start=start, end=end)
             return _ok({"dry_run": False, "receipt_id": rid, "report": report}, **_current_meta(route="lynchpin.ingest.github_context_materialize.materialize_github_context"))
-        if action == "chisel":
-            if not execute:
-                from lynchpin.mcp.tools.code_snapshots import code_snapshot_status
-
-                return _ok({"dry_run": True, "status": code_snapshot_status()}, **_current_meta(route="lynchpin.mcp.tools.code_snapshots.code_snapshot_status"))
-            from lynchpin.analysis.projects.chisel import build_chisel_bundles
-
-            project_names = [source] if source else None
-            result = build_chisel_bundles(project_names=project_names)
-            rid = _record_operation_receipt(action=action, execute=True, reason="chisel snapshots generated")
-            return _ok({"dry_run": False, "receipt_id": rid, "result": result}, **_current_meta(route="lynchpin.analysis.projects.chisel.build_chisel_bundles"))
         if action == "promote_artifact":
             if not title or not path:
                 return _error("missing_argument", "title and path are required for promote_artifact")

@@ -25,11 +25,6 @@ check:
 velocity output=".lynchpin/generated/meta/velocity.html" projects="" exclude="" aggregate="true":
     python -m lynchpin.analysis.projects velocity --output "{{output}}" --projects "{{projects}}" --exclude "{{exclude}}" --aggregate "{{aggregate}}"
 
-# Build selected offline evidence packages. Arguments are passed as argv.
-[positional-arguments]
-chisel *args:
-    python -m lynchpin.cli.chisel "$@"
-
 # Operator-facing narrative of recent machine state (default: last 24h).
 machine-explain args="":
     python -m lynchpin.cli.machine_explain {{args}}
@@ -44,7 +39,6 @@ tool-inventory:
     @echo "  python -m lynchpin.cli.process_health"
     @echo "  python -m lynchpin.cli.machine_explain"
     @echo "  python -m lynchpin.analysis.projects velocity"
-    @echo "  python -m lynchpin.analysis.projects chisel"
     @echo "  python -m lynchpin.analysis ecosystem-dashboard"
     @echo ""
     @echo "=== MCP Tools ($(python -c 'import lynchpin.mcp.server, lynchpin.mcp.tools; from lynchpin.mcp.tools._utils import registered_tool_names; print(len(registered_tool_names()))' 2>/dev/null) registered) ==="

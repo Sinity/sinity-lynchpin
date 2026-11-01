@@ -362,34 +362,6 @@ def test_lynchpin_project_routes_repo_names(tmp_path: Path, monkeypatch: pytest.
     assert isinstance(result["data"], list)
 
 
-def test_lynchpin_project_dispatches_every_declared_snapshot_view(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    setup_substrate(tmp_path, monkeypatch)
-    expected = {
-        "status": {"view": "status"},
-        "runs": [{"project": "alpha"}],
-        "slices": {"view": "slices", "project": "alpha"},
-        "audit": {"view": "audit", "project": "alpha"},
-    }
-    monkeypatch.setattr("lynchpin.mcp.tools.code_snapshots.code_snapshot_status", lambda: expected["status"])
-    monkeypatch.setattr("lynchpin.mcp.tools.code_snapshots.list_code_snapshot_runs", lambda *, project=None: [{"project": project}])
-    monkeypatch.setattr("lynchpin.mcp.tools.code_snapshots.list_code_snapshot_slices", lambda *, project=None: {"view": "slices", "project": project})
-    monkeypatch.setattr("lynchpin.mcp.tools.code_snapshots.code_snapshot_audit", lambda *, project=None: {"view": "audit", "project": project})
-
-    from lynchpin.mcp.registry import public_action_spec
-    from lynchpin.mcp.tools.public import lynchpin_project
-
-    spec = public_action_spec("lynchpin_project", "snapshots")
-    assert spec is not None
-    assert set(spec.views) == set(expected)
-
-    for view in spec.views:
-        result = lynchpin_project(action="snapshots", view=view, project="alpha")
-        assert result["ok"] is True
-        assert result["data"] == expected[view]
-
-
 @pytest.mark.parametrize(
     ("tool", "action", "view", "module", "function", "expected_kwargs"),
     [
@@ -440,7 +412,6 @@ def test_catalog_view_reaches_its_executable_route(
     ("tool", "action", "view"),
     [
         ("project", "velocity", "unlisted"),
-        ("project", "snapshots", "unlisted"),
         ("personal", "activity", "buckets"),
         ("personal", "web", "domains"),
         ("personal", "operator", "verify_vs_edit_ratio"),

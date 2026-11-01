@@ -17,9 +17,6 @@ and generated catalogs provide the detailed API reference.
 
 ## Project and machine evidence
 
-- [Chisel](reference/chisel.md) documents repository snapshots, maintained-code
-  attribution, Git growth and change-shape reports, Beads history, and the
-  generated project packages.
 - [Observability model](reference/observability-model.md) explains the machine
   telemetry substrate and the limits of resource-attribution claims.
 - [Lynchpin–Polylogue boundary](lynchpin-polylogue-boundary.md) records the AI-session boundary.

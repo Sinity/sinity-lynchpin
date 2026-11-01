@@ -17,7 +17,7 @@ from ..core.config import get_config
 from ..core.cache import write_text_if_changed
 from ..core.projects import canonical_project_name
 from .analysis_artifact_claims import claims_for_artifact
-from .analysis_artifact_helpers import dict_or_empty, list_or_empty
+from .analysis_artifact_helpers import list_or_empty
 from .analysis_artifact_models import AnalysisArtifact, AnalysisClaim
 
 __all__ = [
@@ -48,23 +48,16 @@ _PROJECT_BY_NAME = {
     "machine_analysis_materialization_report": "sinity-lynchpin",
     "machine_negative_controls": "sinity-lynchpin",
     "claim_calibration": "sinity-lynchpin",
-    "code_history_claims": "sinity-lynchpin",
     "google_takeout_retrospective": "sinity-lynchpin",
     "personal_interest_trace": "sinity-lynchpin",
     "workflow_mechanics": "sinity-lynchpin",
 }
 
 _PROJECTS_BY_NAME = {
-    "change_surface_map": ("sinex",),
     "commit_facts": ("sinex",),
     "commit_shards": ("sinex",),
-    "cross_project_metrics": ("sinex", "polylogue", "sinity-lynchpin"),
     "active_rust_workspace_graph": ("sinex",),
-    "dependency_map": ("sinex",),
     "ecosystem_comparison": ("sinex", "polylogue"),
-    "hotspot_map": ("sinex",),
-    "module_map": ("sinex",),
-    "project-maps": ("sinex",),
     "work_package_scope": ("sinex", "polylogue"),
     "machine_attribution_claims": ("sinity-lynchpin", "sinex"),
 }
@@ -535,10 +528,6 @@ def _brief(stem: str, payload: dict[str, Any]) -> str | None:
         moment_count = int(payload.get("moment_count") or 0)
         project_count = int(payload.get("project_count") or 0)
         return f"narrative report: {section_count} sections, {moment_count} moments, {project_count} projects"
-    if stem == "cross_project_metrics":
-        projects = payload.get("projects")
-        if isinstance(projects, dict):
-            return f"{len(projects)} project metric rows"
     if stem == "active_project_snapshot":
         projects = payload.get("projects")
         window = payload.get("window")
@@ -582,36 +571,6 @@ def _brief(stem: str, payload: dict[str, Any]) -> str | None:
             if isinstance(row, dict):
                 total_crates += int(row.get("workspace_crate_count") or 0)
         return f"{project_count} Rust workspace graphs, {total_crates} total crates"
-    if stem == "active_python_dependency_hygiene":
-        projects = payload.get("projects")
-        project_count = len(projects) if isinstance(projects, list) else 0
-        advisory_count = 0
-        observed_count = 0
-        for row in projects or []:
-            if isinstance(row, dict):
-                advisories = list_or_empty(
-                    dict_or_empty(row.get("audit")).get("advisories")
-                )
-                advisory_count += len(advisories)
-                observed_count += sum(
-                    1
-                    for adv in advisories
-                    if isinstance(adv, dict) and adv.get("observed_import")
-                )
-        return (
-            f"{project_count} Python dependency hygiene rows, "
-            f"{advisory_count} advisories ({observed_count} observed in imports)"
-        )
-    if stem == "active_rust_dependency_hygiene":
-        workspaces = payload.get("workspaces")
-        workspace_count = len(workspaces) if isinstance(workspaces, list) else 0
-        advisory_count = 0
-        for row in workspaces or []:
-            if isinstance(row, dict):
-                advisory_count += len(
-                    list_or_empty(dict_or_empty(row.get("audit")).get("advisories"))
-                )
-        return f"{workspace_count} Rust dependency hygiene rows, {advisory_count} advisories"
     if stem == "active_commit_facts":
         summary = payload.get("summary")
         if isinstance(summary, dict):
@@ -641,11 +600,6 @@ def _brief(stem: str, payload: dict[str, Any]) -> str | None:
                 f"strong={len(list_or_empty(summary.get('strong_support_projects')))}, "
                 f"moderate={len(list_or_empty(summary.get('moderate_support_projects')))}"
             )
-    if stem == "code_history_claims":
-        claims = payload.get("claims")
-        claim_count = len(claims) if isinstance(claims, list) else int(payload.get("claim_count") or 0)
-        window = dict_or_empty(payload.get("window"))
-        return f"{claim_count} code-history claims, {window.get('start')} to {window.get('end')}"
     if stem == "claim_calibration":
         return (
             f"{int(payload.get('claim_count') or 0)} claims calibrated, "
@@ -690,23 +644,14 @@ def _payload_projects(stem: str, payload: dict[str, Any]) -> tuple[str, ...] | N
         "active_code_inventory",
         "active_python_complexity",
         "active_python_import_graph",
-        "active_python_dependency_hygiene",
         "active_rust_workspace_graph",
-        "active_rust_dependency_hygiene",
         "active_commit_facts",
         "active_file_change_facts",
         "active_work_packages",
-        "code_history_claims",
         "project_velocity_windows",
     }:
         return None
-    rows = (
-        payload.get("workspaces")
-        if stem == "active_rust_dependency_hygiene"
-        else payload.get("claims")
-        if stem == "code_history_claims"
-        else payload.get("projects")
-    )
+    rows = payload.get("projects")
     if not isinstance(rows, list):
         return None
     names = []

@@ -360,11 +360,6 @@ def test_materialized_graph_uses_only_converged_builder_surfaces(
     monkeypatch,
 ) -> None:
     """Default materialized graph builds should call only product-backed surfaces."""
-    machine_calls = []
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_graph.add_machine_analysis_nodes",
-        lambda nodes, edges, **kwargs: machine_calls.append(kwargs),
-    )
     monkeypatch.setattr("lynchpin.graph.evidence_git.commit_facts", lambda **kwargs: ())
     monkeypatch.setattr(
         "lynchpin.graph.evidence_raw_log.entries_in_range", lambda **kwargs: ()
@@ -455,14 +450,6 @@ def test_materialized_graph_uses_only_converged_builder_surfaces(
     graph = build_evidence_graph(start=date(2026, 6, 1), end=date(2026, 6, 6))
 
     assert graph.nodes == ()
-    assert machine_calls == [
-        {
-            "start": date(2026, 6, 1),
-            "end": date(2026, 6, 6),
-            "selected": set(),
-            "exclude_names": frozenset(),
-        }
-    ]
     assert personal_calls == [
         ("daily", {"start": date(2026, 6, 1), "end": date(2026, 6, 6)}),
         ("products", {"start": date(2026, 6, 1), "end": date(2026, 6, 6)}),
@@ -510,10 +497,6 @@ def test_materialized_graph_includes_ensured_personal_daily_signals(
 
 
 def test_build_evidence_graph_links_commit_refs_and_project_day(monkeypatch):
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_graph.add_machine_analysis_nodes",
-        lambda nodes, edges, **kwargs: None,
-    )
     when = datetime(2026, 5, 5, 12, tzinfo=UTC)
     monkeypatch.setattr(
         "lynchpin.graph.evidence_git.commit_facts",
@@ -599,10 +582,6 @@ def test_build_evidence_graph_links_commit_refs_and_project_day(monkeypatch):
 
 
 def test_build_evidence_graph_passes_mode_to_source_readiness(monkeypatch):
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_graph.add_machine_analysis_nodes",
-        lambda nodes, edges, **kwargs: None,
-    )
     calls = {}
     monkeypatch.setattr("lynchpin.graph.evidence_git.commit_facts", lambda **kwargs: ())
     monkeypatch.setattr(
@@ -668,10 +647,6 @@ def test_build_evidence_graph_passes_mode_to_source_readiness(monkeypatch):
 
 
 def test_network_evidence_graph_uses_temporal_focus_spans(monkeypatch):
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_graph.add_machine_analysis_nodes",
-        lambda nodes, edges, **kwargs: None,
-    )
     start = datetime(2026, 5, 5, 12, tzinfo=UTC)
     end = datetime(2026, 5, 5, 12, 45, tzinfo=UTC)
     monkeypatch.setattr("lynchpin.graph.evidence_git.commit_facts", lambda **kwargs: ())
@@ -850,10 +825,6 @@ def test_network_evidence_graph_enriches_only_selected_project_commits(monkeypat
     monkeypatch.setattr(
         "lynchpin.graph.evidence_graph.source_readiness",
         lambda **kwargs: SimpleNamespace(caveats=()),
-    )
-    monkeypatch.setattr(
-        "lynchpin.graph.evidence_graph.add_machine_analysis_nodes",
-        lambda *args, **kwargs: None,
     )
 
     graph = build_evidence_graph(

@@ -9,9 +9,6 @@ def test_analysis_status_uses_artifact_inventory(monkeypatch, tmp_path):
     analysis_root = repo_root / ".lynchpin/generated/analysis"
     analysis_root.mkdir(parents=True)
     for name in (
-        "sinex_structure_metrics.json",
-        "sinex_temporal_metrics.json",
-        "polylogue_metrics.json",
         "ecosystem_comparison.json",
         "work_package_scope.json",
         "commit_facts.json",
@@ -25,12 +22,6 @@ def test_analysis_status_uses_artifact_inventory(monkeypatch, tmp_path):
         "active_python_complexity.json",
         "active_python_import_graph.json",
         "active_rust_workspace_graph.json",
-        "active_code_hotspots.json",
-        "active_quality_guardrails.json",
-        "active_structural_findings.json",
-        "active_semantic_static_findings.json",
-        "active_rust_dependency_hygiene.json",
-        "active_python_dependency_hygiene.json",
         "active_symbol_index.json",
         "active_symbol_changes.json",
         "active_symbol_diffs.json",
@@ -92,14 +83,13 @@ def test_analysis_status_uses_artifact_inventory(monkeypatch, tmp_path):
 
     payload = build_analysis_status(spec_path=spec_path)
 
-    assert payload["artifact_inventory"]["available_count"] == 63
+    assert payload["artifact_inventory"]["available_count"] == 54
     assert payload["families"]["active_project_snapshot"]["status"] == "stable"
     assert payload["families"]["active_git_facts"]["status"] == "stable"
     assert payload["families"]["active_work_packages"]["status"] == "stable"
     assert payload["families"]["project_velocity_windows"]["status"] == "stable"
     assert payload["families"]["active_code_analysis"]["status"] == "stable"
     assert payload["families"]["machine_analysis"]["status"] == "stable"
-    assert payload["families"]["sinex"]["status"] == "stable"
 
 
 def test_analysis_status_downgrades_machine_family_when_readiness_is_limited(monkeypatch, tmp_path):

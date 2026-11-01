@@ -15,7 +15,6 @@ ANALYSIS_DIR = Path(__file__).resolve().parents[2] / "lynchpin" / "analysis"
 
 # module filename -> number of sanctioned no-arg .date() call sites.
 ALLOWED_CALENDAR_DATE_CALLS = {
-    "code_quality.py": 2,
     "evening_activity_sleep.py": 1,  # timestamp arithmetic (late cutoff), not a join key
     "google_takeout_mining.py": 7,  # provider-local export dates
     "health_baselines.py": 1,

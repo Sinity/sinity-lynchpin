@@ -229,7 +229,6 @@ shows which live datasets are available.
 - [Architecture](docs/architecture.md)
 - [Data sources](docs/reference/data-sources.md)
 - [Machine and performance evidence](docs/reference/observability-model.md)
-- [Repository snapshots and LOC policy](docs/reference/chisel.md)
 - [Polylogue boundary](docs/lynchpin-polylogue-boundary.md)
 - [Analysis methodology](lynchpin/analysis/METHODOLOGY.md)
 

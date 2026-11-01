@@ -20,7 +20,7 @@ availability, coverage, provenance, iterators, and source-local summaries.
 | Family | Representative modules | Evidence exposed |
 | --- | --- | --- |
 | Workstation activity | `activitywatch`, `terminal`, `clipboard`, `keylog`, `arbtt` | Focus spans, commands, sessions, recordings, input/activity events. |
-| Code and delivery | `git`, `github`, `github_context`, `code_snapshots`, `xtask_history` | Commits, files, reviews, issues/PRs, snapshots, build/test history. |
+| Code and delivery | `git`, `github`, `github_context`, `xtask_history` | Commits, files, reviews, issues/PRs, build/test history. |
 | Machine state | `machine`, `machine_experiments`, `service_health`, `sinnix_generations` | Metrics, pressure, services, experiments, backups, generations. |
 | Web and reading | `web`, `takeout_chrome`, `bookmarks`, `raindrop_live` | Visits, domains, bookmarks, content metadata, daily activity. |
 | Communications | `communications`, `gmail_takeout`, `irc`, `outlook`, `sms`, export adapters | Events, threads, daily counts, provenance. |
@@ -59,15 +59,6 @@ accessible empty directory returns no records. Availability and inventory
 observations preserve that distinction. Transcript readiness and shared file
 readiness use unknown row counts for unavailable inputs; readable empty inputs
 retain zero counts.
-
-Chisel uses `LYNCHPIN_CHISEL_CACHE_ROOT` for reusable caches and
-`LYNCHPIN_CHISEL_SCRATCH_ROOT` for temporary history stores. Defaults are the
-configured cache directory's `chisel` child and a task scratch directory.
-Managed Chisel and convergence operations declare AgentCTL scratch; inside those
-jobs, temporary history uses `AGENTCTL_SCRATCH/chisel` so the job owner measures
-and removes it on completion. The host scratch setting applies outside jobs.
-Choosing an output directory does not relocate either store. Publication
-candidates remain beside their destination for atomic same-filesystem renames.
 
 Outlook activity uses the dated inbox/sent CSV exports. They provide the
 message dates, directions, and correspondent fields needed by daily activity

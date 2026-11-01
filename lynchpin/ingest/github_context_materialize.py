@@ -633,7 +633,7 @@ def _promote_github_context_with_retry(ndjson_path: Path) -> SubstratePromotionR
                 # GitHub context is a source product refresh, but its six
                 # derived tables are still part of the serving substrate.
                 # Stage those writes in the normal candidate-generation
-                # publication boundary so a Chisel prerequisite cannot mutate
+                # publication boundary so no caller can mutate
                 # the canonical DuckDB file directly.
                 with candidate_generation(changed_products=("github_context",)):
                     rows = _promote_github_context_to_substrate(ndjson_path)

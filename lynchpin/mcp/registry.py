@@ -57,7 +57,7 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
     PublicToolSpec(
         name="lynchpin_status",
         group="orientation",
-        description="Runtime, readiness, materialization, chisel, and GitHub status.",
+        description="Runtime, readiness, materialization, and GitHub status.",
         effect_mode="read",
         actions=(
             ActionSpec("runtime", "Code path, git revision, MCP count, and substrate state.", response_kind="status"),
@@ -66,7 +66,6 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
             ActionSpec("self_check", "Public registry and metadata consistency check.", response_kind="self_check"),
             ActionSpec("materialization", "Compact product status and inclusive date-window coverage; detail requires one source.", parameters=("source", "start", "end", "detail"), response_kind="materialization_audit"),
             ActionSpec("operations", "Recent operation receipts and supported actions.", response_kind="operation_receipts"),
-            ActionSpec("chisel", "Code snapshot/chisel materialization status.", response_kind="snapshot_status"),
             ActionSpec("github", "GitHub context materialization status.", response_kind="materialization_status"),
         ),
     ),
@@ -141,7 +140,6 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
             ActionSpec("verification_regression", "Comparable command and acceptance outcome changes.", "read", parameters=tuple(PROJECT_INPUTS["verification_regression"].model_fields), requires=tuple(input_schema("verification_regression").get("required", [])), response_kind="verification_regression"),
             ActionSpec("project_trajectory", "Bounded retained attempt and publication timeline.", "read", parameters=tuple(PROJECT_INPUTS["project_trajectory"].model_fields), requires=tuple(input_schema("project_trajectory").get("required", [])), response_kind="project_trajectory"),
             ActionSpec("project_context", "Bounded project context with independent owner coverage and one graph generation.", "read", parameters=tuple(PROJECT_INPUTS["project_context"].model_fields), requires=tuple(input_schema("project_context").get("required", [])), response_kind="project_context"),
-            ActionSpec("snapshots", "Chisel/code snapshot status, runs, slices, and audit.", "read", parameters=("repo", "project", "view"), views=("status", "runs", "slices", "audit"), response_kind="code_snapshots"),
         ),
     ),
     PublicToolSpec(
@@ -189,7 +187,6 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
         actions=(
             ActionSpec("materialize", "Inspect or force transparent local/derived product materialization.", "write", parameters=("execute", "source", "start", "end", "force"), response_kind="operation"),
             ActionSpec("github_refresh", "Refresh GitHub context products.", "write", parameters=("execute", "source"), response_kind="operation"),
-            ActionSpec("chisel", "Run chisel/code-snapshot generation.", "write", parameters=("execute", "source"), response_kind="operation"),
             ActionSpec("promote_artifact", "Promote an analysis product into evidence.", "write", parameters=("execute", "title", "path", "refresh_id"), requires=("title", "path"), response_kind="operation"),
             ActionSpec("prune", "Prune old substrate graph builds.", "write", parameters=("execute", "limit"), response_kind="operation"),
             ActionSpec("receipt", "Read operation receipts.", "read", parameters=("source", "limit"), response_kind="operation_receipts"),

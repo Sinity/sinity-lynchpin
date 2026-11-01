@@ -37,7 +37,6 @@ Repository = "https://github.com/Sinity/sinity-lynchpin"
 Issues = "https://github.com/Sinity/sinity-lynchpin/issues"
 
 [project.scripts]
-chisel = "lynchpin.cli.chisel:main"
 lynchpin-mcp = "lynchpin.mcp.cli:main"
 lynchpin-current-state = "lynchpin.cli.current_state:main"
 lynchpin-github-frontier = "lynchpin.cli.github_frontier:main"
@@ -58,11 +57,6 @@ include = ["lynchpin*"]
 [tool.setuptools.package-data]
 "lynchpin.analysis.projects" = ["assets/*.html"]
 "lynchpin.analysis" = ["analysis_spec.json", "tool_rules/**/*.yml"]
-
-[tool.setuptools.data-files]
-"share/zsh/site-functions" = ["completions/_chisel"]
-"share/bash-completion/completions" = ["completions/chisel.bash"]
-"share/fish/vendor_completions.d" = ["completions/chisel.fish"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -128,12 +122,7 @@ files = [
     "lynchpin/analysis/core/status.py",
     "lynchpin/analysis/core/textshape.py",
     "lynchpin/analysis/ecosystem/current_state.py",
-    "lynchpin/analysis/ecosystem/polylogue_metrics.py",
     "lynchpin/analysis/ecosystem/work_package_scope.py",
-    "lynchpin/analysis/knowledge/cli.py",
-    "lynchpin/analysis/knowledge/ledgers.py",
-    "lynchpin/analysis/knowledge/__main__.py",
-    "lynchpin/analysis/knowledge/__init__.py",
     "lynchpin/analysis/active/git_facts.py",
     "lynchpin/analysis/active/snapshot.py",
     "lynchpin/analysis/active/substrate_promote_artifacts.py",
@@ -144,12 +133,6 @@ files = [
     "lynchpin/analysis/machine/episodes.py",
     "lynchpin/analysis/machine/explain.py",
     "lynchpin/analysis/machine/signatures.py",
-    "lynchpin/analysis/maps/change_surface.py",
-    "lynchpin/analysis/maps/cli.py",
-    "lynchpin/analysis/maps/dependency_map.py",
-    "lynchpin/analysis/maps/module_keys.py",
-    "lynchpin/analysis/maps/project_maps.py",
-    "lynchpin/analysis/sinex/temporal.py",
     "lynchpin/cli/current_state.py",
     "lynchpin/cli/machine_explain.py",
     "lynchpin/ingest/_manifest.py",
@@ -157,7 +140,6 @@ files = [
     "lynchpin/sources/analysis_artifacts.py",
     "lynchpin/sources/activitywatch.py",
     "lynchpin/sources/clipboard.py",
-    "lynchpin/sources/code_snapshots.py",
     "lynchpin/sources/exports.py",
     "lynchpin/sources/exports_dendron.py",
     "lynchpin/sources/exports_goodreads.py",

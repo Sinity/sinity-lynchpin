@@ -9,7 +9,6 @@ from lynchpin.analysis.code_index.python_analysis import (
     build_active_python_complexity,
     build_active_python_import_graph,
 )
-from lynchpin.analysis.interpretation.python_dependency_hygiene import _internal_module_index
 
 
 def _write(path: Path, text: str) -> None:
@@ -50,32 +49,6 @@ def test_python_import_graph_uses_native_ast_and_internal_module_names(tmp_path:
     assert modules["pkg"]["imports"] == ["pkg.core"]
     assert modules["pkg.core"]["imports"] == ["pkg.helpers"]
     assert modules["tests.test_core"]["imports"] == ["pkg.core"]
-
-
-def test_python_dependency_hygiene_consumes_import_graph_module_names(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _write(repo / "pkg" / "__init__.py", "")
-    _write(repo / "pkg" / "core.py", "from . import helpers\n")
-    _write(repo / "pkg" / "helpers.py", "")
-    snapshot = tmp_path / "snapshot.json"
-    snapshot.write_text(
-        json.dumps(
-            {
-                "projects": [
-                    {
-                        "project": "demo",
-                        "path": str(repo),
-                        "dominant_extension": "py",
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    payload = build_active_python_import_graph(snapshot_file=snapshot)
-
-    assert _internal_module_index(payload)["demo"] == {"pkg", "pkg.core", "pkg.helpers"}
 
 
 def test_python_complexity_uses_native_ast_and_ignores_generated_dirs(tmp_path: Path) -> None:

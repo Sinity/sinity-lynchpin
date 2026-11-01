@@ -17,16 +17,6 @@ def _parse_date(value: str) -> date:
 
 
 def register_commands(app: typer.Typer, *, analysis_spec: str) -> None:
-    @app.command("polylogue-metrics", help="Polylogue code repository analysis")
-    def _polylogue_metrics(
-        out: str | None = typer.Option(None, "--out"),
-    ) -> None:
-        from .polylogue_metrics import run_polylogue_metrics
-
-        target = out or resolve_analysis_path("polylogue_metrics.json")
-        run_polylogue_metrics(target)
-
-
     @app.command(
         "work-package-scope",
         help="Build native scope-weighted work-package model across Sinex and Polylogue",

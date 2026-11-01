@@ -82,12 +82,6 @@ def build_analysis_status(*, spec_path: str | Path | None = None) -> dict[str, o
         "active_python_complexity.json",
         "active_python_import_graph.json",
         "active_rust_workspace_graph.json",
-        "active_code_hotspots.json",
-        "active_quality_guardrails.json",
-        "active_structural_findings.json",
-        "active_semantic_static_findings.json",
-        "active_rust_dependency_hygiene.json",
-        "active_python_dependency_hygiene.json",
         "active_symbol_index.json",
         "active_symbol_changes.json",
         "active_symbol_diffs.json",
@@ -132,24 +126,12 @@ def build_analysis_status(*, spec_path: str | Path | None = None) -> dict[str, o
         ),
         "active_code_analysis": _row(
             "stable" if has_all(active_code_artifacts) else "missing",
-            "Active-project code inventory, language graphs, hotspots, guardrails, dependency hygiene, symbol analysis, and CI health are materialized."
+            "Active-project code inventory, language graphs, symbol analysis, and CI health are materialized."
             if has_all(active_code_artifacts)
             else "One or more active code-analysis artifacts are missing.",
             [art(name) for name in active_code_artifacts],
         ),
         "machine_analysis": _machine_analysis_row(analysis_root, available_artifacts),
-        "sinex": _row(
-            "stable" if has_all(("sinex_structure_metrics.json", "sinex_temporal_metrics.json")) else "missing",
-            "Sinex structural and temporal analysis is materialized."
-            if has_all(("sinex_structure_metrics.json", "sinex_temporal_metrics.json"))
-            else "Sinex analysis artifacts missing.",
-            [art("sinex_structure_metrics.json"), art("sinex_temporal_metrics.json")],
-        ),
-        "polylogue": _row(
-            "stable" if has("polylogue_metrics.json") else "missing",
-            "Polylogue source repository scans are materialized." if has("polylogue_metrics.json") else "Polylogue metrics artifact missing.",
-            [art("polylogue_metrics.json")],
-        ),
         "comparison": _row(
             "stable" if has("ecosystem_comparison.json") else "missing",
             "Cross-ecosystem comparison is current." if has("ecosystem_comparison.json") else "Comparison artifact missing.",

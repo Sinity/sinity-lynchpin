@@ -37,12 +37,9 @@ from lynchpin.core.freshness import (
 from lynchpin.core.config import get_config
 from lynchpin.core.io import resolve_analysis_path
 from .claim_calibration import write_claim_calibration
-from .code_history_claims import write_code_history_claims
 from .ecosystem import cli as ecosystem_cli
 from .google_takeout_mining import write_google_takeout_retrospective
 from .keylog import write_keylog_analysis
-from .knowledge import cli as knowledge_cli
-from .maps import cli as maps_cli
 from .machine.attribution import export_below_windows_for_pressure_episodes, write_below_attribution_analysis
 from .machine.attribution_candidates import write_machine_attribution_candidates
 from .machine.baselines import write_machine_observational_baselines
@@ -74,7 +71,6 @@ from .machine.work_observations import write_work_observation_analysis
 from .personal_interest_fusion import write_personal_interest_trace
 from .projects import cli as projects_cli
 from .materialize import _rolling_window, current_state_dag, machine_analysis_dag
-from .sinex import cli as sinex_cli
 from .workflow_mechanics import write_workflow_mechanics_report
 
 ANALYSIS_SPEC = os.path.join(os.path.dirname(__file__), 'analysis_spec.json')
@@ -99,11 +95,8 @@ def build_app() -> typer.Typer:
         context_settings={"help_option_names": ["-h", "--help"]},
     )
 
-    sinex_cli.register_commands(app)
     ecosystem_cli.register_commands(app, analysis_spec=ANALYSIS_SPEC)
     projects_cli.register_commands(app)
-    knowledge_cli.register_commands(app)
-    maps_cli.register_commands(app, analysis_spec=ANALYSIS_SPEC)
     from .input_activity_cli import register_commands as register_input_activity
 
     register_input_activity(app)
@@ -118,14 +111,6 @@ def build_app() -> typer.Typer:
 
 
 def _register_canonical(app: typer.Typer) -> None:
-    @app.command("analysis-snapshot", help="Build canonical analysis snapshot")
-    def _analysis_snapshot(
-        spec: str = typer.Option(ANALYSIS_SPEC, "--spec"),
-        out: str | None = typer.Option(None, "--out"),
-    ) -> None:
-        target = out or resolve_analysis_path('analysis_snapshot.json')
-        canonical_module.build_analysis_snapshot(spec, target)
-
     @app.command("analysis-validate", help="Validate canonical artifacts + invariants")
     def _analysis_validate(
         spec: str = typer.Option(ANALYSIS_SPEC, "--spec"),
@@ -183,24 +168,6 @@ def _register_commit(app: typer.Typer) -> None:
         facts = commit_facts or resolve_analysis_path('commit_facts.json')
         target = out or resolve_analysis_path('commit_shards.json')
         core_commit_facts.run_commit_shards(facts, target)
-
-    @app.command("code-history-claims", help="Build evidence-shaped claims from active git history")
-    def _code_history_claims(
-        start: str = typer.Option(..., "--start"),
-        end: str = typer.Option(..., "--end"),
-        project: str | None = typer.Option(None, "--project"),
-        top_n: int = typer.Option(50, "--top-n"),
-        out: str | None = typer.Option(None, "--out"),
-    ) -> None:
-        target = Path(out or resolve_analysis_path("code_history_claims.json"))
-        rows = write_code_history_claims(
-            target,
-            start=_parse_date(start),
-            end=_parse_date(end),
-            project=project,
-            top_n=top_n,
-        )
-        print(f"code-history-claims: {len(rows)} claims -> {target}")
 
 
 def _register_machine(app: typer.Typer) -> None:
@@ -846,7 +813,6 @@ def _register_misc(app: typer.Typer) -> None:
     ) -> None:
         target = Path(out or resolve_analysis_path("claim_calibration.json"))
         artifacts = artifact or [
-            resolve_analysis_path("code_history_claims.json"),
             resolve_analysis_path("machine_attribution_claims.json"),
         ]
         report = write_claim_calibration(target, claim_artifacts=artifacts)

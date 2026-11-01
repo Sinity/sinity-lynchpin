@@ -15,8 +15,7 @@ def run_git(
     """Run `git <args>` in repo, returning stdout.strip() or None on any failure.
 
     Consolidates near-identical private wrappers across the analysis
-    layer (sinex/temporal default-branch probe, ecosystem/polylogue_metrics._run_git,
-    graph/current_state._git).
+    layer (graph/current_state._git).
     Treats all failures (FileNotFoundError, CalledProcessError, TimeoutExpired,
     non-zero exit) as None — callers decide whether None or empty-string is
     semantically meaningful.

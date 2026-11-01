@@ -73,15 +73,6 @@ TOPIC_KEYWORDS: dict[str, list[tuple[str, float]]] = {
     "research": [("arxiv", 3.0), ("paper", 1.5), ("survey", 2.0), ("benchmark", 2.0), ("explore", 1.0), ("investigate", 1.5)],
 }
 
-_WORK_EVENT_TOPIC_BOOSTS: dict[str, tuple[str, float]] = {
-    "implementation": ("coding", 2.5), "debugging": ("testing", 2.0),
-    "documentation": ("writing", 2.0), "research": ("research", 2.5),
-    "configuration": ("infra", 2.0), "review": ("git", 1.5),
-    "refactoring": ("coding", 2.0), "data_analysis": ("data", 2.0),
-    "conversation": ("ai", 1.5),
-}
-_WORK_EVENT_LANGUAGE_TOPICS = frozenset({"nix", "rust", "python", "typescript"})
-
 _PROJECT_PATTERNS = [
     (name, re.compile(rf"(?<![a-z0-9]){re.escape(name.lower())}(?![a-z0-9])"))
     for name in sorted(ALL_PROJECTS, key=len, reverse=True)
@@ -164,7 +155,7 @@ def classify(
         mode = "unknown"
 
     # Topic classification — weighted keyword scoring
-    topic = _extract_topic(text, evidence.get("work_event_kind"))
+    topic = _extract_topic(text)
 
     return Attribution(mode=mode, project=project, topic=topic)
 
@@ -190,17 +181,10 @@ def resolve_project(*values: str | None) -> str | None:
 
 
 @functools.lru_cache(maxsize=16384)
-def _extract_topics_cached(text: str, we_kind: str | None) -> tuple[tuple[str, float], ...]:
-    we_boost_target, we_boost_amount = _WORK_EVENT_TOPIC_BOOSTS.get(we_kind or "", (None, 0.0))
+def _extract_topics_cached(text: str) -> tuple[tuple[str, float], ...]:
     candidates: list[tuple[str, float]] = []
     for topic, keywords in TOPIC_KEYWORDS.items():
         score = sum(weight for kw, weight in keywords if kw in text)
-        if we_boost_target == "coding" and topic in _WORK_EVENT_LANGUAGE_TOPICS and score >= 1.0:
-            score += 1.0
-        elif we_boost_target == topic:
-            score += we_boost_amount
-        if we_kind == "configuration" and topic == "nix" and "nix" in text:
-            score += 1.0
         if score >= 1.0:
             confidence = min(0.3 + score * 0.15, 0.95)
             candidates.append((topic, round(confidence, 2)))
@@ -208,14 +192,14 @@ def _extract_topics_cached(text: str, we_kind: str | None) -> tuple[tuple[str, f
     return tuple(candidates)
 
 
-def _extract_topic(text: str, we_kind: object = None) -> str | None:
-    candidates = _extract_topics_cached(text, we_kind if isinstance(we_kind, str) else None)
+def _extract_topic(text: str) -> str | None:
+    candidates = _extract_topics_cached(text)
     return candidates[0][0] if candidates else None
 
 
-def extract_topics(text: str, we_kind: str | None = None) -> list[tuple[str, float]]:
+def extract_topics(text: str) -> list[tuple[str, float]]:
     """Public: return all matching topics with scores for a text."""
-    return list(_extract_topics_cached(text, we_kind))
+    return list(_extract_topics_cached(text))
 
 
 # ── Project resolution ────────────────────────────────────────────────────────

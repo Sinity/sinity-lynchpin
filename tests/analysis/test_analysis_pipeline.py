@@ -113,20 +113,12 @@ def test_current_state_refresh_dag_is_independent_of_external_repos():
         "active_python_complexity",
         "active_python_import_graph",
         "active_git_facts",
-        "code_history_claims",
         "active_rust_workspace_graph",
         "active_work_packages",
         "project_velocity_windows",
-        "active_code_hotspots",
-        "active_quality_guardrails",
-        "active_structural_findings",
-        "active_semantic_static_findings",
-        "active_rust_dependency_hygiene",
-        "active_python_dependency_hygiene",
         "active_symbol_index",
         "active_symbol_changes",
         "active_ci_health",
-        "active_commit_semantics",
         "current_state_substrate_promote",
         "machine_analysis_substrate_promote",
         "machine_telemetry_analysis",
@@ -220,7 +212,6 @@ def test_current_state_refresh_dag_is_independent_of_external_repos():
     assert names.index("machine_gap_summary") < names.index("machine_analysis_readiness")
     assert names.index("machine_analysis_substrate_promote") < names.index("machine_telemetry_analysis")
     assert names.index("machine_analysis_substrate_promote") < names.index("machine_gap_summary")
-    assert names.index("code_history_claims") < names.index("current_state_substrate_promote")
     assert names.index("current_state_substrate_promote") < names.index("current_state_context")
     assert names.index("machine_work_state_windows") < names.index("machine_observational_baselines")
     assert names.index("machine_experiment_claims") < names.index("machine_analysis_readiness")
@@ -257,7 +248,6 @@ def test_machine_analysis_dag_is_source_selected():
     assert "substrate_promote" not in names
     assert "current_state_substrate_promote" not in names
     assert "active_git_facts" not in names
-    assert "polylogue_metrics" not in names
     assert "machine_analysis_readiness" in names
     assert names.index("machine_analysis_substrate_promote") < names.index("machine_telemetry_analysis")
     assert names.index("machine_calibration_fixtures") < names.index("machine_analysis_readiness")

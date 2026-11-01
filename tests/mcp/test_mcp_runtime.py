@@ -86,12 +86,10 @@ def test_lynchpin_catalog_exposes_actions_without_retired_routes(
     assert "lynchpin_ops" in tools
     assert {action["name"] for action in tools["lynchpin_ops"]["actions"]} >= {
         "materialize",
-        "chisel",
         "prune",
     }
     assert tools["lynchpin_catalog"]["actions"][0]["name"] == "catalog"
     assert tools["lynchpin_query"]["actions"][0]["parameters"]
-    assert tools["lynchpin_project"]["actions"][-1]["views"] == ["status", "runs", "slices", "audit"]
     assert "old_route_map" not in data
     assert all("retired_tools" not in tool for tool in data["tools"])
     assert all("retired_mcp_tools" not in row for row in data["source_contracts"])

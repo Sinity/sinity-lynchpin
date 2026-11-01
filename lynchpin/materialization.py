@@ -505,7 +505,6 @@ def _dataset_builders() -> dict[str, Any]:
         "irc": _irc_dataset,
         "wykop": _wykop_dataset,
         "themotte": _themotte_dataset,
-        "code_snapshots": _code_snapshots_dataset,
     }
 
 
@@ -2852,50 +2851,6 @@ def _github_context_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         reason=reason,
     )
 
-
-def _code_snapshots_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
-    from .sources.code_snapshots import code_snapshots_path
-    from .ingest.code_snapshots_materialize import code_snapshots_currentness
-    from .substrate.code_snapshots import count_code_snapshot_slices
-    from .substrate.connection import connect
-
-    contract = source_contract("code_snapshots")
-    output_root = code_snapshots_path()
-
-    try:
-        with connect(read_only=True) as conn:
-            row_count = count_code_snapshot_slices(conn)
-            has_rows = conn.execute(
-                "SELECT COUNT(*) FROM code_snapshot_run WHERE refresh_id = 'latest'"
-            ).fetchone()
-            run_count = int(has_rows[0]) if has_rows else 0
-    except Exception:
-        run_count = 0
-        row_count = 0
-
-    if run_count == 0:
-        status: Status = "missing"
-        reason = "code_snapshot_run substrate table has no rows — run chisel to populate"
-    elif (currentness := code_snapshots_currentness())["state"] != "current":
-        status = "partial"
-        reason = f"selected snapshot views are not current: {currentness['reason']}"
-    else:
-        status = "ready"
-        reason = f"code snapshots are current ({run_count} projects, {row_count} slice files)"
-
-    return MaterializedDataset(
-        name="code_snapshots",
-        status=status,
-        authority=contract.authority,
-        query_surface=contract.query_surface,
-        materialized_paths=(output_root,) if output_root.exists() else (),
-        raw_roots=(output_root,) if output_root.exists() else (),
-        row_count=row_count or None,
-        first_date=None,
-        last_date=None,
-        materialization_hint=contract.materialization_hint,
-        reason=reason,
-    )
 
 
 def _health_dataset(cfg: LynchpinConfig) -> MaterializedDataset:

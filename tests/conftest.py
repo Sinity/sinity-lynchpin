@@ -34,8 +34,6 @@ def isolate_operator_data(
     registry.write_bytes((Path(__file__).parent / "fixtures/capture-layout.json").read_bytes())
     isolated_paths = {
         "LYNCHPIN_FILESYSTEM_LAYOUT": registry,
-        "LYNCHPIN_CHISEL_CACHE_ROOT": root / "chisel-cache",
-        "LYNCHPIN_CHISEL_SCRATCH_ROOT": root / "chisel-scratch",
         "LYNCHPIN_DATA_ROOT": data,
         "LYNCHPIN_CAPTURES_ROOT": data / "captures",
         "LYNCHPIN_ACCOUNTS_ROOT": data / "accounts",

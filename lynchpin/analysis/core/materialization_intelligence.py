@@ -228,15 +228,8 @@ def analysis_materialization_policies(step_names: tuple[str, ...]) -> dict[str, 
     """
 
     output_map = {
-        "sinex_structure": ("sinex_structure_metrics.json",),
-        "sinex_temporal": ("sinex_temporal_metrics.json",),
         "active_git_facts": ("active_commit_facts.json", "active_file_change_facts.json"),
         "comparison": ("ecosystem_comparison.json",),
-        "snapshot": ("analysis_snapshot.json",),
-        "cross_project": ("cross_project_metrics.json",),
-        "project_maps": ("module_map.json", "hotspot_map.json", "maps/project-maps.md"),
-        "dependency_map": ("dependency_map.json", "maps/dependency-map.md"),
-        "change_surface": ("change_surface_map.json", "maps/change-surface-map.md"),
         "machine_analysis_substrate_promote": (),
         "current_state_substrate_promote": (),
         "substrate_promote": (),

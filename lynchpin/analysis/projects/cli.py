@@ -9,18 +9,12 @@ import typer
 
 from ..active.git_facts import run_active_git_facts
 from ..active.snapshot import run_active_project_snapshot
-from ..change.commit_capsules import run_active_commit_semantics
 from ..change.work_packages import run_active_work_packages
 from ..code_index.python_analysis import run_active_python_complexity, run_active_python_import_graph
 from ..code_index.symbol_diffs import run_active_symbol_diffs
 from ..code_index.symbol_index import run_active_symbol_index
 from ..frontier.ci_health import run_active_ci_health
 from ..frontier.github_frontier import run_active_github_frontier
-from ..interpretation.python_dependency_hygiene import run_active_python_dependency_hygiene
-from ..interpretation.rust_dependency_hygiene import run_active_rust_dependency_hygiene
-from ..interpretation.semantic_static_findings import run_active_semantic_static_findings
-from ..interpretation.shape import run_active_guardrails, run_active_hotspots
-from ..interpretation.structural_findings import run_active_structural_findings
 from ..interpretation.velocity_windows import run_project_velocity_windows
 from .velocity_renderer import DEFAULT_OUTPUT, build_velocity_dashboard
 from lynchpin.core.io import resolve_analysis_path
@@ -52,7 +46,7 @@ def _opt_date(value: str | None) -> date | None:
 
 
 app = typer.Typer(
-    help="Project analysis materializers for velocity and chisel snapshots.",
+    help="Project analysis materializers for velocity.",
     no_args_is_help=True,
 )
 
@@ -76,13 +70,6 @@ def _velocity(
         print(f"Velocity dashboard written to {output}")
     else:
         print("Velocity dashboard unchanged or no repositories produced history.")
-
-
-@app.command("chisel", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-def _chisel(ctx: typer.Context) -> None:
-    from lynchpin.cli.chisel import main
-
-    raise typer.Exit(main(list(ctx.args)))
 
 
 @app.command("active-git-facts", help="Build active-project default-branch commit and file-change facts.")
@@ -143,16 +130,6 @@ def _project_velocity_windows(
 
 
 def register_commands(parent: typer.Typer) -> None:
-    @parent.command("cross", help="Cross-project metric analysis")
-    def _cross(
-        base_dir: str = typer.Option("/realm/project", "--base_dir"),
-        out: str | None = typer.Option(None, "--out"),
-    ) -> None:
-        from . import metrics as project_metrics
-
-        target = out or resolve_analysis_path("cross_project_metrics.json")
-        project_metrics.run_cross_project(base_dir, target)  # type: ignore[no-untyped-call]
-
     @parent.command(
         "active-project-snapshot",
         help="Build active-project tracked-file and default-branch git facts",
@@ -271,126 +248,6 @@ def register_commands(parent: typer.Typer) -> None:
         )
 
     @parent.command(
-        "active-code-hotspots",
-        help="Build active-project code hotspot ranking from file-change facts",
-    )
-    def _active_code_hotspots(
-        start: str = typer.Option(None, "--start"),
-        end: str = typer.Option(None, "--end"),
-        project: list[str] = typer.Option(None, "--project"),
-        snapshot: str | None = typer.Option(None, "--snapshot"),
-        file_changes: str | None = typer.Option(None, "--file-changes"),
-        out: str | None = typer.Option(None, "--out"),
-    ) -> None:
-        target = out or resolve_analysis_path("active_code_hotspots.json")
-        run_active_hotspots(
-            target,
-            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
-            file_changes_file=file_changes or resolve_analysis_path("active_file_change_facts.json"),
-            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
-        )
-
-    @parent.command(
-        "active-quality-guardrails",
-        help="Build active-project quality guardrail movement from file-change facts",
-    )
-    def _active_quality_guardrails(
-        start: str = typer.Option(None, "--start"),
-        end: str = typer.Option(None, "--end"),
-        project: list[str] = typer.Option(None, "--project"),
-        snapshot: str | None = typer.Option(None, "--snapshot"),
-        file_changes: str | None = typer.Option(None, "--file-changes"),
-        out: str | None = typer.Option(None, "--out"),
-    ) -> None:
-        target = out or resolve_analysis_path("active_quality_guardrails.json")
-        run_active_guardrails(
-            target,
-            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
-            file_changes_file=file_changes or resolve_analysis_path("active_file_change_facts.json"),
-            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
-        )
-
-    @parent.command(
-        "active-structural-findings",
-        help="Run ast-grep structural findings filtered by recent file changes",
-    )
-    def _active_structural_findings(
-        start: str = typer.Option(None, "--start"),
-        end: str = typer.Option(None, "--end"),
-        project: list[str] = typer.Option(None, "--project"),
-        snapshot: str | None = typer.Option(None, "--snapshot"),
-        file_changes: str | None = typer.Option(None, "--file-changes"),
-        out: str | None = typer.Option(None, "--out"),
-    ) -> None:
-        target = out or resolve_analysis_path("active_structural_findings.json")
-        run_active_structural_findings(
-            target,
-            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
-            file_changes_file=file_changes or resolve_analysis_path("active_file_change_facts.json"),
-            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
-        )
-
-    @parent.command(
-        "active-semantic-static-findings",
-        help="Run curated semgrep privacy rules over the lynchpin repo",
-    )
-    def _active_semantic_static_findings(
-        start: str = typer.Option(None, "--start"),
-        end: str = typer.Option(None, "--end"),
-        project: list[str] = typer.Option(None, "--project"),
-        snapshot: str | None = typer.Option(None, "--snapshot"),
-        file_changes: str | None = typer.Option(None, "--file-changes"),
-        out: str | None = typer.Option(None, "--out"),
-    ) -> None:
-        target = out or resolve_analysis_path("active_semantic_static_findings.json")
-        run_active_semantic_static_findings(
-            target,
-            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
-            file_changes_file=file_changes or resolve_analysis_path("active_file_change_facts.json"),
-            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
-        )
-
-    @parent.command(
-        "active-rust-dependency-hygiene",
-        help="Run cargo-machete (and optionally cargo-geiger) over Rust workspaces",
-    )
-    def _active_rust_dependency_hygiene(
-        start: str = typer.Option(None, "--start"),
-        end: str = typer.Option(None, "--end"),
-        project: list[str] = typer.Option(None, "--project"),
-        snapshot: str | None = typer.Option(None, "--snapshot"),
-        include_geiger: bool = typer.Option(False, "--include-geiger/"),
-        out: str | None = typer.Option(None, "--out"),
-    ) -> None:
-        target = out or resolve_analysis_path("active_rust_dependency_hygiene.json")
-        run_active_rust_dependency_hygiene(
-            target,
-            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
-            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
-            include_geiger=include_geiger,
-        )
-
-    @parent.command(
-        "active-python-dependency-hygiene",
-        help="Run pip-audit against active Python projects, marking advisories direct/transitive",
-    )
-    def _active_python_dependency_hygiene(
-        start: str = typer.Option(None, "--start"),
-        end: str = typer.Option(None, "--end"),
-        project: list[str] = typer.Option(None, "--project"),
-        snapshot: str | None = typer.Option(None, "--snapshot"),
-        import_graph: str | None = typer.Option(None, "--import-graph"),
-        out: str | None = typer.Option(None, "--out"),
-    ) -> None:
-        target = out or resolve_analysis_path("active_python_dependency_hygiene.json")
-        run_active_python_dependency_hygiene(
-            target,
-            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
-            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
-            import_graph_file=import_graph or resolve_analysis_path("active_python_import_graph.json"),
-        )
-
-    @parent.command(
         "active-symbol-index",
         help="Build tree-sitter symbol index across active project checkouts",
     )
@@ -422,25 +279,6 @@ def register_commands(parent: typer.Typer) -> None:
             symbol_index_file=symbol_index or resolve_analysis_path("active_symbol_index.json"),
             snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
         )
-
-    @parent.command(
-        "active-commit-semantics",
-        help="Build commit-rooted semantic capsules from active commit facts",
-    )
-    def _active_commit_semantics(
-        start: str = typer.Option(None, "--start"),
-        end: str = typer.Option(None, "--end"),
-        project: list[str] = typer.Option(None, "--project"),
-        commit_facts: str | None = typer.Option(None, "--commit-facts"),
-        out: str | None = typer.Option(None, "--out"),
-    ) -> None:
-        target = out or resolve_analysis_path("active_commit_semantics.json")
-        run_active_commit_semantics(
-            target,
-            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
-            commit_facts_file=commit_facts,
-        )
-
 
     @parent.command(
         "active-github-frontier",

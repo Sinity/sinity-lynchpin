@@ -331,23 +331,6 @@ def test_production_plans_are_serializable_and_fully_declared(monkeypatch) -> No
     assert canonical_json([step.to_json() for step in plan])
 
 
-def test_nightly_maintenance_does_not_rebuild_chisel(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    row = SimpleNamespace(
-        name="code_snapshots", status="missing", reason="new Git ref",
-        first_date=None, last_date=None, covered_dates=(), row_count=0,
-        materialized_paths=(), raw_roots=(), tail_stale=False,
-        repair_required=False,
-    )
-    monkeypatch.setattr(materialization, "audit_materialization", lambda **_kwargs: [row])
-
-    nightly = plan_materializations(cfg=object(), maintenance=True)
-    explicit = plan_materializations(cfg=object())
-    assert [(step.product, step.action) for step in nightly] == [("code_snapshots", "check-only")]
-    assert [(step.product, step.action) for step in explicit] == [("code_snapshots", "materialize")]
-
-
 def test_lagging_source_does_not_widen_independent_keylog_tail(monkeypatch) -> None:
     from lynchpin.materializers import production
 
@@ -483,16 +466,6 @@ def test_resource_and_dependency_order_is_deterministic() -> None:
     plan = ConvergencePlanner(specs).plan(ConvergenceRequest(("z", "b")))
     waves = materializer_execution_waves(tuple(replace_step(step, action="materialize") for step in plan.steps))
     assert [[step.product for step in wave] for wave in waves] == [["a", "b"], ["z"]]
-
-
-def test_substrate_promoters_are_not_scheduled_in_one_wave() -> None:
-    """The shared DuckDB candidate writer admits one promoter at a time."""
-    plan = ConvergencePlanner(
-        (PRODUCT_CATALOG["code_snapshots"], PRODUCT_CATALOG["github_context"])
-    ).plan(ConvergenceRequest(("code_snapshots", "github_context")))
-    steps = tuple(replace_step(step, action="materialize") for step in plan.steps)
-    waves = materializer_execution_waves(steps)
-    assert [[step.product for step in wave] for wave in waves] == [["code_snapshots"], ["github_context"]]
 
 
 def test_production_consumers_follow_their_canonical_inputs() -> None:

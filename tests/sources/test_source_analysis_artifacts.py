@@ -6,13 +6,11 @@ UTC = timezone.utc
 
 
 def test_artifact_inventory_classifies_generated_products(tmp_path):
-    (tmp_path / "maps").mkdir()
     metrics = tmp_path / "sinex_structure_metrics.json"
     metrics.write_text(
         '{"generated_at_utc":"2026-05-06T12:00:00+00:00","totals":{},"items":[]}',
         encoding="utf-8",
     )
-    (tmp_path / "maps" / "project-maps.md").write_text("# Project Maps\n", encoding="utf-8")
 
     artifacts = artifact_inventory(tmp_path)
     by_name = {artifact.name: artifact for artifact in artifacts}
@@ -22,8 +20,6 @@ def test_artifact_inventory_classifies_generated_products(tmp_path):
     assert by_name["sinex_structure_metrics.json"].kind == "json"
     assert by_name["sinex_structure_metrics.json"].generated_at == datetime(2026, 5, 6, 12, tzinfo=UTC)
     assert by_name["sinex_structure_metrics.json"].top_level_keys == ("generated_at_utc", "items", "totals")
-    assert by_name["maps/project-maps.md"].project == "sinex"
-    assert by_name["maps/project-maps.md"].projects == ("sinex",)
 
 
 def test_artifact_inventory_reuses_manifest_without_reparsing_json(monkeypatch, tmp_path):
@@ -103,30 +99,6 @@ def test_artifact_inventory_extracts_known_json_briefs(tmp_path):
         '"projects":[{"project":"sinex"},{"project":"polylogue"}]}',
         encoding="utf-8",
     )
-    code_history = tmp_path / "code_history_claims.json"
-    code_history.write_text(
-        """
-        {
-          "window":{"start":"2026-05-01","end":"2026-05-05"},
-          "claim_count":2,
-          "claims":[
-            {
-              "claim_id":"claim:abc",
-              "claim_type":"code_hotspot",
-              "project":"sinex",
-              "summary":"sinex:src is a hotspot",
-              "confidence":0.7,
-              "support_level":"moderate",
-              "source_ids":["c1"],
-              "relation_ids":[],
-              "caveats":["observational"],
-              "payload":{"path_root":"src"}
-            }
-          ]
-        }
-        """,
-        encoding="utf-8",
-    )
     calibration = tmp_path / "claim_calibration.json"
     calibration.write_text('{"claim_count":2,"issue_count":1}', encoding="utf-8")
     takeout = tmp_path / "google_takeout_retrospective.json"
@@ -145,35 +117,6 @@ def test_artifact_inventory_extracts_known_json_briefs(tmp_path):
         '{"system":[{}],"top_processes":[{},{}],"top_cgroups":[{}]}',
         encoding="utf-8",
     )
-    python_dep = tmp_path / "active_python_dependency_hygiene.json"
-    python_dep.write_text(
-        """
-        {
-          "projects":[
-            {
-              "project":"sinity-lynchpin",
-              "audit":{"advisories":[{"observed_import":true},{"observed_import":false}]}
-            }
-          ]
-        }
-        """,
-        encoding="utf-8",
-    )
-    rust_dep = tmp_path / "active_rust_dependency_hygiene.json"
-    rust_dep.write_text(
-        """
-        {
-          "workspaces":[
-            {
-              "project":"sinex",
-              "audit":{"advisories":[{"id":"RUSTSEC-demo"}]}
-            }
-          ]
-        }
-        """,
-        encoding="utf-8",
-    )
-
     by_name = {artifact.name: artifact for artifact in artifact_inventory(tmp_path)}
 
     assert by_name["analysis_status.json"].brief == "families missing=1, stable=2"
@@ -190,8 +133,6 @@ def test_artifact_inventory_extracts_known_json_briefs(tmp_path):
     assert by_name["active_work_packages.json"].projects == ("polylogue", "sinex")
     assert by_name["project_velocity_windows.json"].brief == "2 velocity windows; strong=1, moderate=1"
     assert by_name["project_velocity_windows.json"].projects == ("polylogue", "sinex")
-    assert by_name["code_history_claims.json"].brief == "1 code-history claims, 2026-05-01 to 2026-05-05"
-    assert by_name["code_history_claims.json"].projects == ("sinex",)
     assert by_name["claim_calibration.json"].brief == "2 claims calibrated, 1 issues"
     assert by_name["google_takeout_retrospective.json"].brief == "123 Google Takeout events, 9 active days"
     assert by_name["personal_interest_trace.json"].brief == "7 weak personal-interest topics"
@@ -200,51 +141,11 @@ def test_artifact_inventory_extracts_known_json_briefs(tmp_path):
     assert by_name["machine_telemetry_analysis.json"].projects == ("sinity-lynchpin",)
     assert by_name["machine_below_analysis.json"].brief == "1 below windows, 2 process rows, 1 cgroup rows"
     assert by_name["machine_below_analysis.json"].projects == ("sinity-lynchpin",)
-    assert by_name["active_python_dependency_hygiene.json"].brief == (
-        "1 Python dependency hygiene rows, 2 advisories (1 observed in imports)"
-    )
-    assert by_name["active_python_dependency_hygiene.json"].projects == ("sinity-lynchpin",)
-    assert by_name["active_rust_dependency_hygiene.json"].brief == (
-        "1 Rust dependency hygiene rows, 1 advisories"
-    )
-    assert by_name["active_rust_dependency_hygiene.json"].projects == ("sinex",)
 
-
-def test_analysis_claims_extract_code_history_claims(tmp_path):
-    (tmp_path / "code_history_claims.json").write_text(
-        """
-        {
-          "generated_at_utc":"2026-05-06T12:00:00+00:00",
-          "claims":[
-            {
-              "claim_id":"claim:abc",
-              "claim_type":"code_hotspot",
-              "project":"sinex",
-              "summary":"sinex:src is a hotspot",
-              "confidence":0.7,
-              "support_level":"moderate",
-              "source_ids":["c1"],
-              "relation_ids":[],
-              "caveats":["observational"],
-              "payload":{"path_root":"src"}
-            }
-          ]
-        }
-        """,
-        encoding="utf-8",
-    )
-
-    claim = analysis_claims(projects=("sinex",), root=tmp_path)[0]
-
-    assert claim.id == "claim:abc"
-    assert claim.claim_type == "code_hotspot"
-    assert claim.project == "sinex"
-    assert claim.payload["path_root"] == "src"
-    assert claim.payload["support_level"] == "moderate"
 
 
 def test_analysis_claims_can_reuse_supplied_artifact_inventory(monkeypatch, tmp_path):
-    (tmp_path / "code_history_claims.json").write_text(
+    (tmp_path / "machine_attribution_claims.json").write_text(
         """
         {
           "generated_at_utc":"2026-05-06T12:00:00+00:00",
@@ -276,7 +177,7 @@ def test_analysis_claims_can_reuse_supplied_artifact_inventory(monkeypatch, tmp_
 
 
 def test_analysis_claims_reuses_claim_manifest(monkeypatch, tmp_path):
-    (tmp_path / "code_history_claims.json").write_text(
+    (tmp_path / "machine_attribution_claims.json").write_text(
         """
         {
           "generated_at_utc":"2026-05-06T12:00:00+00:00",
@@ -348,14 +249,13 @@ def test_artifact_inventory_keeps_parse_failures_visible(tmp_path):
 
 def test_latest_artifacts_filters_by_multi_project_affinity(tmp_path):
     (tmp_path / "sinex_structure_metrics.json").write_text('{"totals":{}}', encoding="utf-8")
-    (tmp_path / "project-maps.md").write_text("# Maps\n", encoding="utf-8")
     (tmp_path / "unknown.md").write_text("# Unknown\n", encoding="utf-8")
     (tmp_path / "polylogue_metrics.json").write_text('{"totals":{}}', encoding="utf-8")
 
     artifacts = latest_artifacts(projects=("sinex",), root=tmp_path)
     names = {artifact.name for artifact in artifacts}
 
-    assert names == {"sinex_structure_metrics.json", "project-maps.md"}
+    assert names == {"sinex_structure_metrics.json"}
 
 
 def test_analysis_claims_extract_active_project_snapshots(tmp_path):
@@ -454,41 +354,6 @@ def test_analysis_claims_extract_active_work_packages(tmp_path):
     assert by_type["work_package_summary"].payload["package_count"] == 1
     assert by_type["work_package"].payload["work_package_id"] == "wp:sinex:pr:12"
     assert "github_thread" in by_type["work_package"].summary
-
-
-def test_analysis_claims_extract_python_dependency_observed_imports(tmp_path):
-    (tmp_path / "active_python_dependency_hygiene.json").write_text(
-        """
-        {
-          "generated_at_utc":"2026-05-06T12:00:00+00:00",
-          "window":{"start":"2026-05-01","end":"2026-05-05"},
-          "projects":[
-            {
-              "project":"sinity-lynchpin",
-              "manifest":"pyproject.toml",
-              "observed_external_import_count":2,
-              "observed_external_imports":["duckdb","requests"],
-              "audit":{
-                "available":true,
-                "advisories":[
-                  {"id":"GHSA-demo","package":"requests","direct":true,"transitive":false,"observed_import":true},
-                  {"id":"GHSA-transitive","package":"urllib3","direct":false,"transitive":true,"observed_import":false}
-                ]
-              }
-            }
-          ]
-        }
-        """,
-        encoding="utf-8",
-    )
-
-    claim = analysis_claims(projects=("sinity-lynchpin",), root=tmp_path)[0]
-
-    assert claim.id == "python-dep-hygiene-summary:sinity-lynchpin"
-    assert "1 observed in imports" in claim.summary
-    assert claim.payload["observed_advisory_count"] == 1
-    assert claim.payload["observed_external_import_count"] == 2
-    assert claim.payload["observed_external_imports_sample"] == ["duckdb", "requests"]
 
 
 def test_analysis_claims_extract_project_velocity_windows(tmp_path):

@@ -1,46 +1,20 @@
-"""Canonical analysis snapshot + validation for derived artifacts."""
+"""Canonical analysis spec loading and validation for derived artifacts."""
 
 from __future__ import annotations
 
-import hashlib
 import os
-import subprocess
-from datetime import datetime, timezone
 from os import PathLike
 from typing import Any, cast
 
 from ...core.errors import SchemaVersionError
 from ...core.io import (
     load_json,
-    repo_root,
     resolve_analysis_path,
     resolve_artifact_path,
     resolve_repo_path,
-    save_json,
 )
 
 JsonObject = dict[str, Any]
-
-
-def _sha256(path: str | PathLike[str]) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _git_rev(repo: str, ref: str) -> str | None:
-    try:
-        out = subprocess.check_output(
-            ["git", "rev-parse", ref],
-            cwd=repo,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-        return out.strip()
-    except (OSError, subprocess.CalledProcessError):
-        return None
 
 
 def load_analysis_spec(spec_path: str | PathLike[str]) -> JsonObject:
@@ -52,64 +26,6 @@ def load_analysis_spec(spec_path: str | PathLike[str]) -> JsonObject:
             source=str(spec_path),
         )
     return cast(JsonObject, data)
-
-
-def _load_artifacts(spec: JsonObject) -> JsonObject:
-    artifacts: JsonObject = {}
-    spec_artifacts = spec["artifacts"]
-    if not isinstance(spec_artifacts, dict):
-        raise SchemaVersionError(
-            found=type(spec_artifacts).__name__,
-            expected="dict",
-            source="analysis spec artifacts",
-        )
-    for name in spec_artifacts:
-        path = resolve_artifact_path(spec, name)
-        artifacts[name] = {
-            "path": path,
-            "data": load_json(path),
-            "sha256": _sha256(path),
-        }
-    return artifacts
-
-
-def build_analysis_snapshot(spec_path: str | PathLike[str], out_path: str | PathLike[str]) -> JsonObject:
-    spec = load_analysis_spec(spec_path)
-    artifacts = _load_artifacts(spec)
-
-    sinex_structure = artifacts["sinex_structure_metrics"]["data"]
-    sinex_temporal = artifacts["sinex_temporal_metrics"]["data"]
-
-    canonical_claims = {
-        'sinex_test_to_app_ratio': 0,
-        'sinex_unsafe_blocks': sinex_structure['totals']['unsafe_blocks'],
-        'sinex_total_commits': sinex_temporal['stats']['total_commits'],
-        'sinex_files_per_commit_median': sinex_temporal['stats']['files_per_commit_median'],
-    }
-
-    repo_revisions = {
-        'analysis_repo_head': _git_rev(repo_root(), 'HEAD'),
-        'sinex_branch': spec['sinex']['branch'],
-        'sinex_branch_rev': _git_rev(spec['sinex']['repo'], spec['sinex']['branch']),
-    }
-
-    manifest = {
-        'generated_at_utc': datetime.now(timezone.utc).isoformat(),
-        'analysis_spec': spec,
-        'repo_revisions': repo_revisions,
-        'artifact_hashes': {
-            k: v['sha256'] for k, v in artifacts.items()
-        },
-        'canonical_claims': canonical_claims,
-        'sanity': {
-            'sinex_crates': len(sinex_structure.get('crates', {})),
-            'sinex_time_span_days': sinex_temporal.get('stats', {}).get('span_days', 0),
-        },
-    }
-
-    save_json(resolve_analysis_path(out_path), manifest, sort_keys=True)
-
-    return manifest
 
 
 def _validate_commit_facts_payload(payload: JsonObject) -> list[str]:

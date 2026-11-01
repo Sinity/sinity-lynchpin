@@ -15,10 +15,6 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
-from lynchpin.analysis.change.commit_capsules import (
-    run_active_commit_hunks,
-    run_active_commit_semantics,
-)
 from lynchpin.analysis.change.work_packages import (
     build_active_work_packages,
     run_active_work_packages,
@@ -129,12 +125,8 @@ def test_default_builders_read_serving_commit_facts(
     window = {"start": START, "end": END, "projects": [PROJECT]}
 
     packages = run_active_work_packages(tmp_path / "packages.json", **window)
-    hunks = run_active_commit_hunks(tmp_path / "hunks.json", **window)
-    semantics = run_active_commit_semantics(tmp_path / "semantics.json", **window)
 
     assert sum(row["commit_count"] for row in packages["projects"]) == 2
-    assert hunks["commit_count"] == 2
-    assert semantics["commit_count"] == 2
 
 
 def test_candidate_context_reads_its_staged_generation(
@@ -190,16 +182,12 @@ def _commit_shas(value: object) -> set[str]:
     return set()
 
 
-@pytest.mark.parametrize(
-    "command",
-    ["active-work-packages", "active-commit-semantics"],
-)
 def test_commit_facts_option_selects_its_input(
     serving_substrate: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    command: str,
 ) -> None:
+    command = "active-work-packages"
     out = tmp_path / f"{command}.json"
     result = CliRunner().invoke(
         build_app(),

@@ -512,23 +512,6 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         required=False,
         substrate_daily_signal=True,
     ),
-    SourceContract(
-        name="code_snapshots",
-        authority="local git repositories defined in REPO_PLANS (chisel/repomix)",
-        query_surface="lynchpin.substrate.code_snapshots.iter_code_snapshot_runs",
-        materialization_hint="python -m lynchpin.analysis projects chisel",
-        materialization_executor=MaterializationExecutor.materializer("code_snapshots"),
-        required=False,
-        empty="valid",
-        collection_model="derived",
-        materialization_mode="derived",
-        substrate_tables=("code_snapshot_run", "code_snapshot_slice"),
-        mcp_tools=("lynchpin_project", "lynchpin_status", "lynchpin_ops"),
-        caveats=(
-            "snapshot freshness is checked against local repo HEADs; reads report staleness and Chisel builds run on explicit request",
-            "XML slices are large filesystem files; use list_code_snapshot_slices for discovery",
-        ),
-    ),
 )
 
 _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {

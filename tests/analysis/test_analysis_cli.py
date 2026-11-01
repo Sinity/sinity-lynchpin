@@ -219,7 +219,6 @@ def test_new_retrospective_artifact_commands_are_registered():
     assert result.exit_code == 0
     for command in (
         "claim-calibration",
-        "code-history-claims",
         "google-takeout-retrospective",
         "keylog-analysis",
         "materialize-current-state",
