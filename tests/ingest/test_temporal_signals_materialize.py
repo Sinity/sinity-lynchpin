@@ -123,7 +123,6 @@ def test_materialize_temporal_signals_merges_window_and_tracks_covered_dates(mon
         for name in (
             "activitywatch_derived",
             "atuin",
-            "polylogue",
             "webhistory",
             "browser_bookmarks",
             "communications",

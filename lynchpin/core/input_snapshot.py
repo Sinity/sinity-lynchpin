@@ -197,12 +197,16 @@ def read_input_path(path: Path) -> Path:
 
 
 def pinned_version(path: Path) -> tuple[bool, list[int] | None]:
-    """Return original evidence identity, never the temporary copy's inode."""
+    """Return original evidence identity, never the temporary copy's inode.
+
+    The device number is dropped: btrfs assigns subvolume device numbers at
+    mount time, so it changes across reboots for unchanged files.
+    """
     snapshot = _ACTIVE.get()
     if snapshot is None:
         return False, None
     pinned, version = snapshot.version(path)
-    return pinned, list(version) if version is not None else None
+    return pinned, list(version[1:]) if version is not None else None
 
 
 def pinned_collection(root: Path) -> tuple[Path, ...] | None:

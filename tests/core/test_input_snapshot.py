@@ -20,7 +20,7 @@ def test_replacement_keeps_bytes_and_original_identity(tmp_path):
         replacement.replace(source)
         assert read_input_path(source).read_text() == "old\n"
         assert file_signature(source) == signature
-        assert pinned_version(source) == (True, [before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns])
+        assert pinned_version(source) == (True, [before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns])
         assert copied.stat().st_ino != before.st_ino
         with ThreadPoolExecutor(max_workers=1) as pool:
             assert pool.submit(copy_context().run, lambda: read_input_path(source).read_text()).result() == "old\n"
@@ -95,7 +95,7 @@ def test_open_capture_pins_prefix_while_append_continues(tmp_path, monkeypatch):
     with input_snapshot() as snapshot:
         snapshot.pin_collection(tmp_path, (source,), append_only=(source,))
         assert read_input_path(source).read_bytes() == b"old\n"
-        assert pinned_version(source)[1][2:] == [before.st_size, before.st_mtime_ns, before.st_ctime_ns]
+        assert pinned_version(source)[1][1:] == [before.st_size, before.st_mtime_ns, before.st_ctime_ns]
     assert source.read_bytes() == b"old\nnew\n"
 
 
@@ -129,7 +129,7 @@ def test_collection_members_are_copied_only_when_read(tmp_path):
     before = old.stat()
     with input_snapshot() as snapshot:
         snapshot.pin_collection(root, (old, new))
-        assert pinned_version(old) == (True, [before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns])
+        assert pinned_version(old) == (True, [before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns])
         assert snapshot.files == {}
         assert read_input_path(new).read_text() == "new\n"
         assert set(snapshot.files) == {new}

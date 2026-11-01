@@ -304,6 +304,30 @@ def test_merge_only_cli_uses_retained_merge_without_raw_extraction(monkeypatch, 
     assert observed["start"] is None and observed["end"] is None
 
 
+def test_recent_days_cli_runs_one_bounded_trailing_window(monkeypatch, tmp_path):
+    observed = {}
+
+    def run(**kwargs):
+        observed.update(kwargs)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(webhistory, "run", run)
+    assert webhistory.main(["--recent-days", "3"]) == 0
+    today = webhistory.logical_date(datetime.now().astimezone())
+    assert observed["end"] == today + timedelta(days=1)
+    assert observed["end"] - observed["start"] == timedelta(days=4)
+
+
+def test_recent_days_cli_refuses_an_explicit_window(monkeypatch):
+    monkeypatch.setattr(webhistory, "run", lambda **kwargs: {"status": "ok"})
+    try:
+        webhistory.main(["--recent-days", "3", "--start", "2026-01-01"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("--recent-days with --start must be refused")
+
+
 def test_candidate_merge_does_not_reimport_the_serving_carrier(monkeypatch, tmp_path):
     from types import SimpleNamespace
 

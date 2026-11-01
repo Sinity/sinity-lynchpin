@@ -98,7 +98,6 @@ from .productivity_predictors import write_report as write_productivity_predicto
 from .substance_health import write_report as write_substance_health_report
 from .burnout_warning import write_report as write_burnout_warning_report
 from .quota_advisory import write_quota_advisory
-from .ambient_intelligence import write_ambient_intelligence
 from .operator_daily import operator_daily_matrix
 from .sinex import temporal as sinex_temporal
 from .workflow_mechanics import write_workflow_mechanics_report
@@ -333,7 +332,6 @@ def _add_personal_analysis_steps(
     dag.add(_step(dag, 'personal_burnout_warning', 'write_burnout_warning_report', args=(_out('burnout_warning.json'),), kwargs={'start': personal_start, 'end': personal_end}, depends_on=[]))
     dag.add(_step(dag, 'personal_quota_advisory', 'write_quota_advisory', args=(_out('quota_advisory.json'),), kwargs={}, depends_on=[]))
     dag.add(_step(dag, 'personal_operator_day', '_promote_operator_day', args=(), kwargs={'start': start, 'end': end}, depends_on=[]))
-    dag.add(_step(dag, 'personal_ambient_intelligence', 'write_ambient_intelligence', args=(_out('ambient_intelligence.json'),), kwargs={}, depends_on=[]))
     return [
         "personal_anomaly_crossref",
         "personal_life_phase",
@@ -342,7 +340,6 @@ def _add_personal_analysis_steps(
         "personal_burnout_warning",
         "personal_quota_advisory",
         "personal_operator_day",
-        "personal_ambient_intelligence",
     ]
 
 

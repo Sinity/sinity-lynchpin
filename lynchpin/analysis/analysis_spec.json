@@ -83,8 +83,7 @@
     "sinex_temporal_metrics": "sinex_temporal_metrics.json",
     "work_package_scope": "work_package_scope.json",
     "workflow_mechanics": "workflow_mechanics.json",
-    "quota_advisory": "quota_advisory.json",
-    "ambient_intelligence": "ambient_intelligence.json"
+    "quota_advisory": "quota_advisory.json"
   },
   "canonical_date": "2026-03-06",
   "polylogue": {

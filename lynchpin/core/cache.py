@@ -80,7 +80,7 @@ def file_signature(path: Path) -> Tuple[str, int | None, int | None]:
     """Return a tuple that changes whenever the file path/mtime/size changes."""
     pinned, version = pinned_version(path)
     if pinned:
-        return (str(path), version[3], version[2]) if version is not None else (str(path), None, None)
+        return (str(path), version[2], version[1]) if version is not None else (str(path), None, None)
     if not path.exists():
         return (str(path), None, None)
     stat = path.stat()
@@ -100,7 +100,7 @@ def input_versions(paths: Iterable[Path]) -> list[dict[str, Any]]:
             wal = _file_version(Path(f"{path}-wal"))
             # A zero-length WAL holds no frames: it is the same database state
             # as no WAL, and a read-only reader may create one on open.
-            item["wal_stat"] = wal if wal is not None and wal[2] > 0 else None
+            item["wal_stat"] = wal if wal is not None and wal[1] > 0 else None
         versions.append(item)
     return versions
 
@@ -123,8 +123,9 @@ def _file_version(path: Path) -> list[int] | None:
             return None
     except OSError:
         return None
+    # No st_dev: btrfs subvolume device numbers change across reboots, which
+    # made every unchanged input look replaced after a restart.
     return [
-        stat_result.st_dev,
         stat_result.st_ino,
         stat_result.st_size,
         stat_result.st_mtime_ns,
@@ -143,7 +144,7 @@ def file_digest(path: Path, *, chunk_size: int = 1024 * 1024) -> Tuple[str, int 
     with read_path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(chunk_size), b""):
             hasher.update(chunk)
-    return (str(path), version[3], version[2], hasher.hexdigest())
+    return (str(path), version[2], version[1], hasher.hexdigest())
 
 
 def files_digest(paths: Iterable[Path]) -> Tuple[Tuple[str, int | None, int | None, str | None], ...]:

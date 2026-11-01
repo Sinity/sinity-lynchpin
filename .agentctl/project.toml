@@ -91,6 +91,15 @@ result = "exit"
 cache = "none"
 timeout_seconds = 3600
 
+[operations.capture_webhistory]
+description = "Acquire the trailing two weeks of live browser history into the canonical webhistory capture"
+exec = ["python", "-m", "lynchpin.ingest.webhistory", "--recent-days", "14"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+timeout_seconds = 1800
+admission = { memory_mib = 6144 }
+
 [operations.repair_webhistory_base]
 description = "Merge retained browser segments into an explicit candidate output without raw extraction"
 exec = ["python", "-m", "lynchpin.ingest.webhistory", "--merge-only"]

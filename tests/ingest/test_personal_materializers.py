@@ -1314,7 +1314,7 @@ def test_daily_materializer_records_captured_keyboard_bytes_when_source_changes(
     materializer.materialize_personal_daily_signals(output=output)
     manifest = json.loads(output.with_suffix(".manifest.json").read_text())
     version = next(item for item in manifest["input_versions"] if item["path"] == str(raw))
-    assert version["stat"][2] == original_size
+    assert version["stat"][1] == original_size
     assert json.loads(output.read_text())["value"] == 1.0
     assert not materialization._manifest_inputs_current(
         manifest, materialization._manifest_declared_input_files(manifest),
@@ -1362,7 +1362,7 @@ def test_daily_materializer_captures_account_directory_inputs(tmp_path, monkeypa
     manifest = json.loads(output.with_suffix(".manifest.json").read_text())
     assert str(root) not in manifest["input_files"]
     version = next(item for item in manifest["input_versions"] if item["path"] == str(raw))
-    assert version["stat"][2] == original_size
+    assert version["stat"][1] == original_size
     assert manifest["absent_input_files"]
 
 

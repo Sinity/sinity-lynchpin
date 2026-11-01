@@ -51,7 +51,7 @@ def materialize_gmail_events(
     observed_versions = input_versions(input_files)
     if any(item["stat"] is None for item in observed_versions):
         raise SourceUnavailableError("gmail_takeout", path=str(archive_root), reason="selected archive is unavailable")
-    latest_mtime_ns = max((item["stat"][3] for item in observed_versions), default=None)
+    latest_mtime_ns = max((item["stat"][2] for item in observed_versions), default=None)
 
     row_count = 0
     first_ts: datetime | None = None

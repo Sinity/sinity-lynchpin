@@ -649,7 +649,7 @@ def test_prepared_health_coverage_uses_captured_phone_input_boundary(tmp_path, m
         report = health.health_coverage_path(cfg.derived_root)
         meta = json.loads(report.with_suffix(".manifest.json").read_text())
         assert meta["input_files"] == [str(day)]
-        assert meta["input_versions"][0]["stat"][2] == day.stat().st_size
+        assert meta["input_versions"][0]["stat"][1] == day.stat().st_size
         with day.open("a") as stream:
             stream.write(json.dumps({**event, "record_id": "fixture-2"}) + "\n")
         later = root / "events-20300102.jsonl"

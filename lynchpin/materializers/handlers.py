@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..analysis.keylog import write_keylog_analysis
-from ..analysis.ambient_intelligence import write_ambient_intelligence
 from ..core.config import get_config
 from ..core.errors import MaterializationError
 from ..core.io import resolve_analysis_path
@@ -79,10 +78,6 @@ def _materialize_keylog_analysis(*, start: date | None = None, end: date | None 
     return {"row_count": analysis.source_event_count}
 
 
-def _materialize_ambient_intelligence() -> dict[str, Any]:
-    return write_ambient_intelligence()
-
-
 _SOURCE_HANDLERS: dict[str, Materializer] = {
     "webhistory": _materialize_webhistory,
     "google_takeout": _materialize_google_takeout,
@@ -110,13 +105,12 @@ _SOURCE_HANDLERS: dict[str, Materializer] = {
     "irc": materialize_irc_events,
     "code_snapshots": materialize_code_snapshots,
     "substack": materialize_substack,
-    "ambient_intelligence": _materialize_ambient_intelligence,
 }
 
 _WINDOWED = frozenset(
     name
     for name, handler in _SOURCE_HANDLERS.items()
-    if name not in {"google_takeout", "title_metadata", "spotify", "reddit", "facebook_messenger", "communications", "raindrop", "browser_bookmarks", "arbtt", "health_coverage", "code_snapshots", "ambient_intelligence", "substack"}
+    if name not in {"google_takeout", "title_metadata", "spotify", "reddit", "facebook_messenger", "communications", "raindrop", "browser_bookmarks", "arbtt", "health_coverage", "code_snapshots", "substack"}
 )
 _REFRESH_ID = frozenset({"activitywatch", "personal_daily_signals", "temporal_signals"})
 

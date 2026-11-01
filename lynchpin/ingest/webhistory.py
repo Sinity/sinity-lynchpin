@@ -1022,6 +1022,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start", type=date.fromisoformat)
     parser.add_argument("--end", type=date.fromisoformat)
     parser.add_argument(
+        "--recent-days",
+        type=int,
+        default=None,
+        help="bounded acquisition of the trailing N logical days through tomorrow; replaces --start/--end",
+    )
+    parser.add_argument(
         "--check-freshness",
         action="store_true",
         help="report and validate the scheduled extraction receipt without extracting",
@@ -1029,6 +1035,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-age-hours", type=float, default=WEBHISTORY_SCHEDULE_MAX_AGE_HOURS)
     parser.add_argument("--report-dir", type=Path, default=None)
     args = parser.parse_args(argv)
+    if args.recent_days is not None:
+        if args.start is not None or args.end is not None or args.recent_days < 1:
+            parser.error("--recent-days takes a positive count and replaces --start/--end")
+        args.end = logical_date(datetime.now().astimezone()) + timedelta(days=1)
+        args.start = args.end - timedelta(days=args.recent_days + 1)
     if args.check_freshness:
         status = webhistory_schedule_status(
             report_dir=args.report_dir,
