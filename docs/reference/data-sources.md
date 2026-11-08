@@ -26,7 +26,7 @@ availability, coverage, provenance, iterators, and source-local summaries.
 | Communications | `communications`, `gmail_takeout`, `irc`, `outlook`, `sms`, export adapters | Events, threads, daily counts, provenance. |
 | Health and daily signals | `health`, `sleep`, `personal_signals`, `weather` | Measurements, coverage-aware daily products, longitudinal signals. |
 | Media and libraries | `spotify`, `substack`, `spotify_genres`, `audio_features`, export adapters | Streams, sessions, downloaded publication archives, library records, daily media signals. |
-| Generated evidence | `analysis_artifacts`, `source_observations`, `observability_catalog` | Artifact inventory, extracted claims, source/role definitions. |
+| Generated evidence | `analysis_artifacts`, `source_observations` | Artifact inventory, extracted claims, source/role definitions. |
 
 Bounded webhistory maintenance queries only the live browser SQLite snapshot in the requested half-open logical-day window. It never opens historical browser databases, Takeout archives, or manual exports. Their retained canonical segments still contribute inside the replacement window, and earlier merged history remains intact. The receipt labels raw historical acquisition as not admitted; it does not certify new or changed archives as imported. Use explicit unbounded webhistory ingestion to acquire those inputs, or the existing `--merge-only --output` repair to rebuild a base from retained canonical segments. A changed or malformed canonical base refuses before live acquisition. Newly deduplicated segments carry a content digest in their names, so another same-day observation cannot replace an earlier subset. Filename date bounds select overlapping canonical segments; broad retained segments and the merged baseline can still require reads outside the requested dates. This is a native-acquisition bound, not a claim of strictly date-bounded canonical I/O.
 
@@ -226,7 +226,7 @@ Some `activity/*` (and `comms/*`) roots have real, growing owner-native data
 (audio, screen recordings, screenshots) but no typed source module yet — the content itself
 (audio, images, video) is out of scope for deep parsing.
 `lynchpin.sources.capture_inventory` gives these roots the same minimal
-visibility `observability_catalog` gives machine/observability inputs: file
+visibility: file
 count, total bytes, and observed mtime span per root, computed live from the
 filesystem — no content parsing. Run `python -m lynchpin.cli.capture_inventory`
 for a summary, or `--json` for machine-readable output. Promote a root out of

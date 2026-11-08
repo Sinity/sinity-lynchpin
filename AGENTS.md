@@ -147,7 +147,6 @@ agentctl job start lynchpin check
 agentctl job start lynchpin materialize_plan
 agentctl job start lynchpin promote_incremental
 agentctl job start lynchpin converge
-agentctl job start lynchpin chisel
 ```
 
 The `check` operation runs lint, maintained type checks, and the default tests. `materialize_plan`

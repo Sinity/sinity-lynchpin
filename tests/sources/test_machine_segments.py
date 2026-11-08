@@ -822,24 +822,3 @@ def test_source_observations_include_control_members_and_active_wal(
     assert row.available is False
     assert "telemetry source set" in row.recommendation
     assert str(legacy) in row.recommendation
-
-
-def test_catalog_refuses_incomplete_source_set(tmp_path, monkeypatch):
-    from lynchpin.sources.observability_catalog import ObservabilityInput
-
-    current, legacy = sqlite_sources(tmp_path, monkeypatch)
-    catalog = ObservabilityInput(
-        "machine.telemetry",
-        "fixture",
-        "raw_capture",
-        "canonical",
-        current,
-        None,
-        "sample",
-        (),
-        "retained",
-        "inspect",
-    )
-    assert catalog.exists is True
-    legacy.unlink()
-    assert catalog.exists is False

@@ -127,4 +127,4 @@ printf 'analysis    | status:%s | machine:%s | context:%s\n' \
   "$(age "$status_json")" \
   "$(readiness_statuses "$readiness_json")" \
   "$(age "$context_md")"
-printf 'commands    | just check | just analysis-dry-run | tool/current-state --start YYYY-MM-DD --end YYYY-MM-DD\n'
+printf 'commands    | just check | just analysis-dry-run | lynchpin-current-state --start YYYY-MM-DD --end YYYY-MM-DD\n'

@@ -16,7 +16,6 @@ def test_configured_machine_and_analysis_roots_reach_production_consumers(tmp_pa
                        LYNCHPIN_ANALYSIS_OUTPUT_DIR=str(analysis))
     code = r'''
 import json
-import runpy
 import sys
 from types import SimpleNamespace
 from typer.testing import CliRunner
@@ -30,9 +29,7 @@ cli.write_below_analysis = writer
 for arguments in (["machine-below"], ["machine-below", "--root", sys.argv[1]]):
     result = CliRunner().invoke(cli.build_app(), arguments)
     assert result.exit_code == 0, result.output
-cartography = runpy.run_path("scripts/cartography.py")
-print(json.dumps({"cli": roots, "api": str(below.DEFAULT_STABILITY_ROOT),
-                  "cartography": str(cartography["OUTPUT_ROOT"])}))
+print(json.dumps({"cli": roots, "api": str(below.DEFAULT_STABILITY_ROOT)}))
 '''
     result = subprocess.run([sys.executable, "-c", code, str(explicit)],
                             cwd=Path(__file__).resolve().parents[2], env=environment,
@@ -41,5 +38,4 @@ print(json.dumps({"cli": roots, "api": str(below.DEFAULT_STABILITY_ROOT),
     payload = json.loads(result.stdout)
     assert payload["api"] == str(machine / "stability-lab")
     assert payload["cli"] == [str(machine / "stability-lab"), str(explicit)]
-    assert payload["cartography"] == str(analysis / "cartography")
     assert not machine.exists() and not analysis.exists()
