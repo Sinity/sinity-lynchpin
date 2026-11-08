@@ -392,7 +392,7 @@ def _classify_path(project: str, path: str) -> str:
     if project == "sinex":
         return _classify_sinex(path, ext)
     elif project == "polylogue":
-        return _classify_polylogue(path, ext)
+        return _classify_sinex(path, ext)
     elif project == "sinnix":
         return _classify_sinnix(path, ext)
     elif project == "sinity-lynchpin":
@@ -405,7 +405,7 @@ def _classify_sinex(path: str, ext: str) -> str:
     # Rust source (including xtask, the build tooling)
     if any(p in path for p in ("/src/", "xtask/", "crate/")):
         # Test code within source trees
-        if any(p in path for p in ("/tests/", "/test/", "test_", "_test.rs")):
+        if any(p in path for p in ("/tests/", "/test/", "test_", "_test.rs", "tests.rs")):
             return "test"
         return "source"
     # Standalone test directories
@@ -417,26 +417,6 @@ def _classify_sinex(path: str, ext: str) -> str:
         return "config"
     if any(p in path for p in ("/nixos/", "/.github/", "/schemas/", "/migrations/",
                                 "flake.", "Cargo.toml", "Cargo.lock", "rust-toolchain")):
-        return "config"
-    return "other"
-
-
-def _classify_polylogue(path: str, ext: str) -> str:
-    # Python source
-    if path.startswith("polylogue/"):
-        if "test" in path.lower() or path.endswith("_test.py"):
-            return "test"
-        return "source"
-    # Standalone test directories
-    if any(path.startswith(p) for p in ("unit/", "integration/", "benchmarks/", "fuzz/")):
-        return "test"
-    if path.endswith("conftest.py") or "_test" in path:
-        return "test"
-    # Config
-    if ext in ("toml", "lock", "nix", "cfg", "ini"):
-        return "config"
-    if any(p in path for p in ("/nix/", "/.github/", "/devtools/", "/infra/",
-                                "pyproject.toml", "flake.", "uv.lock", "poetry.lock")):
         return "config"
     return "other"
 

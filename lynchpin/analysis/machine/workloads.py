@@ -92,7 +92,7 @@ _COMM_RULES: list[tuple[re.Pattern[str], WorkloadKind]] = [
     (re.compile(r"^(nix|nix-daemon|nix-store|nix-collect-garbage)$"), WorkloadKind.NixBuild),
     (re.compile(r"^(pytest|\.pytest-wrapped|\[pytest-xdist)$"), WorkloadKind.TestSuite),
     (re.compile(r"^(sinexd|nats-server|\.postgres-wrapp|postgres|psql)$"), WorkloadKind.SinexStack),
-    (re.compile(r"^(\.polylogued-wra|polylogued)$"), WorkloadKind.PolylogueDaemon),
+    (re.compile(r"^polylogue$"), WorkloadKind.PolylogueDaemon),
     (re.compile(r"^(\.borg-wrapped|borgbackup|borgbackup-chec|borgbackup-job-)"), WorkloadKind.Backup),
     (re.compile(r"^(chrome|chromium|\.chromium-brows|qutebrowser|firefox|kitty)$"), WorkloadKind.Browser),
     (re.compile(r"^(stash|ffmpeg|transmission-da)$"), WorkloadKind.MediaService),
@@ -127,6 +127,10 @@ def _classify(comm: str | None, cgroup: str | None) -> WorkloadKind | None:
             return WorkloadKind.Observability
         if "systemd-journald.service" in cgroup:
             return WorkloadKind.SystemIO
+        if comm == "polylogue":
+            # The daemon runs in polylogue-live.service; elsewhere the same
+            # executable is a short CLI call.
+            return WorkloadKind.Other
     # Build-related comms running inside agent.slice are agent-launched work
     if cgroup and _AGENT_SLICE.search(cgroup) and _BUILD_COMMS.match(comm):
         return WorkloadKind.AgentBuild
@@ -474,7 +478,7 @@ def detect_orphans(
     """
     _ALWAYS_ON_COMMS = frozenset({
         "sinexd", "nats-server", ".postgres-wrapp", "postgres",
-        ".polylogued-wra", "polylogued", "transmission-da", "below",
+        "polylogue", "transmission-da", "below",
         "machine-telemetry", "wireguard", "systemd-journal", "NetworkManager",
         "chrome", "kitty", "Hyprland", "noctalia", "quickshell", "aw-server",
     })

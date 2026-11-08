@@ -72,27 +72,27 @@
   "canonical_date": "2026-03-06",
   "polylogue": {
     "branch": "HEAD",
-    "repo": "/realm/project/polylogue"
+    "repo": "/realm/project/polylogue/repo"
   },
   "sinex": {
     "branch": "HEAD",
-    "repo": "/realm/project/sinex"
+    "repo": "/realm/project/sinex/repo"
   },
   "sinnix": {
     "branch": "HEAD",
-    "repo": "/realm/project/sinnix"
+    "repo": "/realm/project/sinnix/repo"
   },
   "sinity-lynchpin": {
     "branch": "HEAD",
-    "repo": "/realm/project/sinity-lynchpin"
+    "repo": "/realm/project/sinity-lynchpin/repo"
   },
   "intercept-bounce": {
     "branch": "HEAD",
-    "repo": "/realm/project/intercept-bounce"
+    "repo": "/realm/project/intercept-bounce/repo"
   },
   "scribe-tap": {
     "branch": "HEAD",
-    "repo": "/realm/project/scribe-tap"
+    "repo": "/realm/project/scribe-tap/repo"
   },
   "knowledgebase": {
     "branch": "HEAD",

@@ -18,18 +18,11 @@ def application_health_report(*, cfg: Any = None) -> tuple[dict[str, Any], ...]:
     timeout = cfg.application_health_timeout_seconds
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("application health timeout must be positive and finite")
-    sinex = ["sinexctl", "--timeout", str(max(1, math.ceil(timeout))), "--format", "json"]
-    if cfg.sinex_runtime_target is not None:
-        sinex += ["--runtime-target", str(cfg.sinex_runtime_target)]
-    if cfg.sinex_health_ca_cert is not None:
-        sinex += ["--ca-cert", str(cfg.sinex_health_ca_cert)]
-    sinex += ["runtime", "health"]
-    observation = _probe("sinex", sinex, timeout)
-    observation["target"] = str(cfg.sinex_runtime_target) if cfg.sinex_runtime_target is not None else None
-    return (observation,)
+    return (_probe("sinex", ["sinexctl", "--json", "status"], timeout),)
 
 
 def _probe(application: str, argv: list[str], timeout: float) -> dict[str, Any]:
+    """Run `sinexctl --json status`: healthy when the daemon answers and its writer runs."""
     result: dict[str, Any] = {
         "application": application, "probe_status": "unavailable", "health": "unknown",
         "observed_at": datetime.now(timezone.utc).isoformat(), "exit_code": None,
@@ -44,22 +37,19 @@ def _probe(application: str, argv: list[str], timeout: float) -> dict[str, Any]:
         return {**result, "reason": f"health command unavailable: {exc}"}
     result["exit_code"] = completed.returncode
     try:
-        payload = json.loads(completed.stdout)
-        if not isinstance(payload, dict):
-            raise ValueError("health response is not an object")
-        view = payload.get("payload", {})
-        if view.get("schema_version") != "sinex.runtime-health/v1":
-            raise ValueError("unsupported Sinex health schema")
-        health = view.get("health", {})
-        if not isinstance(health.get("healthy"), bool):
-            raise ValueError("Sinex healthy flag is missing or invalid")
-        state = "healthy" if health["healthy"] else "degraded"
-        details = {key: health.get(key) for key in ("healthy", "serving", "status")}
-        details.update({key: payload.get(key) for key in ("runtime_target", "source_surface", "generated_at")})
-        if completed.returncode != 0 and state == "healthy":
-            raise ValueError("failed health command reported healthy")
+        if completed.returncode != 0:
+            raise ValueError(f"status command exited {completed.returncode}")
+        status = json.loads(completed.stdout)
+        if not isinstance(status, dict) or not isinstance(status.get("commit_seq"), int):
+            raise ValueError("status response lacks a commit position")
+        if not isinstance(status.get("writer"), bool):
+            raise ValueError("status response lacks the writer state")
     except (ValueError, AttributeError, TypeError) as exc:
         error = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", completed.stderr).strip()[:400]
-        return {**result, "reason": f"invalid or unavailable health response: {exc}" + (f"; {error}" if error else "")}
+        return {**result, "reason": f"invalid or unavailable status response: {exc}" + (f"; {error}" if error else "")}
+    state = "healthy" if status["writer"] else "degraded"
+    search = status.get("search_index") or {}
+    details = {"commit_seq": status["commit_seq"], "writer": status["writer"],
+               "search_index_behind": search.get("behind")}
     return {**result, "probe_status": "available", "health": state,
             "reason": "status probe indicates " + state, "details": details}

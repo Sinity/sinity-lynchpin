@@ -47,10 +47,8 @@ def promote_work_sources(
             promote_work_observations,
         )
 
-        # One ledger, shared by every checkout and worktree: nothing to sweep or
-        # mirror before reading. Rows carry their own workspace provenance, and
-        # a worktree still running an older xtask is absorbed at the source with
-        # `xtask history unify`.
+        # One devkit run store, shared by every project and checkout: nothing to
+        # sweep or mirror before reading. Rows carry their project and checkout.
         xtask_path = xtask_history_path()
         has_xtask = xtask_path.exists()
         agentctl_unavailable_reason: str | None

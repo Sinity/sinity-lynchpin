@@ -544,7 +544,7 @@ def _xtask_history_source() -> SourceReadiness:
         return SourceReadiness(
             source="xtask_history",
             status="missing",
-            reason="the xtask invocation ledger is missing",
+            reason="the devkit run history store is missing",
             cost="materialized",
         )
 
@@ -557,41 +557,28 @@ def _xtask_history_source() -> SourceReadiness:
     caveats: list[str] = []
     try:
         with sqlite_connect(path) as conn:
-            inv, first_raw, last_raw = conn.execute(
-                "SELECT COUNT(*), MIN(started_at), MAX(started_at) FROM invocations"
+            inv, first_raw, last_raw, workspaces = conn.execute(
+                "SELECT COUNT(*),"
+                " strftime('%Y-%m-%d', MIN(started_ms) / 1000, 'unixepoch'),"
+                " strftime('%Y-%m-%d', MAX(started_ms) / 1000, 'unixepoch'),"
+                " COUNT(DISTINCT checkout) FROM runs"
             ).fetchone()
             invocation_count = int(inv or 0)
-            stage_count = _sqlite_count(conn, "stage_timings")
-            test_count = _sqlite_count(conn, "test_results")
+            stage_count = _sqlite_count(conn, "stages")
+            test_count = _sqlite_count(conn, "tests")
             first_seen = _iso_date(first_raw)
             last_seen = _iso_date(last_raw)
-            workspace_count = int(
-                conn.execute(
-                    "SELECT COUNT(DISTINCT workspace_root) FROM invocations"
-                    " WHERE workspace_root IS NOT NULL"
-                ).fetchone()[0]
-                or 0
-            )
-            unattributed = int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM invocations WHERE workspace_root IS NULL"
-                ).fetchone()[0]
-                or 0
-            )
-            if unattributed:
-                caveats.append(
-                    f"{unattributed} invocation(s) predate workspace attribution and name no workspace"
-                )
+            workspace_count = int(workspaces or 0)
     except Exception as exc:
         caveats.append(str(exc))
 
     status: ReadinessStatus = "available" if invocation_count else "partial"
     reason = (
-        f"{invocation_count} invocations across {workspace_count} workspace(s), "
+        f"{invocation_count} runs across {workspace_count} checkout(s), "
         f"{stage_count} stages, {test_count} test results"
     )
     if invocation_count == 0:
-        reason = "the xtask ledger is present but contains no invocation rows"
+        reason = "the devkit run history store is present but contains no runs"
     caveats.append("xtask history is observational operator telemetry, not a controlled benchmark")
     return SourceReadiness(
         source="xtask_history",

@@ -30,16 +30,16 @@ def _empty_observation_contract(monkeypatch):
 
 
 def test_xtask_source_readiness_summarizes_ledgers(monkeypatch, tmp_path):
-    db = tmp_path / "xtask-history.db"
+    db = tmp_path / "history.db"
     with sqlite3.connect(db) as conn:
-        conn.execute("CREATE TABLE invocations (started_at TEXT)")
-        conn.execute("CREATE TABLE stage_timings (id INTEGER)")
-        conn.execute("CREATE TABLE test_results (id INTEGER)")
-        conn.execute("INSERT INTO invocations VALUES ('2026-05-30T10:00:00+00:00')")
-        conn.execute("INSERT INTO invocations VALUES ('2026-05-31T10:00:00+00:00')")
-        conn.execute("INSERT INTO stage_timings VALUES (1)")
-        conn.execute("INSERT INTO test_results VALUES (1)")
-        conn.execute("INSERT INTO test_results VALUES (2)")
+        conn.execute("CREATE TABLE runs (started_ms INTEGER, checkout TEXT)")
+        conn.execute("CREATE TABLE stages (run INTEGER)")
+        conn.execute("CREATE TABLE tests (run INTEGER)")
+        conn.execute("INSERT INTO runs VALUES (1780135200000, '/a')")  # 2026-05-30
+        conn.execute("INSERT INTO runs VALUES (1780221600000, '/a')")  # 2026-05-31
+        conn.execute("INSERT INTO stages VALUES (1)")
+        conn.execute("INSERT INTO tests VALUES (1)")
+        conn.execute("INSERT INTO tests VALUES (2)")
 
     monkeypatch.setattr("lynchpin.sources.xtask_history.xtask_history_path", lambda *a, **k: db)
 

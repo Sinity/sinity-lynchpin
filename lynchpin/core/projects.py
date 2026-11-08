@@ -125,7 +125,7 @@ ALL_PROJECTS: dict[str, ProjectEntry] = {
     "sinex-target-vision": ProjectEntry("sinex-target-vision", "/realm/project/sinex-target-vision/repo", "ai", True, (".rs", ".py", ".md"), classify_rust_simple),
     "sinnix": ProjectEntry("sinnix", "/realm/project/sinnix/repo", "mixed", True, (".nix",), classify_sinnix),
     "sinity-lynchpin": ProjectEntry("sinity-lynchpin", "/realm/project/sinity-lynchpin/repo", "ai", True, (".py",), classify_sinity_analysis),
-    "polylogue": ProjectEntry("polylogue", "/realm/project/polylogue/repo", "ai", True, (".py",), classify_rust_simple),
+    "polylogue": ProjectEntry("polylogue", "/realm/project/polylogue/repo", "ai", True, (".rs",), classify_rust_simple),
     "intercept-bounce": ProjectEntry("intercept-bounce", "/realm/project/intercept-bounce/repo", "ai", True, (".rs",), classify_rust_simple),
     "scribe-tap": ProjectEntry("scribe-tap", "/realm/project/scribe-tap/repo", "ai", True, (".c", ".h", ".py"), classify_rust_simple),
     "knowledge-extract": ProjectEntry("knowledge-extract", "/realm/project/knowledge-extract/repo", "ai", True, (".py",), classify_rust_simple),  # sinnix-path: optional

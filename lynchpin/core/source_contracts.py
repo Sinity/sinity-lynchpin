@@ -452,9 +452,9 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
     ),
     SourceContract(
         name="xtask_history",
-        authority="Sinex xtask-history SQLite ledger",
+        authority="devkit run history store (runs, stages, tests)",
         query_surface="lynchpin.sources.xtask_history.iter_invocations",
-        materialization_hint="xtask records this live; no Lynchpin materializer",
+        materialization_hint="devkit records this live; no Lynchpin materializer",
     ),
     SourceContract(
         name="spotify_daily",

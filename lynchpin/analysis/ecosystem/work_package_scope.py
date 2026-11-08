@@ -27,23 +27,15 @@ def _surface_for_path(ecosystem: str, path: str) -> str:
     if not parts:
         return "unknown"
 
-    if ecosystem == "sinex":
-        if parts[0] == "crate" and len(parts) >= 3:
-            return parts[2]
-        if parts[0] == "src" and len(parts) >= 2:
+    # Both are Rust workspaces: the crate is the surface; tests/ trees keep their own.
+    if ecosystem in {"sinex", "polylogue"}:
+        if parts[0] in {"crates", "crate"} and len(parts) >= 2:
             return parts[1]
         if parts[0] == "tests":
             return f"tests/{parts[1]}" if len(parts) >= 2 else "tests"
         return parts[0]
 
-    if ecosystem == "polylogue":
-        if parts[0] == "polylogue":
-            return parts[1] if len(parts) >= 2 else "polylogue"
-        if parts[0] == "tests":
-            return f"tests/{parts[1]}" if len(parts) >= 2 else "tests"
-        if parts[0] in {"unit", "integration"}:
-            return f"tests/{parts[0]}"
-        return parts[0]
+    return parts[0]
 
     return parts[0]
 

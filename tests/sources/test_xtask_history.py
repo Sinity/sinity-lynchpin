@@ -1,266 +1,101 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
+STARTED_MS = 1780257600000  # 2026-05-31T20:00:00Z
 
-def test_xtask_history_reads_invocation_rows(tmp_path: Path) -> None:
+
+def _write_devkit_db(path: Path, *, run_id: int, project: str = "sinex") -> Path:
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS runs (
+                id INTEGER PRIMARY KEY, project TEXT NOT NULL, checkout TEXT NOT NULL,
+                command TEXT NOT NULL, args TEXT NOT NULL, head TEXT, dirty TEXT,
+                toolchain TEXT, host TEXT, pid INTEGER NOT NULL, agentctl_job TEXT,
+                started_ms INTEGER NOT NULL, duration_ms INTEGER, status TEXT NOT NULL,
+                failure TEXT);
+            CREATE TABLE IF NOT EXISTS stages (
+                run INTEGER NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL,
+                duration_ms INTEGER NOT NULL, ok INTEGER NOT NULL,
+                PRIMARY KEY (run, position));
+            CREATE TABLE IF NOT EXISTS tests (
+                run INTEGER NOT NULL, binary TEXT NOT NULL, name TEXT NOT NULL,
+                status TEXT NOT NULL, duration_ms INTEGER NOT NULL, output BLOB);
+            """
+        )
+        conn.execute(
+            "INSERT INTO runs VALUES (?, ?, '/realm/worktree/sinex-q102', 'check', '--workspace',"
+            " 'abc123', 'src/lib.rs', NULL, 'sinnix-prime', 1, NULL, ?, 25000, 'passed', NULL)",
+            (run_id, project, STARTED_MS),
+        )
+    return path
+
+
+def test_runs_become_invocations(tmp_path: Path) -> None:
     from lynchpin.sources.xtask_history import iter_invocations
 
-    db = _write_xtask_db(tmp_path / "xtask-history.db", row_id=1)
+    db = _write_devkit_db(tmp_path / "history.db", run_id=1)
 
     rows = list(iter_invocations(path=db))
 
     assert len(rows) == 1
     row = rows[0]
     assert row.source_id == "xtask:1"
-    assert row.command == ("check", "clippy")
+    assert row.command == ("check", "--workspace")
     assert row.project == "sinex"
-    assert row.git_dirty is True
-    assert row.process_count_max == 11
-    assert row.host_block_busiest_device == "nvme0n1"
-    assert row.host_block_read_mib_delta == 12.5
+    assert row.status == "success"
+    assert row.outcome_known is True
+    assert row.started_at == datetime(2026, 5, 31, 20, 0, tzinfo=timezone.utc)
+    assert row.duration_s == 25.0
+    assert row.git_commit == "abc123" and row.git_dirty is True
+    assert row.workspace_root == "/realm/worktree/sinex-q102"
+    assert row.workspace_name == "sinex-q102"
+    # Devkit records no resource samples.
+    assert row.process_count_max is None and row.cpu_usage_avg is None
 
 
-def test_xtask_history_reads_the_single_configured_ledger(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """Source ids come from one ledger, so a rowid identifies exactly one run.
-
-    Each workspace used to write its own database, and every one of them
-    restarted rowids at 1 -- which is why the old reader had to prefix ids with
-    a per-file label. xtask now records every workspace into one file, so the
-    rowid is unique on its own.
-    """
+def test_the_configured_store_is_the_only_one_read(tmp_path: Path, monkeypatch) -> None:
     from lynchpin.core import config as config_mod
     from lynchpin.sources.xtask_history import iter_all_invocations
 
-    ledger = _write_xtask_db(tmp_path / "xtask-history.db", row_id=1)
-    unrelated = _write_xtask_db(tmp_path / "stale-worktree-copy.db", row_id=1)
-    assert unrelated.exists()
-    monkeypatch.setenv("LYNCHPIN_XTASK_HISTORY_DB", str(ledger))
+    store = _write_devkit_db(tmp_path / "history.db", run_id=1)
+    _write_devkit_db(tmp_path / "other.db", run_id=2)
+    monkeypatch.setenv("LYNCHPIN_XTASK_HISTORY_DB", str(store))
     monkeypatch.setattr(config_mod, "_CONFIG", None)
 
-    rows = list(iter_all_invocations())
-
-    assert [row.source_id for row in rows] == ["xtask:1"]
+    assert [row.source_id for row in iter_all_invocations()] == ["xtask:1"]
 
 
-def test_xtask_history_exposes_workspace_provenance(tmp_path: Path) -> None:
+def test_time_window_filters_runs(tmp_path: Path) -> None:
     from lynchpin.sources.xtask_history import iter_invocations
 
-    db = _write_xtask_db(tmp_path / "xtask-history.db", row_id=1)
-    with sqlite3.connect(db) as conn:
-        conn.execute(
-            "ALTER TABLE invocations ADD COLUMN workspace_root TEXT"
-        )
-        conn.execute("ALTER TABLE invocations ADD COLUMN workspace_name TEXT")
-        conn.execute("ALTER TABLE invocations ADD COLUMN git_branch TEXT")
-        conn.execute(
-            "UPDATE invocations SET workspace_root = ?, workspace_name = ?, git_branch = ?",
-            ("/realm/worktree/sinex-q102", "sinex-q102", "feature/x"),
-        )
+    db = _write_devkit_db(tmp_path / "history.db", run_id=1)
+    after = datetime(2026, 6, 1, tzinfo=timezone.utc)
 
-    row = next(iter(iter_invocations(path=db)))
-
-    assert row.workspace_root == "/realm/worktree/sinex-q102"
-    assert row.workspace_name == "sinex-q102"
-    assert row.git_branch == "feature/x"
+    assert list(iter_invocations(path=db, start=after)) == []
+    assert len(list(iter_invocations(path=db, end=after))) == 1
 
 
-def test_xtask_history_tolerates_a_ledger_without_workspace_columns(tmp_path: Path) -> None:
-    from lynchpin.sources.xtask_history import iter_invocations
-
-    db = _write_xtask_db(tmp_path / "xtask-history.db", row_id=1)
-
-    row = next(iter(iter_invocations(path=db)))
-
-    assert row.workspace_root is None
-    assert row.workspace_name is None
-    assert row.git_branch is None
-
-
-def test_xtask_history_reads_recovered_schema_by_column_name(tmp_path: Path) -> None:
-    from lynchpin.sources.xtask_history import iter_invocations
-
-    db = tmp_path / "archive.db"
-    conn = sqlite3.connect(db)
-    with conn:
-        conn.execute(
-            """
-            CREATE TABLE invocations (
-                id INTEGER PRIMARY KEY, command TEXT, subcommand TEXT,
-                profile TEXT, args_json TEXT, git_commit TEXT, git_dirty INTEGER,
-                started_at TEXT, finished_at TEXT, duration_secs REAL,
-                exit_code INTEGER, status TEXT, host TEXT, cwd TEXT,
-                pid INTEGER, is_background INTEGER, stdout_path TEXT,
-                stderr_path TEXT, stdout_content TEXT, stderr_content TEXT,
-                cpu_usage_avg REAL, memory_usage_max_mb REAL,
-                tree_fingerprint TEXT, scope_key TEXT, live_stage TEXT,
-                pre_fix_errors INTEGER, pre_fix_warnings INTEGER,
-                pre_fix_fixable INTEGER, launch_mode TEXT,
-                process_cpu_usage_avg REAL, process_memory_usage_max_mb REAL,
-                process_count_max INTEGER, resource_sample_count INTEGER,
-                root_process_cpu_usage_avg REAL,
-                root_process_memory_usage_max_mb REAL,
-                shared_nix_daemon_cpu_usage_avg REAL,
-                shared_nix_daemon_memory_usage_max_mb REAL,
-                shared_nix_build_slice_cpu_usage_avg REAL,
-                shared_nix_build_slice_memory_usage_max_mb REAL,
-                shared_background_slice_cpu_usage_avg REAL,
-                shared_background_slice_memory_usage_max_mb REAL,
-                cancel_reason TEXT, is_zombie INTEGER,
-                host_cpu_pressure_some_avg10_max REAL,
-                host_io_pressure_some_avg10_max REAL,
-                host_io_pressure_full_avg10_max REAL,
-                host_memory_pressure_some_avg10_max REAL,
-                host_memory_pressure_full_avg10_max REAL,
-                shm_free_min_mb REAL, shm_used_max_mb REAL,
-                cancelled_by TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO invocations
-            (id, command, subcommand, profile, args_json, git_commit, git_dirty,
-             started_at, finished_at, duration_secs, exit_code, status, host, cwd,
-             live_stage, process_count_max, resource_sample_count)
-            VALUES
-            (7, 'check', 'test', 'profile-a', '[]', 'def456', 0,
-             '2026-05-10T12:00:00Z', '2026-05-10T12:01:00Z', 60.0, 0,
-             'success', 'sinnix-prime', '/realm/project/sinex', 'test', 33, 44)
-            """
-        )
-    conn.close()
-
-    row = next(iter_invocations(path=db, source_prefix="xtask:archive1"))
-
-    assert row.source_id == "xtask:archive1:7"
-    assert row.live_stage == "test"
-    assert row.process_count_max == 33
-    assert row.resource_sample_count == 44
-    assert row.host_block_busiest_device is None
-
-
-def test_xtask_history_reads_stage_timings_and_test_results(tmp_path: Path) -> None:
+def test_stages_start_where_the_previous_stage_ended(tmp_path: Path) -> None:
     from lynchpin.sources.xtask_history import iter_stage_timings, iter_test_results
 
-    db = _write_xtask_db(tmp_path / "xtask-history.db", row_id=9)
-    conn = sqlite3.connect(db)
-    with conn:
-        conn.execute(
-            """
-            CREATE TABLE stage_timings (
-                id INTEGER PRIMARY KEY, invocation_id INTEGER, stage_name TEXT,
-                started_at TEXT, duration_secs REAL, success INTEGER
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO stage_timings
-            VALUES (3, 9, 'clippy', '2026-05-31T19:47:20Z', 2.5, 1)
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE test_results (
-                id INTEGER PRIMARY KEY, invocation_id INTEGER, test_name TEXT,
-                package TEXT, status TEXT, duration_secs REAL, attempt INTEGER,
-                output TEXT, slot_name TEXT, slot_wait_ms INTEGER,
-                cleanup_ms INTEGER, failure_message TEXT, failure_type TEXT,
-                test_mode TEXT, nats_context TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO test_results
-            (id, invocation_id, test_name, package, status, duration_secs,
-             attempt, slot_name, slot_wait_ms, cleanup_ms, failure_type,
-             test_mode, nats_context)
-            VALUES
-            (4, 9, 'pkg::mod::test_name', 'pkg', 'pass', 0.12, 1,
-             'slot-a', 10, 3, NULL, 'nextest', NULL)
-            """
-        )
-    conn.close()
+    db = _write_devkit_db(tmp_path / "history.db", run_id=9)
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO stages VALUES (9, 0, 'fmt', 1000, 1)")
+        conn.execute("INSERT INTO stages VALUES (9, 1, 'clippy', 2500, 1)")
+        conn.execute("INSERT INTO tests VALUES (9, 'pkg', 'pkg::mod::test_name', 'passed', 120, NULL)")
 
     stages = list(iter_stage_timings(path=db, source_prefix="xtask:live"))
     tests = list(iter_test_results(path=db, source_prefix="xtask:live"))
 
-    assert stages[0].source_id == "xtask:live:stage:3"
-    assert stages[0].invocation_source_id == "xtask:live:9"
-    assert stages[0].stage_name == "clippy"
-    assert stages[0].success is True
-    assert tests[0].source_id == "xtask:live:test:4"
+    assert [stage.stage_name for stage in stages] == ["fmt", "clippy"]
+    assert stages[1].source_id == "xtask:live:stage:9:1"
+    assert stages[1].invocation_source_id == "xtask:live:9"
+    assert stages[1].started_at == datetime(2026, 5, 31, 20, 0, 1, tzinfo=timezone.utc)
+    assert stages[1].duration_s == 2.5 and stages[1].success is True
     assert tests[0].invocation_source_id == "xtask:live:9"
-    assert tests[0].package == "pkg"
-    assert tests[0].test_mode == "nextest"
-
-
-def _write_xtask_db(db: Path, *, row_id: int) -> Path:
-    conn = sqlite3.connect(db)
-    with conn:
-        conn.execute(
-            """
-            CREATE TABLE invocations (
-                id INTEGER PRIMARY KEY, command TEXT NOT NULL, subcommand TEXT,
-                profile TEXT, args_json TEXT, git_commit TEXT, git_dirty INTEGER,
-                started_at TEXT NOT NULL, finished_at TEXT, duration_secs REAL,
-                exit_code INTEGER, status TEXT NOT NULL, host TEXT NOT NULL,
-                cwd TEXT NOT NULL, live_stage TEXT, cpu_usage_avg REAL,
-                memory_usage_max_mb REAL, process_cpu_usage_avg REAL,
-                process_memory_usage_max_mb REAL, root_process_cpu_usage_avg REAL,
-                root_process_memory_usage_max_mb REAL,
-                shared_nix_daemon_cpu_usage_avg REAL,
-                shared_nix_daemon_memory_usage_max_mb REAL,
-                shared_nix_build_slice_cpu_usage_avg REAL,
-                shared_nix_build_slice_memory_usage_max_mb REAL,
-                shared_background_slice_cpu_usage_avg REAL,
-                shared_background_slice_memory_usage_max_mb REAL,
-                host_cpu_pressure_some_avg10_max REAL,
-                host_io_pressure_some_avg10_max REAL,
-                host_io_pressure_full_avg10_max REAL,
-                host_memory_pressure_some_avg10_max REAL,
-                host_memory_pressure_full_avg10_max REAL,
-                host_block_read_mib_delta REAL,
-                host_block_write_mib_delta REAL,
-                host_block_read_iops_avg REAL,
-                host_block_write_iops_avg REAL,
-                host_block_busiest_device TEXT,
-                host_block_busiest_device_total_mib_delta REAL,
-                host_block_busiest_device_read_iops_avg REAL,
-                host_block_busiest_device_write_iops_avg REAL,
-                host_block_busiest_device_weighted_io_ms_per_s REAL,
-                shm_free_min_mb REAL, shm_used_max_mb REAL,
-                process_count_max INTEGER, resource_sample_count INTEGER
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO invocations
-            (id, command, subcommand, profile, args_json, git_commit, git_dirty,
-             started_at, finished_at, duration_secs, exit_code, status, host, cwd,
-             live_stage, cpu_usage_avg, memory_usage_max_mb, process_count_max,
-             resource_sample_count, host_block_read_mib_delta,
-             host_block_write_mib_delta, host_block_read_iops_avg,
-             host_block_write_iops_avg, host_block_busiest_device,
-             host_block_busiest_device_total_mib_delta,
-             host_block_busiest_device_read_iops_avg,
-             host_block_busiest_device_write_iops_avg,
-             host_block_busiest_device_weighted_io_ms_per_s)
-            VALUES
-            (?, 'check', 'clippy', NULL, '["--all"]', 'abc123', 1,
-             '2026-05-31T19:47:18Z', '2026-05-31T19:48:18Z', 60.0, 0,
-             'success', 'sinnix-prime', '/realm/project/sinex', 'clippy',
-             42.0, 512.0, 11, 6, 12.5, 3.25, 100.0, 25.0, 'nvme0n1',
-             15.75, 90.0, 20.0, 250.0)
-            """,
-            [row_id],
-        )
-    conn.close()
-    return db
+    assert tests[0].package == "pkg" and tests[0].status == "passed"
+    assert tests[0].duration_s == 0.12

@@ -85,11 +85,10 @@ cardinality, not equal payloads.
 Producer-service evidence (coverage CLI, context packs, MCP readiness) reads
 service state for the units declared in the runtime inventory, within a
 three-second budget. Inactive and unobserved time are reported separately.
-Live application health (`sinexctl runtime health`) is
-reported only by the MCP readiness tool, never by graph or dataset readiness.
-`LYNCHPIN_APPLICATION_HEALTH=0` disables those probes;
-`LYNCHPIN_APPLICATION_HEALTH_TIMEOUT`, `SINEX_RUNTIME_TARGET_CONFIG` and
-`LYNCHPIN_SINEX_HEALTH_CA_CERT` configure them.
+Live application health (`sinexctl --json status`: healthy when the daemon
+answers and its writer runs) is reported only by the MCP readiness tool, never
+by graph or dataset readiness. `LYNCHPIN_APPLICATION_HEALTH=0` disables the
+probe; `LYNCHPIN_APPLICATION_HEALTH_TIMEOUT` bounds it.
 
 ### Promotion
 

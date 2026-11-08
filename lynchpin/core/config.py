@@ -114,8 +114,6 @@ class LynchpinConfig:
 
     application_health_enabled: bool = True
     application_health_timeout_seconds: float = 3.0
-    sinex_runtime_target: Path | None = Path("/etc/sinex/runtime-target.json")
-    sinex_health_ca_cert: Path | None = None
     filesystem_layout: Path = Path("/etc/sinnix/filesystem-layout.json")
     # Why capture roots could not be resolved; those sources then read as absent.
     filesystem_layout_error: str | None = None
@@ -449,8 +447,6 @@ class LynchpinConfig:
             transcribed_ledger_jsonl=transcribed_ledger_jsonl,
             application_health_enabled=os.environ.get("LYNCHPIN_APPLICATION_HEALTH", "1").lower() not in {"0", "false", "off"},
             application_health_timeout_seconds=float(os.environ.get("LYNCHPIN_APPLICATION_HEALTH_TIMEOUT", "3")),
-            sinex_runtime_target=Path(os.environ.get("SINEX_RUNTIME_TARGET_CONFIG", "/etc/sinex/runtime-target.json")) if os.environ.get("SINEX_RUNTIME_TARGET_CONFIG", "/etc/sinex/runtime-target.json") else None,
-            sinex_health_ca_cert=Path(os.environ["LYNCHPIN_SINEX_HEALTH_CA_CERT"]) if os.environ.get("LYNCHPIN_SINEX_HEALTH_CA_CERT") else None,
         )
 
 
@@ -538,21 +534,11 @@ def _raindrop_live_available() -> bool:
 
 
 def _resolve_xtask_history_db(env_value: str | None) -> Path:
-    """Locate the single xtask development-history database.
-
-    xtask resolves the same file through its main checkout's state directory,
-    with ``XTASK_HISTORY_DB`` as an explicit override; mirroring that order here
-    keeps both sides pointed at one ledger. There is no scan of per-worktree or
-    relocated cache locations any more: every workspace records into this file,
-    so a second candidate would only be a stale fork of it.
-    """
+    """Locate devkit's run history store, shared by every project and checkout."""
     if env_value:
         return Path(env_value).expanduser()
-    override = os.environ.get("XTASK_HISTORY_DB")
-    if override:
-        return Path(override).expanduser()
-    checkout_root = Path(os.environ.get("SINEX_ROOT", "/realm/project/sinex/repo")).expanduser()
-    return checkout_root / ".sinex/state/xtask-history.db"
+    state = Path(os.environ.get("XDG_STATE_HOME", "~/.local/state")).expanduser()
+    return state / "devkit/history.db"
 
 
 def _resolve_fbmessenger_db(*candidates: Path) -> str:

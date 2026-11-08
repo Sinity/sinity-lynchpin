@@ -3398,7 +3398,9 @@ def _xtask_history_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
             conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
             try:
                 row = conn.execute(
-                    "SELECT COUNT(*), MIN(started_at), MAX(started_at) FROM invocations"
+                    "SELECT COUNT(*),"
+                    " strftime('%Y-%m-%d', MIN(started_ms) / 1000, 'unixepoch'),"
+                    " strftime('%Y-%m-%d', MAX(started_ms) / 1000, 'unixepoch') FROM runs"
                 ).fetchone()
             finally:
                 conn.close()
